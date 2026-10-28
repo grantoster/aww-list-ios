@@ -1,0 +1,7 @@
+*.xcodeproj/
+DerivedData/
+build/
+fastlane/report.xml
+AuthKey.p8
+*.ipa
+*.dSYM.zip

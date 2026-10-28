@@ -1,0 +1,47 @@
+name: iOS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      testflight:
+        description: "Upload a build to TestFlight"
+        type: boolean
+        default: false
+
+jobs:
+  build-and-test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+      - name: Generate Xcode project
+        run: brew install xcodegen && xcodegen generate
+      - name: Build and run unit tests (simulator, no signing)
+        run: |
+          xcodebuild test \
+            -project AwwList.xcodeproj -scheme AwwList \
+            -destination 'platform=iOS Simulator,name=iPhone 15' \
+            AWW_BUNDLE_ID=com.awwlist.app AWW_TEAM_ID="" \
+            CODE_SIGNING_ALLOWED=NO | xcpretty || exit ${PIPESTATUS[0]}
+
+  testflight:
+    needs: build-and-test
+    if: github.event_name == 'workflow_dispatch' && inputs.testflight
+    runs-on: macos-14
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+      AWW_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      AWW_BUNDLE_ID: ${{ secrets.BUNDLE_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+      - name: Generate Xcode project
+        run: brew install xcodegen && xcodegen generate
+      - name: Build, sign and upload to TestFlight
+        run: bundle install --quiet || gem install fastlane --no-document; fastlane beta
