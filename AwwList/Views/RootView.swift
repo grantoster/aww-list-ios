@@ -13,7 +13,7 @@ struct RootView: View {
             switch status {
             case .authorized, .limited:
                 HomeView()
-                    .onAppear { library.prune(); scanner.start(library: library) }
+                    .onAppear { scanner.start(library: library) }
             case .denied, .restricted:
                 DeniedView()
             default:
@@ -31,9 +31,7 @@ struct RootView: View {
     }
 
     private func request() {
-        PHPhotoLibrary.requestAuthorization(for: .readWrite) { s in
-            Task { @MainActor in status = s }
-        }
+        Task { status = await PHPhotoLibrary.requestAuthorization(for: .readWrite) }
     }
 }
 

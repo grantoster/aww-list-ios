@@ -26,6 +26,10 @@
 	<false/>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Aww List looks through your photos on this iPhone to find and rank your cutest moments. Your photos never leave your phone.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Lets you save a photo you share from Aww List back to your library.</string>
+	<key>PHPhotoLibraryPreventAutomaticLimitedAccessAlert</key>
+	<true/>
 	<key>UILaunchScreen</key>
 	<dict>
 		<key>UIColorName</key>
@@ -39,14 +43,6 @@
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
-	</array>
-	<key>BGTaskSchedulerPermittedIdentifiers</key>
-	<array>
-		<string>$(PRODUCT_BUNDLE_IDENTIFIER).scan</string>
-	</array>
-	<key>UIBackgroundModes</key>
-	<array>
-		<string>processing</string>
 	</array>
 </dict>
 </plist>

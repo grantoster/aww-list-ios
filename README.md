@@ -12,12 +12,12 @@ Finds the cutest photos of your kids in your iPhone photo library and ranks them
 The included GitHub Actions workflow builds on a cloud Mac.
 
 1. Put this folder in a GitHub repository and push to `main`. The **iOS** workflow generates the Xcode project (XcodeGen), builds the app and runs the unit tests on a simulator.
-2. To send it to your iPhone through TestFlight, you need an Apple Developer Program membership. Then add these repository secrets:
-   - `APPLE_TEAM_ID` – 10-character Team ID (developer.apple.com → Membership)
-   - `BUNDLE_ID` – e.g. `com.yourname.awwlist`
-   - `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8` – an App Store Connect API key with the App Manager role (App Store Connect → Users and Access → Integrations → Keys); paste the whole .p8 file into `ASC_KEY_P8`
-3. Run the **iOS** workflow manually with "Upload a build to TestFlight" ticked.
-4. Install the TestFlight app on the iPhone, accept the invite, and install Aww List.
+2. To send it to your iPhone through TestFlight you need an Apple Developer Program membership, then:
+   - **Create the app record once:** App Store Connect → Apps → + → New App. Platform iOS, any name (e.g. "Aww List – Cutest Photos"), bundle ID: pick "Register a new bundle ID" link or use one you created at developer.apple.com → Identifiers (e.g. `com.yourname.awwlist`), SKU anything.
+   - **Create an API key:** App Store Connect → Users and Access → Integrations → App Store Connect API → Team Keys → +, role **Admin** (needed for cloud signing). Download the .p8 (only downloadable once) and note the Key ID and Issuer ID.
+   - **Add repository secrets** (GitHub → Settings → Secrets and variables → Actions): `APPLE_TEAM_ID` (developer.apple.com → Account → Membership), `BUNDLE_ID` (same as the app record), `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8` (paste the whole .p8 file).
+3. Actions → **iOS** → Run workflow → tick "Upload a build to TestFlight".
+4. After Apple finishes processing (10–30 minutes), App Store Connect → TestFlight → add yourself as an internal tester. Install the TestFlight app on the iPhone and install Aww List from there.
 
 ## Project layout
 - `project.yml` – XcodeGen spec (iOS 17+, SwiftUI)

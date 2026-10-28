@@ -66,14 +66,14 @@ enum Scorer {
     }
 
     /// Groups photos into moments: shots less than 60 s apart are one moment; the best shot wins, ties go to the earlier one.
-    static func moments(from photos: [PhotoScore]) -> [(best: PhotoScore, shots: Int)] {
+    static func moments(from photos: [PhotoScore]) -> [(best: PhotoScore, shots: Int, ids: [String])] {
         let counted = photos.filter { $0.raw != nil }.sorted { $0.date < $1.date }
-        var result: [(PhotoScore, Int)] = []
+        var result: [(best: PhotoScore, shots: Int, ids: [String])] = []
         var group: [PhotoScore] = []
         func flush() {
             guard var best = group.first else { return }
             for p in group.dropFirst() where (p.raw ?? 0) > (best.raw ?? 0) { best = p }
-            result.append((best, group.count))
+            result.append((best: best, shots: group.count, ids: group.map(\.id)))
             group = []
         }
         for p in counted {

@@ -141,7 +141,7 @@ struct Pill: View {
                 .font(.system(size: small ? 14 : 16, weight: .bold, design: .rounded))
                 .padding(.horizontal, small ? 12 : 16).frame(minHeight: 40)
                 .background(on ? Theme.accent : Color.secondary.opacity(0.12), in: Capsule())
-                .foregroundStyle(on ? .white : .primary)
+                .foregroundStyle(on ? Color.white : Color.primary)
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(on ? .isSelected : [])

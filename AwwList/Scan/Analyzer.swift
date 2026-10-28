@@ -1,6 +1,7 @@
 import Foundation
 import Vision
 import CoreImage
+import ImageIO
 
 /// Runs Apple's on-device Vision models on one image and returns the measured signals.
 /// Nothing leaves the phone.

@@ -26,6 +26,8 @@ struct Moment: Identifiable, Hashable {
     var id: String { best.id }
     let best: PhotoScore
     let shots: Int
+    /// Every shot in the burst, so removing a moment removes all of it.
+    let memberIDs: [String]
     /// Calibrated 1...10 score.
     var score: Int
     var year: Int { Calendar.current.component(.year, from: best.date) }

@@ -14,7 +14,7 @@ struct ViewerView: View {
             Color.black.ignoresSafeArea()
             TabView(selection: $index) {
                 ForEach(Array(moments.enumerated()), id: \.element.id) { i, m in
-                    AssetImage(id: m.best.id, contentMode: .fit, targetSide: 1400)
+                    AssetImage(id: m.best.id, contentMode: .fit, targetSide: 900)
                         .tag(i)
                         .background(Color.black)
                 }
@@ -32,8 +32,13 @@ struct ViewerView: View {
             }.padding(.horizontal, 16)
         }
         .overlay(alignment: .bottom) { caption }
-        .gesture(DragGesture().onEnded { if $0.translation.height > 120 { dismiss() } })
-        .task(id: index) { shareImage = await AssetImage.load(id: moments[index].best.id, side: 1600) }
+        .simultaneousGesture(DragGesture(minimumDistance: 30).onEnded { v in
+            if v.translation.height > 120 && abs(v.translation.width) < 60 { dismiss() }
+        })
+        .task(id: index) {
+            shareImage = nil
+            shareImage = await AssetImage.load(id: moments[index].best.id, size: CGSize(width: 2048, height: 2048), mode: .aspectFit)
+        }
     }
 
     @ViewBuilder private var caption: some View {
@@ -41,7 +46,7 @@ struct ViewerView: View {
             let m = moments[index]
             VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("\(m.score)").font(Theme.display(34)).foregroundStyle(m.score >= 9 ? Theme.gold : .white)
+                    Text("\(m.score)").font(Theme.display(34)).foregroundStyle(m.score >= 9 ? Theme.gold : Color.white)
                     Text("/10").foregroundStyle(.white.opacity(0.7))
                     Spacer()
                     if let shareImage {

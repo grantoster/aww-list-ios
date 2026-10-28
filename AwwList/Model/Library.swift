@@ -1,12 +1,14 @@
 import Foundation
-import Photos
 
 /// Holds every analyzed photo, saves them to disk, and builds the ranked moments.
 @MainActor
 final class Library: ObservableObject {
     @Published private(set) var photos: [String: PhotoScore] = [:]
     @Published private(set) var moments: [Moment] = []
-    @Published var hidden: Set<String> = []   // photos the user removed from the list
+    @Published private(set) var hidden: Set<String> = []   // photos the user removed from the list
+
+    private var lastRebuild = Date.distantPast
+    private var unsaved = 0
 
     private let url: URL = {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -17,32 +19,33 @@ final class Library: ObservableObject {
 
     init() { load() }
 
+    /// New results from the scanner. The list is rebuilt at most every 2 seconds while scanning.
     func add(_ new: [PhotoScore]) {
         guard !new.isEmpty else { return }
         for p in new { photos[p.id] = p }
-        rebuild()
-        if photos.count % 400 < new.count { save() }
+        unsaved += new.count
+        if Date().timeIntervalSince(lastRebuild) > 2 { rebuild() }
+        if unsaved >= 1000 { save() }
     }
 
-    func hide(_ m: Moment) { hidden.insert(m.best.id); rebuild(); save() }
+    func finishScan() { rebuild(); save() }
+
+    /// Removes a whole moment (every shot in its burst) from the list.
+    func hide(_ m: Moment) { hidden.formUnion(m.memberIDs); rebuild(); save() }
     func restoreHidden() { hidden.removeAll(); rebuild(); save() }
 
-    /// Removes scores for photos that were deleted from the library.
-    func prune() {
-        let ids = Array(photos.keys)
-        let found = PHAsset.fetchAssets(withLocalIdentifiers: ids, options: nil)
-        var alive = Set<String>()
-        found.enumerateObjects { a, _, _ in alive.insert(a.localIdentifier) }
-        let gone = ids.filter { !alive.contains($0) }
-        guard !gone.isEmpty else { return }
-        gone.forEach { photos[$0] = nil }
+    /// Drops scores for photos that were deleted from the library (ids found by the scanner).
+    func remove(_ ids: Set<String>) {
+        guard !ids.isEmpty else { return }
+        ids.forEach { photos[$0] = nil }
         rebuild(); save()
     }
 
     func rebuild() {
+        lastRebuild = Date()
         let groups = Scorer.moments(from: photos.values.filter { !hidden.contains($0.id) })
         let scores = Scorer.calibrate(groups.map { $0.best.raw ?? 0 })
-        moments = zip(groups, scores).map { Moment(best: $0.0.best, shots: $0.0.shots, score: $0.1) }
+        moments = zip(groups, scores).map { g, s in Moment(best: g.best, shots: g.shots, memberIDs: g.ids, score: s) }
             .sorted(by: Library.ranked)
     }
 
@@ -56,14 +59,19 @@ final class Library: ObservableObject {
 
     var years: [Int] { Array(Set(moments.map(\.year))).sorted(by: >) }
 
+    /// Writes to disk off the main thread.
     func save() {
+        unsaved = 0
         let s = Saved(photos: Array(photos.values), hidden: Array(hidden))
-        if let data = try? JSONEncoder().encode(s) { try? data.write(to: url, options: .atomic) }
+        let u = url
+        Task.detached(priority: .utility) {
+            if let data = try? JSONEncoder().encode(s) { try? data.write(to: u, options: .atomic) }
+        }
     }
 
     private func load() {
         guard let data = try? Data(contentsOf: url), let s = try? JSONDecoder().decode(Saved.self, from: data) else { return }
-        photos = Dictionary(uniqueKeysWithValues: s.photos.map { ($0.id, $0) })
+        photos = Dictionary(s.photos.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         hidden = Set(s.hidden)
         rebuild()
     }
