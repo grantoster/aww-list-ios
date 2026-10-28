@@ -3,9 +3,10 @@
 Finds the cutest photos of your kids in your iPhone photo library and ranks them year by year, like the Aww List web page. Everything runs on the phone with Apple's Vision framework; no photo is uploaded.
 
 ## What it does
-- Scans every photo in the library (asks for photo access once). Screenshots, bath and swimwear photos, documents and photos without a child are left out.
-- Shots less than 60 seconds apart count as one moment; the best shot is shown with a "+N similar" note.
-- Each moment gets a 1–10 score from smiles, faces together, face size and sharpness, and how clearly a child is the subject. Scores are spread across the whole library so 9s and 10s stay rare and every year competes on one scale.
+- Scans every photo in the library (asks for photo access once). Screenshots, documents, photos without a child, and bath, pool, beach, swimwear and diaper photos are left out — along with every photo taken within 10 minutes of one, so a missed frame of a bath burst can't slip through.
+- Shots less than 60 seconds apart count as one moment (2 minutes at most); the best shot is shown with a "+N similar" note.
+- Each moment gets a 1–10 score from the main subject's smile (other faces count less), a second face close by, face size, and how clearly a child is the subject, scaled down for blur. Scores are spread by percentile with every year weighted equally, so 9s and 10s stay rare, a weak photo can't reach a high score, and small libraries top out at 8 or 9.
+- When the scoring changes, photos are re-analyzed automatically on the next scan.
 - Overall and per-year Top 20 (#1 large, #2–5 cards, #6–20 grid), a See-all grid sorted by cuteness or date, a Baby/Kid filter, a full-screen viewer with swipe, share, and "remove from list".
 
 ## Build it (Mac not required)

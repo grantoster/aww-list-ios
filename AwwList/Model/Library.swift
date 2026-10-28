@@ -44,7 +44,9 @@ final class Library: ObservableObject {
     func rebuild() {
         lastRebuild = Date()
         let groups = Scorer.moments(from: photos.values.filter { !hidden.contains($0.id) })
-        let scores = Scorer.calibrate(groups.map { $0.best.raw ?? 0 })
+        let cal = Calendar.current
+        let scores = Scorer.calibrate(groups.map { $0.best.raw ?? 0 },
+                                      years: groups.map { cal.component(.year, from: $0.best.date) })
         moments = zip(groups, scores).map { g, s in Moment(best: g.best, shots: g.shots, memberIDs: g.ids, score: s) }
             .sorted(by: Library.ranked)
     }

@@ -17,7 +17,9 @@ final class PhotoScanner: ObservableObject {
         guard !isScanning else { return }
         isScanning = true
         cancelFlag.reset()
-        let known = Set(library.photos.keys)
+        let all = Set(library.photos.keys)
+        // Photos scored by an older version of the scorer are analyzed again.
+        let known = Set(library.photos.values.filter { $0.version == Scorer.version }.map(\.id))
         let flag = cancelFlag
         let me = self
         queue.async {
@@ -31,7 +33,7 @@ final class PhotoScanner: ObservableObject {
                 alive.insert(a.localIdentifier)
                 if !known.contains(a.localIdentifier) { todo.append(a) }
             }
-            let gone = known.subtracting(alive)
+            let gone = all.subtracting(alive)
             let count = todo.count
             Task { @MainActor in library.remove(gone); me.total = count; me.done = 0 }
 
@@ -56,12 +58,20 @@ final class PhotoScanner: ObservableObject {
                                              contentMode: .aspectFit, options: req) { img, _ in image = img }
                         // No image (offline iCloud photo): store nothing, so it's tried again next time.
                         guard let img = image, let cg = img.cgImage else { return nil }
-                        signals = analyzer.analyze(cg, orientation: CGImagePropertyOrientation(img.imageOrientation))
+                        // Vision failed: store nothing, so it's tried again next time.
+                        guard let measured = analyzer.analyze(cg, orientation: CGImagePropertyOrientation(img.imageOrientation)) else { return nil }
+                        signals = measured
+                    }
+                    // Undated photos can't be placed in a year or grouped into moments, so they stay off the list.
+                    guard let date = asset.creationDate ?? asset.modificationDate else {
+                        return PhotoScore(id: asset.localIdentifier, date: .distantPast, raw: nil, excluded: "No date",
+                                          age: nil, caption: "", version: Scorer.version)
                     }
                     let (raw, excluded) = Scorer.score(signals)
                     let age: AgeGroup? = raw == nil ? nil : (signals.babyConfidence > 0.5 ? .baby : .kid)
-                    return PhotoScore(id: asset.localIdentifier, date: asset.creationDate ?? .distantPast,
-                                      raw: raw, excluded: excluded, age: age, caption: Scorer.caption(signals))
+                    return PhotoScore(id: asset.localIdentifier, date: date,
+                                      raw: raw, excluded: excluded, age: age, caption: Scorer.caption(signals),
+                                      version: Scorer.version)
                 }
                 checked += 1
                 if let result { batch.append(result) }

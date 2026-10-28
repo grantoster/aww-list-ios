@@ -19,9 +19,11 @@ struct PhotoScore: Codable, Hashable, Identifiable {
     let age: AgeGroup?
     /// Short description built from the labels, e.g. "Big smile" or "Two kids together".
     let caption: String
+    /// Scorer.version that produced this result; nil for results saved by the first release.
+    var version: Int? = nil
 }
 
-/// One moment: photos taken less than 60 seconds apart, represented by its best shot.
+/// One moment: photos taken less than 60 seconds apart (2 minutes at most), represented by its best shot.
 struct Moment: Identifiable, Hashable {
     var id: String { best.id }
     let best: PhotoScore
