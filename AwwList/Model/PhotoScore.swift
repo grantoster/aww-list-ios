@@ -88,11 +88,16 @@ struct PhotoScore: Codable, Hashable, Identifiable {
 
 /// Just kids (close-ups, or two kids together) or family and groups (a grown-up in the shot, or three or more faces).
 enum ShotKind: String, CaseIterable, Identifiable {
-    case kids, family
+    case solo, kids, family
     var id: String { rawValue }
-    var label: String { self == .kids ? "Just kids" : "Family & groups" }
+    var label: String {
+        switch self { case .solo: "Solo"; case .kids: "Kids together"; case .family: "Family & groups" }
+    }
+    /// Solo: one child on their own. Kids together: two kids, no grown-ups. Family & groups: 3 or more, or any grown-up.
     static func of(faces: Int?, adults: Int?) -> ShotKind {
-        (faces ?? 1) >= 3 || (adults ?? 0) >= 1 ? .family : .kids
+        let f = faces ?? 1
+        if f >= 3 || (adults ?? 0) >= 1 { return .family }
+        return f <= 1 ? .solo : .kids
     }
 }
 

@@ -291,6 +291,16 @@ enum Scorer {
     /// The value a photo is listed with: its score, or for a flagged photo the score it would have had.
     /// Held-back photos count only once the user puts them back.
     static func listedValue(_ p: PhotoScore, putBack: Set<String> = [], includePoolOnly: Bool = false) -> Double? {
+        guard let v = baseValue(p, putBack: putBack, includePoolOnly: includePoolOnly) else { return nil }
+        return max(0, v - pairAdjustment(p))
+    }
+
+    /// Apple's formula gives any second face of similar size a 0.20 "connection" bonus, which floods the top with
+    /// pairs. Half of it is taken back here (at ranking time, so nothing needs re-scanning), so a single child at
+    /// their cutest competes with two kids together.
+    static func pairAdjustment(_ p: PhotoScore) -> Double { (p.mainFaces ?? 0) >= 2 ? 0.10 : 0 }
+
+    private static func baseValue(_ p: PhotoScore, putBack: Set<String>, includePoolOnly: Bool) -> Double? {
         if let r = p.raw { return r }
         guard let e = p.excluded else { return nil }
         if includePoolOnly && poolOnly.contains(e) { return p.soft }

@@ -440,6 +440,8 @@ final class LearnerTests: XCTestCase {
         XCTAssertEqual(ShotKind.of(faces: 2, adults: 1), .family)
         XCTAssertEqual(ShotKind.of(faces: 2, adults: 0), .kids)
         XCTAssertEqual(ShotKind.of(faces: 3, adults: 0), .family)
+        XCTAssertEqual(ShotKind.of(faces: 1, adults: 0), .solo)
+        XCTAssertEqual(ShotKind.of(faces: nil, adults: nil), .solo)
     }
 }
 
