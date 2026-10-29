@@ -84,7 +84,9 @@ final class Library: ObservableObject {
         guard !new.isEmpty else { return }
         for p in new {
             whoCache[p.id] = nil
-            if let n = photos[p.id]?.faceRecords?.count { for j in 0..<n { learnedFaces.remove(p.id + "#\(j)") } }
+            // Only when the faces themselves changed; otherwise who's in the photo stays put during a rescan.
+            guard let old = photos[p.id], old.faceRecords != p.faceRecords else { continue }
+            for j in 0..<(old.faceRecords?.count ?? 0) { learnedFaces.remove(p.id + "#\(j)") }
             learnedWho[p.id] = nil
         }
         for var p in new {
