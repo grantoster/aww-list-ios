@@ -82,6 +82,9 @@ struct PhotoScore: Codable, Hashable, Identifiable {
     /// so people in the background don't make a close-up a "group". Nil: not measured yet (or a best guess, from the
     /// face count, for an older photo that couldn't be read again).
     var mainFaces: Int? = nil
+    /// True: scored without the old bonus for a second face. False: couldn't be re-scored, so the bonus is taken off
+    /// when ranking. Nil: not checked yet (see Scorer.pairAdjustment).
+    var noPairBonus: Bool? = nil
     /// Why Apple flagged a photo that's still listed (water, swimwear, AI image, ...); nil when it wasn't flagged.
     var appleFlag: String? { raw == nil && Scorer.softReasons.contains(excluded ?? "") ? excluded : nil }
 }

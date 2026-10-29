@@ -176,12 +176,11 @@ enum Scorer {
         let sleepingBaby = isBaby && babyFace.map { $0.eyesClosed && !$0.smile && $0.area > 0.03 } == true
         if sleepingBaby { emotion = max(emotion, 0.6) }
 
-        // Closeness: a second face of comparable size, not strangers in the background.
-        let connection = others.contains { $0.area >= subj.area * 0.25 } ? 1.0 : 0
+        // No bonus for a second face: a single child at their cutest scores the same as two kids together.
         let presence = min(1, subj.area / 0.12)
         let child = min(1, s.childConfidence)
 
-        var raw = 0.45 * emotion + 0.20 * connection + 0.20 * presence + 0.15 * child
+        var raw = 0.45 * emotion + 0.20 * presence + 0.15 * child
         if !isBaby && subj.eyesClosed && !subj.smile && !others.isEmpty { raw -= 0.10 }   // a blink in a group shot
         if s.faces.count > 5 { raw *= 0.85 }                                   // crowds aren't child portraits
         raw *= 0.4 + 0.6 * min(1, max(0, s.sharpness))                         // blur caps how good a photo can be
@@ -298,10 +297,11 @@ enum Scorer {
         return max(0, v - pairAdjustment(p))
     }
 
-    /// Apple's formula gives any second face of similar size a 0.20 "connection" bonus (shrunk by blur), which floods
-    /// the top with pairs. About half of it (0.10, an approximation: the exact bonus isn't stored) is taken back at
-    /// ranking time, so nothing needs re-scanning and a single child at their cutest competes with two kids together.
-    static func pairAdjustment(_ p: PhotoScore) -> Double { (p.mainFaces ?? p.faces ?? 0) >= 2 ? 0.10 : 0 }
+    /// Apple's formula used to give any second face of similar size a 0.20 bonus. It no longer does; photos scored
+    /// before that change have it taken off here until they're re-read (they're re-read on the next scan).
+    static func pairAdjustment(_ p: PhotoScore) -> Double {
+        p.noPairBonus == true ? 0 : ((p.mainFaces ?? p.faces ?? 0) >= 2 ? 0.20 : 0)
+    }
 
     static func listedValue(_ p: PhotoScore, putBack: Set<String> = [], includePoolOnly: Bool = false) -> Double? {
         if let r = p.raw { return r }

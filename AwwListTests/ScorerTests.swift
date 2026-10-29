@@ -123,8 +123,9 @@ final class ScorerTests: XCTestCase {
     }
 
     func testIdenticalFacesBothCount() {
+        // A second face (an identical twin, say) is still read, but earns no bonus: a single child scores the same.
         var s = kid(); s.faces.append(s.faces[0])
-        XCTAssertGreaterThan(Scorer.score(s).raw!, Scorer.score(kid()).raw!)
+        XCTAssertEqual(Scorer.score(s).raw!, Scorer.score(kid()).raw!, accuracy: 1e-9)
     }
 
     func testSharpnessMeasure() {
@@ -446,8 +447,10 @@ final class LearnerTests: XCTestCase {
         var pair = PhotoScore(id: "p", date: Date(), raw: 0.7, excluded: nil, age: .kid, caption: "", version: Scorer.version, faces: 2)
         pair.mainFaces = 2
         XCTAssertEqual(Scorer.listedValue(pair)!, 0.7, accuracy: 1e-9)
-        XCTAssertEqual(Scorer.rankValue(pair)!, 0.6, accuracy: 1e-9)
-        pair.mainFaces = 1
+        XCTAssertEqual(Scorer.rankValue(pair)!, 0.5, accuracy: 1e-9)     // scored with the old bonus: it's taken off
+        pair.noPairBonus = true
+        XCTAssertEqual(Scorer.rankValue(pair)!, 0.7, accuracy: 1e-9)     // scored without it: nothing to take off
+        pair.noPairBonus = nil; pair.mainFaces = 1
         XCTAssertEqual(Scorer.rankValue(pair)!, 0.7, accuracy: 1e-9)
     }
 }
