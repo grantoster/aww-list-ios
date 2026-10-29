@@ -367,7 +367,7 @@ final class LearnerTests: XCTestCase {
         XCTAssertEqual(s.mainFaceIndices, [0, 1])               // a tiny face far behind isn't part of the shot
         XCTAssertEqual(s.isAdult(0), true)
         XCTAssertEqual(s.isAdult(1), false)
-        // Cheek to cheek, both measured on the face alone: the parent's reading can't make them the subject.
+        // Cheek to cheek, the parent measured on the face alone: the parent's reading can't make them the subject.
         s.faces[0].child = 0.18; s.faces[0].childTight = true   // only the larger of two touching faces is face-only
         s.faces[1].child = 0.55; s.faces[1].childTight = false
         XCTAssertEqual(s.subjectIndex, 1)
@@ -383,6 +383,16 @@ final class LearnerTests: XCTestCase {
         lone.faces = [FaceSignal(area: 0.1, box: [0.1, 0.3, 0.3, 0.33]), FaceSignal(area: 0.06, box: [0.6, 0.3, 0.25, 0.25])]
         lone.faces[0].child = 0.25; lone.faces[1].child = 0.28
         XCTAssertNotEqual(lone.isAdult(0), true)
+        // Kid nearer the camera (parent's face only 1.3x the kid's), parent face-only 0.18: still a grown-up.
+        var near = Signals()
+        near.faces = [FaceSignal(area: 0.078, box: [0.1, 0.4, 0.28, 0.28]), FaceSignal(area: 0.06, box: [0.4, 0.4, 0.245, 0.245])]
+        near.faces[0].child = 0.18; near.faces[0].childTight = true; near.faces[1].child = 0.55
+        XCTAssertEqual(near.isAdult(0), true)
+        // Two distant kids hugging (faces under 4% tall): can't tell, so not a grown-up.
+        var far = Signals()
+        far.faces = [FaceSignal(area: 0.0012, box: [0.4, 0.5, 0.035, 0.035]), FaceSignal(area: 0.0006, box: [0.43, 0.48, 0.025, 0.025])]
+        far.faces[1].child = 0.4
+        XCTAssertNotEqual(far.isAdult(0), true)
         // Two grown-ups side by side read clearly low: a grown-up shot.
         var two = Signals()
         two.faces = [FaceSignal(area: 0.1, box: [0.1, 0.3, 0.3, 0.33]), FaceSignal(area: 0.09, box: [0.5, 0.3, 0.3, 0.3])]

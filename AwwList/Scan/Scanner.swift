@@ -70,7 +70,7 @@ final class PhotoScanner: ObservableObject {
                 && !($0.excluded == "No child" && $0.soft == nil && ($0.faces ?? 0) > 0 && ($0.flagVersion ?? 0) < 3)
                 && !Scorer.needsShirtlessRecheck($0) && !Scorer.needsLabelRecheck($0)
                 // listed photos from before the Shots filter get the face counts it needs
-                && !(($0.raw != nil || $0.soft != nil) && ($0.faces ?? 0) >= 2 && ($0.flagVersion ?? 0) < 6)
+                && !(($0.raw != nil || $0.soft != nil) && ($0.faces ?? 0) >= 2 && ($0.flagVersion ?? 0) < 7)
         }.map(\.id))
         // Photos that already have a record keep it if they can't be re-read this time (a scored photo keeps its
         // score; a bath photo keeps its exclusion and the quarantine around it).
@@ -82,7 +82,7 @@ final class PhotoScanner: ObservableObject {
             ((Scorer.provenanceReasons.contains(p.excluded ?? "") || Scorer.heldBack.contains(p.excluded ?? "")) && (p.flagVersion ?? 0) < 2)
                 || (p.excluded == "No child" && p.soft == nil && (p.faces ?? 0) > 0 && (p.flagVersion ?? 0) < 3)
                 || Scorer.needsShirtlessRecheck(p) || Scorer.needsLabelRecheck(p)
-                || ((p.raw != nil || p.soft != nil) && (p.faces ?? 0) >= 2 && (p.flagVersion ?? 0) < 6)
+                || ((p.raw != nil || p.soft != nil) && (p.faces ?? 0) >= 2 && (p.flagVersion ?? 0) < 7)
         }
         let flag = cancelFlag
         let changes = self.changes
@@ -317,7 +317,7 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
             return .done(PhotoScore(id: old.id, date: old.date, raw: nil, excluded: Scorer.unavailable, age: nil,
                                     caption: "", version: Scorer.version))
         }
-        old.flagVersion = 6
+        old.flagVersion = 7
         old.mainFaces = old.mainFaces ?? old.faces   // couldn't be re-read: keep what's known, don't retry every scan
         old.adults = old.adults ?? 0
         old.version = Scorer.version   // its held-back or flagged reason stands; just don't keep re-reading it
@@ -398,7 +398,7 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
             p.age = signals.babyConfidence > 0.5 ? .baby : .kid
         }
         p.softChecked = true
-        p.flagVersion = 6
+        p.flagVersion = 7
         let main = signals.mainFaceIndices
         p.mainFaces = main.count
         p.adults = main.filter { signals.isAdult($0) == true }.count

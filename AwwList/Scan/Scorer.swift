@@ -40,6 +40,9 @@ struct Signals: Equatable {
         if !kids.isEmpty { return kids.max { faces[$0].area < faces[$1].area } }
         let tight = main.filter { faces[$0].childTight && (faces[$0].child ?? 0) >= 0.15 }
         if !tight.isEmpty { return tight.max { (faces[$0].child ?? 0) < (faces[$1].child ?? 0) } }
+        // No reading picks anyone: prefer the highest measured reading, then the largest face.
+        if let best = main.filter({ faces[$0].child != nil }).max(by: { (faces[$0].child ?? 0) < (faces[$1].child ?? 0) }),
+           (faces[best].child ?? 0) >= 0.2 { return best }
         return main.max { faces[$0].area < faces[$1].area }
     }
     var subject: FaceSignal? { subjectIndex.map { faces[$0] } }
@@ -65,21 +68,27 @@ struct Signals: Equatable {
         let main = mainFaceIndices
         guard main.count >= 2, main.contains(i) else { return nil }
         let f = faces[i]
-        let clearKids = main.filter { $0 != i && (faces[$0].child ?? 0) >= 0.3 }
+        let clearKids = main.filter { j in
+            j != i && (faces[j].child ?? 0) >= 0.3 && faces[j].box.count == 4 && faces[j].box[3] >= 0.04
+        }
         func touching(_ a: FaceSignal, _ b: FaceSignal) -> Bool {
             guard a.box.count == 4, b.box.count == 4 else { return false }
-            let px = a.box[2] * 0.3, py = a.box[3] * 0.5   // the head-and-shoulders region used for the check
+            // The head-and-shoulders region used for the check: 0.3 widths either side, from half a face below to 1.2 up.
+            let px = a.box[2] * 0.3
             return a.box[0] - px < b.box[0] + b.box[2] && b.box[0] < a.box[0] + a.box[2] + px
-                && a.box[1] - py < b.box[1] + b.box[3] && b.box[1] < a.box[1] + a.box[3] + py
+                && a.box[1] - a.box[3] * 0.5 < b.box[1] + b.box[3] && b.box[1] < a.box[1] + a.box[3] * 1.2
         }
+        guard f.box.count == 4, f.box[3] >= 0.04 else { return nil }   // too small to judge
+        let smallerKid = clearKids.contains { faces[$0].area < f.area }
         let muchSmallerKid = clearKids.contains { faces[$0].area * 1.5 <= f.area }
         guard let c = f.child else {
             return clearKids.contains { faces[$0].area * 1.5 <= f.area && touching(f, faces[$0]) } ? true : nil
         }
-        guard f.box.count == 4, f.box[3] >= 0.04 else { return nil }
         if clearKids.isEmpty { return c < 0.2 }   // no clear kid beside it: only a clearly low reading is a grown-up
-        if !f.childTight { return c < 0.3 }
-        if c < 0.15 { return true }
+        if f.childTight && c < 0.15 { return true }
+        // A low reading beside a smaller clear kid (a kid nearer the camera still has a smaller face than the parent
+        // usually); a borderline one only beside a much smaller kid (so an older sibling stays a kid).
+        if c < 0.2 { return smallerKid }
         return c < 0.3 && muchSmallerKid
     }
 }
