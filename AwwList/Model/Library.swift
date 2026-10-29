@@ -407,8 +407,15 @@ final class Library: ObservableObject {
             let vals = moments.map { m -> Double in
                 // A sliver of Apple's raw score breaks ties between equal (rounded) values, so a big tie at a bucket
                 // edge can't all land in the higher bucket; Apple-only moments sit at 6 or below in both views.
-                (useClaude ? (m.claudeScore ?? m.learnedScore.map { min($0, 8) } ?? Double(min(m.apple, 6)))
-                           : (m.learnedScore ?? Double(min(m.apple, 6)))) + (m.best.raw ?? 0) * 0.001
+                let appleOnly: Double = Double(min(m.apple, 6))
+                var v: Double = appleOnly
+                if useClaude {
+                    if let c = m.claudeScore { v = c } else if let l = m.learnedScore { v = min(l, 8) }
+                } else if let l = m.learnedScore {
+                    v = l
+                }
+                let raw: Double = m.best.raw ?? 0
+                return v + raw * 0.001
             }
             let cal = Scorer.calibrate(vals.map { $0 / 10 }, years: moments.map(\.year))
             for i in moments.indices {
