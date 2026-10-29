@@ -9,12 +9,13 @@ enum Favorites {
     }
 
     /// Sets or clears the favorite on these photos in Photos. Only photos the app can see (never the Hidden album).
-    /// Returns false if Photos refused (for example, access was turned off).
-    static func set(_ ids: [String], favorite: Bool) async -> Bool {
+    /// Returns how many photos were changed: nil if Photos refused (for example, access was turned off),
+    /// 0 if none of them can be found any more (deleted, or hidden since the scan).
+    static func set(_ ids: [String], favorite: Bool) async -> Int? {
         let found = AssetImage.visible(ids)
         var assets: [PHAsset] = []
         found.enumerateObjects { a, _, _ in assets.append(a) }
-        guard !assets.isEmpty else { return false }
+        guard !assets.isEmpty else { return 0 }
         let toChange = assets
         do {
             try await PHPhotoLibrary.shared().performChanges {
@@ -22,9 +23,9 @@ enum Favorites {
                     PHAssetChangeRequest(for: asset).isFavorite = favorite
                 }
             }
-            return true
+            return toChange.count
         } catch {
-            return false
+            return nil
         }
     }
 }

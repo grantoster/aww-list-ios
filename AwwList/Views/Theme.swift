@@ -4,7 +4,7 @@ import UIKit
 
 /// The Aww List look: grape purple, sunny yellow and night ink, set in Baloo 2 (bundled; SIL Open Font License).
 enum Theme {
-    static let accent = Color("AccentColor")                       // grape #7B5CF0 (lighter in dark mode)
+    static let accent = Color("AccentColor")                       // grape #7B5CF0 (white text on it passes 4.5:1)
     static let grape = Color(red: 0x7B / 255, green: 0x5C / 255, blue: 0xF0 / 255)
     static let sunny = Color(red: 0xFF / 255, green: 0xD2 / 255, blue: 0x3F / 255)
     static let night = Color(red: 0x2A / 255, green: 0x23 / 255, blue: 0x50 / 255)
@@ -20,15 +20,15 @@ enum Theme {
 
     static let displayFont = "Baloo2-ExtraBold"
     static let bodyFont = "Baloo2-SemiBold"
+    /// Whether the bundled fonts loaded (checked once; a unit test makes sure they do).
+    static let hasBrandFonts = UIFont(name: displayFont, size: 12) != nil && UIFont(name: bodyFont, size: 12) != nil
     /// Headings and big numbers (scales with the reader's text size).
     static func display(_ size: CGFloat, relativeTo style: Font.TextStyle = .title) -> Font {
-        UIFont(name: displayFont, size: size) != nil ? .custom(displayFont, size: size, relativeTo: style)
-                                                       : .system(size: size, weight: .heavy, design: .rounded)
+        hasBrandFonts ? .custom(displayFont, size: size, relativeTo: style) : .system(size: size, weight: .heavy, design: .rounded)
     }
     /// Labels and chips.
     static func label(_ size: CGFloat, relativeTo style: Font.TextStyle = .subheadline) -> Font {
-        UIFont(name: bodyFont, size: size) != nil ? .custom(bodyFont, size: size, relativeTo: style)
-                                                    : .system(size: size, weight: .bold, design: .rounded)
+        hasBrandFonts ? .custom(bodyFont, size: size, relativeTo: style) : .system(size: size, weight: .bold, design: .rounded)
     }
 
     /// Navigation titles in Baloo 2 (call once at launch).

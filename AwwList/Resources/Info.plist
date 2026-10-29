@@ -39,8 +39,8 @@
 	</array>
 	<key>UIAppFonts</key>
 	<array>
-		<string>Fonts/Baloo2-ExtraBold.ttf</string>
-		<string>Fonts/Baloo2-SemiBold.ttf</string>
+		<string>Baloo2-ExtraBold.ttf</string>
+		<string>Baloo2-SemiBold.ttf</string>
 	</array>
 	<key>UILaunchScreen</key>
 	<dict>

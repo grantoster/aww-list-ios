@@ -20,6 +20,7 @@ struct HomeView: View {
     @State private var selecting = false
     @State private var picked: [String] = []
     @State private var preparing = false
+    @State private var favoriting = false
     @State private var progress = (done: 0, of: 0)
     @State private var sendTask: Task<Void, Never>?
     @State private var sharing: SharePayload?
@@ -307,7 +308,7 @@ struct HomeView: View {
             .buttonStyle(.borderedProminent)
         }
         .controlSize(.large)
-        .disabled(picked.isEmpty || preparing)
+        .disabled(picked.isEmpty || preparing || favoriting)
         .padding(.horizontal, 16).padding(.vertical, 10)
         .background(.bar)
     }
@@ -364,13 +365,18 @@ struct HomeView: View {
     /// Favorites every picked photo in Photos too (the one change Aww List can make to the library).
     private func favoritePicked() {
         let ids = picked
-        guard !ids.isEmpty, !preparing else { return }
+        guard !ids.isEmpty, !preparing, !favoriting else { return }
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        favoriting = true
         Task {
-            let ok = await Favorites.set(ids, favorite: true)
-            let n = ids.count
-            flash(ok ? "Favorited \(n) in Photos" : "Photos didn't allow that. Check photo access in Settings.")
-            if ok && selecting && picked == ids { endSelecting() }
+            let changed = await Favorites.set(ids, favorite: true)
+            favoriting = false
+            switch changed {
+            case nil: flash("Photos didn't allow that. Check photo access in Settings.")
+            case 0: flash("Those photos aren't in your library any more.")
+            case let n?: flash("Favorited \(n) in Photos" + (n < ids.count ? " (\(ids.count - n) not found)" : ""))
+            }
+            if (changed ?? 0) > 0 && selecting && picked == ids { endSelecting() }
         }
     }
 

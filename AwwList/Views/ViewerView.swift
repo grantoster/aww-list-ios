@@ -12,6 +12,7 @@ struct ViewerView: View {
     /// Whether Photos has this one as a favorite (nil while checking).
     @State private var favorite: Bool?
     @State private var favNote: String?
+    @State private var favBusy = false
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -41,6 +42,7 @@ struct ViewerView: View {
         })
         .task(id: index) {
             favorite = nil
+            favNote = nil
             let id = moments[index].best.id
             favorite = await Task.detached { Favorites.isFavorite(id) }.value
             shareImage = nil
@@ -59,14 +61,15 @@ struct ViewerView: View {
                     Text("\(m.score)").font(Theme.display(38)).foregroundStyle(m.score >= 9 ? Theme.sunny : Color.white)
                     Text("/10").foregroundStyle(.white.opacity(0.7))
                     Spacer()
-                    if let favorite {
-                        Button { toggleFavorite(m, to: !favorite) } label: {
-                            Image(systemName: favorite ? "heart.fill" : "heart").font(.title3)
-                                .foregroundStyle(favorite ? Theme.sunny : Color.white).frame(width: 44, height: 44)
-                                .contentTransition(.symbolEffect(.replace))
-                        }
-                        .accessibilityLabel(favorite ? "Unfavorite in Photos" : "Favorite in Photos")
+                    // Always there (dimmed while checking), so the buttons beside it don't shift.
+                    Button { if let favorite { toggleFavorite(m, to: !favorite) } } label: {
+                        Image(systemName: favorite == true ? "heart.fill" : "heart").font(.title3)
+                            .foregroundStyle(favorite == true ? Theme.sunny : Color.white).frame(width: 44, height: 44)
+                            .opacity(favorite == nil ? 0.4 : 1)
+                            .contentTransition(.symbolEffect(.replace))
                     }
+                    .disabled(favorite == nil || favBusy)
+                    .accessibilityLabel(favorite == true ? "Unfavorite in Photos" : "Favorite in Photos")
                     if let shareImage {
                         Button { sharing = shareImage } label: {
                             Image(systemName: "square.and.arrow.up").font(.title3).foregroundStyle(.white).frame(width: 44, height: 44)
@@ -92,12 +95,15 @@ struct ViewerView: View {
     private func toggleFavorite(_ m: Moment, to on: Bool) {
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         favorite = on
+        favBusy = true
         Task {
-            let ok = await Favorites.set([m.best.id], favorite: on)
+            let changed = await Favorites.set([m.best.id], favorite: on)
+            favBusy = false
             guard moments.indices.contains(index), moments[index].id == m.id else { return }
-            if !ok {
+            if changed == nil || changed == 0 {
                 favorite = !on
-                favNote = "Photos didn't allow that. Check Aww List's photo access in Settings."
+                favNote = changed == nil ? "Photos didn't allow that. Check Aww List's photo access in Settings."
+                                         : "This photo isn't in your library any more."
                 AccessibilityNotification.Announcement(favNote ?? "").post()
             } else {
                 favNote = nil
