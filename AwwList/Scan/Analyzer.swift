@@ -57,6 +57,10 @@ final class Analyzer {
     }
 
     /// Nil when Vision failed, so the caller stores nothing and the photo is tried again on the next scan.
+    static func severity(_ reason: String?) -> Int {
+        switch reason { case "bath", "undressed": 3; case "swimwear": 2; case .some: 1; case nil: 0 }
+    }
+
     func analyze(_ image: CGImage, orientation: CGImagePropertyOrientation) -> Signals? {
         var s = Signals()
 
@@ -67,8 +71,11 @@ final class Analyzer {
 
         for obs in classify.results ?? [] {
             let id = obs.identifier
-            if s.blockedLabel == nil, let reason = blocked[id],
-               obs.confidence > 0.5 || (obs.hasPrecisionRecallCurve && obs.hasMinimumPrecision(0.1, forRecall: 0.9)) {
+            // The most serious match wins (bath or undressed over swimwear over document or screenshot),
+            // whatever order Vision lists them in.
+            if let reason = blocked[id],
+               obs.confidence > 0.5 || (obs.hasPrecisionRecallCurve && obs.hasMinimumPrecision(0.1, forRecall: 0.9)),
+               Self.severity(reason) > Self.severity(s.blockedLabel) {
                 s.blockedLabel = reason
             }
             if obs.confidence > 0.6, Describe.sceneLabels.contains(id) { s.labels.append(id) }

@@ -190,11 +190,25 @@ enum Scorer {
     /// hint of a child at all still stays off: softScore is nil for it.)
     static let softReasons: Set<String> = Set(["No child", "No face", "Water", "Swimwear", "Shirtless"]).union(provenanceReasons)
 
+    /// Photos with faces but no hint of a child at all: not listed (they're usually grown-ups), but still offered
+    /// to Claude, because Apple's child labels miss kids seen from the side, in costumes, or far away.
+    static let poolOnly: Set<String> = ["No child seen"]
+
+    /// The score a photo with faces but no child label would have if a child were in it (nil without a face).
+    static func poolScore(_ s: Signals) -> Double? {
+        if s.isScreenshot || s.blockedLabel != nil || s.faces.isEmpty { return nil }
+        var t = s
+        t.waterScene = false; t.childPrecise = true
+        for i in t.faces.indices { t.faces[i].bareTorso = 0 }
+        return score(t).raw
+    }
+
     /// The value a photo is listed with: its score, or for a flagged photo the score it would have had.
     /// Held-back photos count only once the user puts them back.
-    static func listedValue(_ p: PhotoScore, putBack: Set<String> = []) -> Double? {
+    static func listedValue(_ p: PhotoScore, putBack: Set<String> = [], includePoolOnly: Bool = false) -> Double? {
         if let r = p.raw { return r }
         guard let e = p.excluded else { return nil }
+        if includePoolOnly && poolOnly.contains(e) { return p.soft }
         if softReasons.contains(e) || (heldBack.contains(e) && putBack.contains(p.id)) { return p.soft }
         return nil
     }
@@ -214,8 +228,8 @@ enum Scorer {
     /// Flagged photos are grouped with their listed value (see listedValue); held-back photos the user put back
     /// count too, and neither they nor anything else they're near holds back the shots around them.
     static func moments(from photos: [PhotoScore], hidden: Set<String> = [], version: Int? = nil,
-                        putBack: Set<String> = []) -> [(best: PhotoScore, shots: Int, ids: [String])] {
-        func value(_ p: PhotoScore) -> Double? { listedValue(p, putBack: putBack) }
+                        putBack: Set<String> = [], includePoolOnly: Bool = false) -> [(best: PhotoScore, shots: Int, ids: [String])] {
+        func value(_ p: PhotoScore) -> Double? { listedValue(p, putBack: putBack, includePoolOnly: includePoolOnly) }
         // A put-back photo stops holding back its neighbors only when it can actually be listed (has a score).
         let hot = photos.filter { !(putBack.contains($0.id) && value($0) != nil) }
             .compactMap { p in quarantineWindow[p.excluded ?? ""].map { (date: p.date, window: $0) } }
@@ -254,13 +268,15 @@ enum Scorer {
     /// photo (by Apple's check or an earlier Claude verdict) and every shot within 10 minutes of one; every shot
     /// within 10 minutes of a photo that couldn't be read (so it was never checked); plus, unless the user allows
     /// it, possible swimwear photos (10 minutes around) and shirtless ones (2 minutes around).
-    static func neverSend(_ photos: [PhotoScore], allowSwimShirtless: Bool) -> Set<String> {
+    /// `removed` holds Claude's removal reasons kept after "Go back to on-device scores only" cleared the verdicts.
+    static func neverSend(_ photos: [PhotoScore], allowSwimShirtless: Bool, removed: [String: String] = [:]) -> Set<String> {
         var windows: [String: TimeInterval] = ["Bath": 600, "Undressed": 600, unavailable: 600]
         if !allowSwimShirtless { windows["Swimwear"] = 600; windows["Shirtless"] = 120 }
         let claudeReason = ["bath": "Bath", "undressed": "Undressed", "swimwear": "Swimwear"]
         func window(_ p: PhotoScore) -> TimeInterval? {
             let a = windows[p.excluded ?? ""], b = p.claude?.exclude.flatMap { claudeReason[$0] }.flatMap { windows[$0] }
-            return [a, b].compactMap { $0 }.max()
+            let c = removed[p.id].flatMap { claudeReason[$0] }.flatMap { windows[$0] }
+            return [a, b, c].compactMap { $0 }.max()
         }
         let sorted = photos.sorted { $0.date < $1.date }
         var out = Set<String>()

@@ -116,7 +116,13 @@ struct SettingsView: View {
                 }
                 HeldBackSection()
                 Section("What's left out") {
-                    Text("On the phone: screenshots, documents, photos with no sign of a child at all, and possible bath or undressed photos plus every shot within 10 minutes of one. You can put a held-back photo itself back above; the shots around it then come back too, but none of them is ever sent to Claude.")
+                    LabeledContent("On the list", value: "\(library.listedPhotos.formatted()) photos")
+                    ForEach(library.leftOut, id: \.reason) { row in
+                        LabeledContent(row.reason, value: row.count.formatted())
+                    }
+                    Text("Counts are photos, not moments; a moment's other shots in a burst count as on the list.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Text("On the phone: screenshots, documents, photos with no face and no sign of a child, and possible bath or undressed photos plus every shot within 10 minutes of one. You can put a held-back photo itself back above; the shots around it then come back too, but none of them is ever sent to Claude. Photos with faces but no child label stay off the list but are offered to Claude, which can put them on it.")
                         .font(.footnote)
                     Text("Everything else Apple isn't sure about stays on the list with a flag: no child spotted, water scenes, swimwear, shirtless, and files that look AI-generated, face-retouched or not from a camera. Claude makes the call on those, and once the app has learned from Claude's calls, it hides the ones it expects Claude would remove when ranking by Claude or by the learned score. Ranking by Apple shows them all.")
                         .font(.footnote)
@@ -238,7 +244,7 @@ struct ClaudeSection: View {
         } header: {
             Text("Score with Claude")
         } footer: {
-            Text("Optional. Claude decides what comes off the list. Your phone scores every photo first and only flags what it isn't sure about (no child spotted, water, swimwear, shirtless, AI or edited files); flagged photos stay listed. Each year's best photos, flagged or not, are sent to Anthropic's Claude for the final 1–10 score, a description, and the call on whether a photo belongs (bath, swimwear, shirtless, AI or edited, no child). Possible bath or undressed photos, and every shot within 10 minutes of one, are never sent, even if you put them back. Possible swimwear and shirtless photos (and the shots right around them) are sent only if you turn that on above; otherwise they stay listed and Claude just doesn't see them. Photos are sent at 768 px without location or file details. It uses your own API key from console.anthropic.com; charges go to your Anthropic account. When ranking by Claude, photos Claude hasn't seen are held at 6 or below (8 or below once there's a learned score).")
+            Text("Optional. Claude decides what comes off the list. Your phone scores every photo first and only flags what it isn't sure about (no child spotted, water, swimwear, shirtless, AI or edited files); flagged photos stay listed. Each year's best photos, flagged or not, plus a spread of lower-ranked ones and photos with faces but no child label, are sent to Anthropic's Claude for the final 1–10 score, a description, and the call on whether a photo belongs (bath, swimwear, shirtless, AI or edited, no child). Possible bath or undressed photos (by Apple's check or Claude's), and every shot within 10 minutes of one, are never sent, even if you put them back. Right before sending, the phone re-reads every photo taken within 10 minutes of each one; if any isn't checked yet (still downloading from iCloud, or new), it waits. With Limited photo access, photos outside your selection can't be checked. Possible swimwear and shirtless photos (and the shots right around them) are sent only if you turn that on above; otherwise they stay listed and Claude just doesn't see them. Photos are sent at 768 px without location or file details. It uses your own API key from console.anthropic.com; charges go to your Anthropic account. When ranking by Claude, photos Claude hasn't seen are held at 6 or below (8 or below once there's a learned score).")
         }
     }
 }

@@ -246,8 +246,9 @@ final class ClaudeService: ObservableObject {
     func candidates(_ library: Library) -> [Moment] {
         let model = library.claudeModel, n = library.claudeScope
         let pending = Set(library.claudeBatches.flatMap { $0.photos.values })
+        let sentToModel = library.claudeSent[model] ?? []
         func used(_ p: PhotoScore) -> Bool {
-            pending.contains(p.id) || (library.claudeFailures[p.id] ?? 0) >= 2
+            pending.contains(p.id) || (library.claudeFailures[p.id] ?? 0) >= 2 || sentToModel.contains(p.id)
                 || (p.claude.map { $0.model == model && $0.rubric == Claude.rubric } ?? false)
         }
         // The budget is counted over every photo Claude has scored (or is scoring) that year, removed, hidden or
@@ -260,6 +261,7 @@ final class ClaudeService: ObservableObject {
         func open(_ m: Moment) -> Bool {
             !m.memberIDs.contains { id in
                 forbidden.contains(id) || library.photos[id].map(used) == true || library.photos[id]?.claude?.exclude != nil
+                    || library.claudeRemoved[id] != nil
             }
         }
         var byYear: [Int: [Moment]] = [:]
@@ -268,11 +270,51 @@ final class ClaudeService: ObservableObject {
         for (year, list) in byYear {
             let list = list.filter(open)
             if n <= 0 { out += list; continue }
-            // One budget for everything listed, flagged or not (N plus a fifth), best candidates first,
-            // so Apple's flags don't decide what Claude gets to see.
-            out += list.prefix(max(0, n + max(1, n / 5) - (spent[year] ?? 0)))
+            // One budget for everything listed, flagged or not (N plus a fifth). Most of it goes to the best
+            // candidates; a fifth of what's left is spread evenly over the rest of the year, so Claude also sees
+            // photos Apple ranked low (and the app learns where Apple was wrong).
+            let left = max(0, n + max(1, n / 5) - (spent[year] ?? 0))
+            let spread = min(left, max(1, n / 5)), top = left - spread
+            out += list.prefix(top)
+            let rest = Array(list.dropFirst(top))
+            if spread > 0 && !rest.isEmpty {
+                let step = Double(rest.count) / Double(spread)
+                var picked = Set<Int>()
+                for k in 0..<spread {
+                    let i = min(rest.count - 1, Int((Double(k) + 0.5) * step))
+                    if picked.insert(i).inserted { out.append(rest[i]) }
+                }
+            }
         }
         return out
+    }
+
+    /// Whether a moment may be sent right now. Reads the photo library itself (not just the app's records):
+    /// every photo taken within 10 minutes of the moment, hidden ones included, must have been checked by the
+    /// current scorer and read successfully, none of them may make the moment off-limits (Scorer.neverSend), and
+    /// no photo within 2 minutes may be one Claude removed (the same burst, however it's grouped now).
+    /// Photos outside a Limited Access selection can't be seen, so they can't be checked.
+    static func sendable(_ m: Moment, _ library: Library) -> Bool {
+        let dates = m.memberIDs.compactMap { library.photos[$0]?.date }
+        guard dates.count == m.memberIDs.count, let lo = dates.min(), let hi = dates.max() else { return false }
+        let o = PHFetchOptions()
+        o.includeHiddenAssets = true
+        o.predicate = NSPredicate(format: "mediaType == %d AND creationDate >= %@ AND creationDate <= %@",
+                                  PHAssetMediaType.image.rawValue, lo.addingTimeInterval(-600) as NSDate,
+                                  hi.addingTimeInterval(600) as NSDate)
+        var near: [PhotoScore] = [], allChecked = true
+        PHAsset.fetchAssets(with: o).enumerateObjects { a, _, stop in
+            guard let p = library.photos[a.localIdentifier], p.version == Scorer.version,
+                  p.excluded != Scorer.unavailable else { allChecked = false; stop.pointee = true; return }
+            near.append(p)
+        }
+        guard allChecked else { return false }
+        let blocked = Scorer.neverSend(near, allowSwimShirtless: library.claudeSensitive, removed: library.claudeRemoved)
+        if m.memberIDs.contains(where: blocked.contains) { return false }
+        for p in near where p.claude?.exclude != nil || library.claudeRemoved[p.id] != nil {
+            if dates.contains(where: { abs($0.timeIntervalSince(p.date)) <= 120 }) { return false }
+        }
+        return true
     }
 
     /// Sends the next photos in batches of 50 (small enough to finish uploading if the app is closed), then checks for results.
@@ -280,7 +322,13 @@ final class ClaudeService: ObservableObject {
         guard !busy else { return }
         // Only once the scan is finished: until then a bath photo near a candidate may not be checked yet.
         guard !Shared.scanner.isScanning else { status = "Wait for the scan to finish, then send."; return }
+        if Shared.scanner.needsScan {
+            Shared.scanner.startIfNeeded(library: library)
+            status = "New photos need checking first. Send again when the scan finishes."
+            return
+        }
         busy = true; defer { busy = false }
+        var paused = false
         library.rebuild()   // fresh never-send set and pool, including photos added since the list last redrew
         let list = candidates(library)
         toSend = list.count; sent = 0
@@ -291,7 +339,7 @@ final class ClaudeService: ObservableObject {
             try await checkKey()
             for chunk in stride(from: 0, to: list.count, by: 25).map({ Array(list[$0..<min($0 + 25, list.count)]) }) {
                 // A scan that started meanwhile (new photos) may find a bath photo next to these: stop, send later.
-                if Shared.scanner.isScanning { status = "Paused: new photos are being checked. Send again when the scan finishes."; break }
+                if Shared.scanner.isScanning { paused = true; break }
                 let blocked = library.neverSend
                 let chunk = chunk.filter { !$0.memberIDs.contains(where: blocked.contains) }
                 if chunk.isEmpty { continue }
@@ -306,8 +354,12 @@ final class ClaudeService: ObservableObject {
                     for await (k, d) in group { if let d { out[k] = d }; addNext() }
                     return out
                 }
+                // The last check before anything leaves the phone: every photo taken within 10 minutes must be
+                // checked, and none may be (or be near) a possible bath photo.
+                if Shared.scanner.isScanning { paused = true; break }
+                let cleared = Set(chunk.filter { Self.sendable($0, library) }.map(\.best.id))
                 for (i, m) in chunk.enumerated() {
-                    guard let jpeg = jpegs[i] else { continue }
+                    guard let jpeg = jpegs[i], cleared.contains(m.best.id) else { continue }
                     let cid = "p\(sent + i)_\(Int(Date().timeIntervalSince1970))"
                     map[cid] = m.best.id
                     reqs.append(["custom_id": cid, "params": [
@@ -357,7 +409,9 @@ final class ClaudeService: ObservableObject {
             }
             let before = status
             await collect(library)
-            if sent > 0 && status == before {
+            if paused {
+                status = "Sent \(sent.formatted()) photos, then paused: new photos are being checked. Send again when the scan finishes."
+            } else if sent > 0 && status == before {
                 status = "Sent \(sent.formatted()) photos. Claude's scores usually arrive within an hour; they're picked up when you open the app."
             }
         } catch {
@@ -366,7 +420,10 @@ final class ClaudeService: ObservableObject {
     }
 
     /// Downloads finished batches and applies the scores.
+    private var collecting = false
     func collect(_ library: Library) async {
+        guard !collecting else { return }   // one check at a time, so a batch is never counted twice
+        collecting = true; defer { collecting = false }
         for b in library.claudeBatches {
             do {
                 let (data, code) = try await fetch(request(endpoint.appendingPathComponent(b.id)))

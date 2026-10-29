@@ -24,6 +24,16 @@ final class Library: ObservableObject {
     func setClaudeSensitive(_ v: Bool) { claudeSensitive = v; rebuild(); save() }
     /// Photo ids that must never be sent to Claude (Scorer.neverSend), worked out at each rebuild.
     private(set) var neverSend: Set<String> = []
+    /// Every photo Claude ever removed, and why; kept even after "Go back to on-device scores only", so a
+    /// removed photo (and a bath session Claude caught) is never sent again.
+    @Published private(set) var claudeRemoved: [String: String] = [:]
+    /// Every photo sent to each model (model id → photo ids), so switching models back and forth can't
+    /// spend a year's budget twice.
+    private(set) var claudeSent: [String: Set<String>] = [:]
+    /// What's left off the list and why, with counts (worked out at each rebuild), for Settings.
+    struct LeftOut: Hashable { let reason: String; let count: Int }
+    @Published private(set) var leftOut: [LeftOut] = []
+    @Published private(set) var listedPhotos = 0
 
     /// Possible bath or undressed photos the user put back on the list. They're listed, but never sent to Claude.
     @Published private(set) var putBack: Set<String> = []
@@ -52,6 +62,7 @@ final class Library: ObservableObject {
         var claudeModel: String?; var claudeScope: Int?; var claudeBatches: [ClaudeBatch]?; var rankBy: String?
         var claudeFailures: [String: Int]?; var learned: LearnedModel?; var claudeSensitive: Bool?
         var putBack: [String]?; var learnedFilter: LearnedFilter?; var trainedSignature: UInt64?
+        var claudeRemoved: [String: String]?; var claudeSent: [String: [String]]?
     }
 
     init() {
@@ -88,11 +99,18 @@ final class Library: ObservableObject {
         save()
     }
     func setRankBy(_ v: String) { rankBy = v; rebuild(); save() }
-    func addClaudeBatch(_ b: ClaudeBatch) { claudeBatches.append(b); flush() }
+    func addClaudeBatch(_ b: ClaudeBatch) {
+        claudeBatches.append(b)
+        claudeSent[b.model, default: []].formUnion(b.photos.values)
+        flush()
+    }
     func removeClaudeBatch(_ id: String) { claudeBatches.removeAll { $0.id == id }; save() }
     func applyClaude(_ verdicts: [String: ClaudeVerdict]) {
         guard !verdicts.isEmpty else { return }
-        for (id, v) in verdicts { photos[id]?.claude = v }
+        for (id, v) in verdicts {
+            photos[id]?.claude = v
+            if let e = v.exclude { claudeRemoved[id] = e }
+        }
         rebuild(); flush()
         retrain()
     }
@@ -184,6 +202,7 @@ final class Library: ObservableObject {
     func clearClaude() {
         for id in photos.keys where photos[id]?.claude != nil { photos[id]?.claude = nil }
         claudeBatches = []
+        claudeSent = [:]   // starting over: each year's budget is available again (removals are kept, never re-sent)
         learned = nil; learnedFilter = nil; trainedSignature = nil; generation += 1
         learnedIsBuiltIn = false; filterIsBuiltIn = false
         useBuiltInWhereMissing()
@@ -291,10 +310,16 @@ final class Library: ObservableObject {
         // What can be sent to Claude: every listed moment except any that contains a photo that must never be sent
         // (possible bath/undressed and their sessions, even after a put back; swimwear/shirtless unless allowed).
         // Once the app has learned, it picks what to send Claude by its prediction of Claude's score.
-        func poolValue(_ m: Moment) -> Double { m.learnedScore ?? 10 * (Scorer.listedValue(m.best, putBack: pb) ?? 0) }
-        let forbidden = Scorer.neverSend(Array(photos.values), allowSwimShirtless: claudeSensitive)
+        func poolValue(_ m: Moment) -> Double { m.learnedScore ?? 10 * (Scorer.listedValue(m.best, putBack: pb, includePoolOnly: true) ?? 0) }
+        let forbidden = Scorer.neverSend(Array(photos.values), allowSwimShirtless: claudeSensitive, removed: claudeRemoved)
         neverSend = forbidden
-        claudePool = all.filter { !$0.memberIDs.contains(where: forbidden.contains) }.sorted { a, b in
+        // Photos with faces but no child label: not listed, but offered to Claude too (Apple's labels miss kids).
+        let listedIDs = Set(groups.flatMap(\.ids))
+        let poolOnly = Scorer.moments(from: Array(photos.values), hidden: hidden, version: Scorer.version,
+                                      putBack: pb, includePoolOnly: true)
+            .filter { g in Scorer.poolOnly.contains(g.best.excluded ?? "") && !g.ids.contains(where: listedIDs.contains) }
+            .map { makeMoment($0, 0) }
+        claudePool = (all + poolOnly).filter { !$0.memberIDs.contains(where: forbidden.contains) }.sorted { a, b in
             let va = poolValue(a), vb = poolValue(b)
             return va != vb ? va > vb : a.best.date < b.best.date
         }
@@ -307,11 +332,14 @@ final class Library: ObservableObject {
         let useClaude = anyClaude && rankBy == "claude"
         let useLearned = learned != nil && rankBy == "learned"
         var filtered = 0
+        var filteredIDs = Set<String>()
         moments = all.compactMap { m in
             var m = m
             // Claude's removal sticks to the whole burst, even if a different shot becomes its best later.
             if m.memberIDs.contains(where: { photos[$0]?.claude?.exclude != nil }) { return nil }
-            if (useClaude || useLearned) && m.best.claude == nil && learnedRemoves(m.best) { filtered += 1; return nil }
+            if (useClaude || useLearned) && m.best.claude == nil && learnedRemoves(m.best) {
+                filtered += 1; filteredIDs.formUnion(m.memberIDs); return nil
+            }
             if useClaude {
                 // learned scores top out at 8 here, so Claude's own 9s and 10s stay Claude's
                 m.score = m.claudeScore.map(Claude.displayScore) ?? m.learnedScore.map { min(Claude.displayScore($0), 8) } ?? min(m.apple, 6)
@@ -321,6 +349,39 @@ final class Library: ObservableObject {
             return m
         }
         filteredOut = filtered
+        // Ones Claude kept from the no-child-label group join the list when ranking by Claude or the learned score.
+        if useClaude || useLearned {
+            for var m in poolOnly where m.best.claude?.exclude == nil && !m.memberIDs.contains(where: { photos[$0]?.claude?.exclude != nil }) {
+                guard let c = m.best.claude else { continue }
+                m.claudeScore = c.score
+                m.score = Claude.displayScore(c.score)
+                moments.append(m)
+            }
+        }
+        // What's left off and why (current photos only; hidden ones are counted separately).
+        var counts: [String: Int] = [:]
+        let shown = Set(moments.flatMap(\.memberIDs))
+        for p in photos.values where !shown.contains(p.id) {
+            let why: String
+            if hidden.contains(p.id) { why = "Removed by you" }
+            else if p.version != Scorer.version { why = "Waiting to be checked again" }
+            else if filteredIDs.contains(p.id) { why = "Hidden by the learned filter" }
+            else if p.claude?.exclude != nil || claudeRemoved[p.id] != nil || listedIDs.contains(p.id) { why = "Removed by Claude" }
+            else if Scorer.listedValue(p, putBack: pb) != nil { why = "Within 10 minutes of a possible bath photo" }
+            else if let e = p.excluded {
+                switch e {
+                case "No child seen": why = "Faces but no child label (Claude can still check these)"
+                case "No child": why = "No child and no face"
+                case "Bath", "Undressed": why = "Possible bath or undressed"
+                case Scorer.unavailable: why = "Couldn't be loaded (iCloud)"
+                default: why = e
+                }
+            } else { why = "Other" }
+            counts[why, default: 0] += 1
+        }
+        leftOut = counts.map { LeftOut(reason: $0.key, count: $0.value) }
+            .sorted { $0.count != $1.count ? $0.count > $1.count : $0.reason < $1.reason }
+        listedPhotos = shown.count
         moments.sort(by: Library.ranked)
     }
 
@@ -352,7 +413,8 @@ final class Library: ObservableObject {
                       people: people, strictness: strictness,
                       claudeModel: claudeModel, claudeScope: claudeScope, claudeBatches: claudeBatches, rankBy: rankBy, claudeFailures: claudeFailures, learned: learnedIsBuiltIn ? nil : learned, claudeSensitive: claudeSensitive,
                       putBack: Array(putBack), learnedFilter: filterIsBuiltIn ? nil : learnedFilter,
-                      trainedSignature: trainedSignature)
+                      trainedSignature: trainedSignature,
+                      claudeRemoved: claudeRemoved, claudeSent: claudeSent.mapValues { Array($0) })
         let u = url
         // One save at a time, in order, so an older snapshot can never land after a newer one.
         Library.saveQueue.async {
@@ -382,6 +444,16 @@ final class Library: ObservableObject {
         claudeSensitive = s.claudeSensitive ?? false
         learnedFilter = s.learnedFilter.flatMap { $0.weights.count == Learner.featureCount ? $0 : nil }
         trainedSignature = s.trainedSignature
+        claudeRemoved = s.claudeRemoved ?? [:]
+        claudeSent = (s.claudeSent ?? [:]).mapValues(Set.init)
+        // Saves from before these ledgers: fill them from the verdicts and pending batches on hand.
+        for p in photos.values {
+            if let c = p.claude {
+                claudeSent[c.model, default: []].insert(p.id)
+                if let e = c.exclude { claudeRemoved[p.id] = e }
+            }
+        }
+        for b in claudeBatches { claudeSent[b.model, default: []].formUnion(b.photos.values) }
         // A filter saved before its check counted removals would stay switched off: learn again once.
         if let f = learnedFilter, f.testRemovals == nil { trainedSignature = nil }
         learned = s.learned.flatMap { $0.weights.count == Learner.featureCount ? $0 : nil }

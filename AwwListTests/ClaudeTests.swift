@@ -147,6 +147,24 @@ final class LearningPackTests: XCTestCase {
     }
 }
 
+final class PoolTests: XCTestCase {
+    func testFacesWithoutChildLabelAreOfferedNotListed() {
+        var s = Signals(); s.childConfidence = 0.02
+        s.faces = [FaceSignal(area: 0.1, quality: 0.6, smile: true)]; s.sharpness = 1
+        XCTAssertEqual(Scorer.score(s).excluded, "No child")
+        XCTAssertNil(Scorer.softScore(s))
+        XCTAssertNotNil(Scorer.poolScore(s))
+        var none = s; none.faces = []
+        XCTAssertNil(Scorer.poolScore(none))
+        let t = Date(timeIntervalSince1970: 1_700_000_000)
+        var p = PhotoScore(id: "g", date: t, raw: nil, excluded: "No child seen", age: .kid, caption: "", version: Scorer.version)
+        p.soft = Scorer.poolScore(s)
+        XCTAssertTrue(Scorer.moments(from: [p]).isEmpty)
+        XCTAssertEqual(Scorer.moments(from: [p], includePoolOnly: true).count, 1)
+        XCTAssertEqual(Scorer.neverSend([p], allowSwimShirtless: false, removed: ["g": "bath"]), ["g"])
+    }
+}
+
 private extension PhotoScore {
     func withDate(_ d: Date) -> PhotoScore {
         var p = PhotoScore(id: id, date: d, raw: raw, excluded: excluded, age: age, caption: caption, version: version)

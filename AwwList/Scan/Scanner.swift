@@ -65,7 +65,9 @@ final class PhotoScanner: ObservableObject {
                 && !(($0.raw != nil || $0.soft != nil) && $0.featChecked != true && $0.feat?.count != Learner.featureCount)
                 // file-flagged photos used to be skipped unanalyzed, and held-back ones had no score for Put back
                 && !((Scorer.provenanceReasons.contains($0.excluded ?? "") || Scorer.heldBack.contains($0.excluded ?? ""))
-                     && $0.flagVersion != 2)
+                     && ($0.flagVersion ?? 0) < 2)
+                // photos with faces but no child label get a score so Claude can be offered them
+                && !($0.excluded == "No child" && $0.soft == nil && ($0.faces ?? 0) > 0 && ($0.flagVersion ?? 0) < 3)
         }.map(\.id))
         // Photos already on the list keep their score if they can't be re-read this time.
         // Photos that already have a record keep it if they can't be re-read this time (a scored photo keeps its
@@ -74,7 +76,8 @@ final class PhotoScanner: ObservableObject {
         // Older flagged or held-back records being re-read under the new rules: if the photo can't be read again,
         // the old record is kept but marked as done, so it isn't retried on every scan.
         let restamp = library.photos.filter { _, p in
-            (Scorer.provenanceReasons.contains(p.excluded ?? "") || Scorer.heldBack.contains(p.excluded ?? "")) && p.flagVersion != 2
+            ((Scorer.provenanceReasons.contains(p.excluded ?? "") || Scorer.heldBack.contains(p.excluded ?? "")) && (p.flagVersion ?? 0) < 2)
+                || (p.excluded == "No child" && p.soft == nil && (p.faces ?? 0) > 0 && (p.flagVersion ?? 0) < 3)
         }
         let flag = cancelFlag
         let changes = self.changes
@@ -150,6 +153,9 @@ final class PhotoScanner: ObservableObject {
     }
 
     func stop() { cancelFlag.cancel() }
+
+    /// True when photos were added or changed since the last scan, or it was stopped before finishing.
+    var needsScan: Bool { stoppedEarly || changes.peekChanged() }
 }
 
 /// Reads the file details that reveal AI generation or retouching: the original file name, the app that wrote
@@ -297,7 +303,7 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
                   ranked: Set<String>, restamp: [String: PhotoScore] = [:]) -> PhotoOutcome {
     func keepOld() -> PhotoOutcome? {
         guard var old = restamp[asset.localIdentifier] else { return nil }
-        old.flagVersion = 2
+        old.flagVersion = 3
         old.version = Scorer.version   // its held-back or flagged reason stands; just don't keep re-reading it
         return .done(old)
     }
@@ -342,7 +348,7 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
                                         excluded: Scorer.unavailable, age: nil, caption: "", version: Scorer.version))
             }
             signals = measured
-            if Scorer.score(measured).raw != nil || Scorer.softScore(measured) != nil {
+            if Scorer.score(measured).raw != nil || Scorer.softScore(measured) != nil || Scorer.poolScore(measured) != nil {
                 signals.scenePrint = analyzer.scenePrint(cg, orientation: CGImagePropertyOrientation(img.imageOrientation))
             }
             if Scorer.score(measured).raw != nil {
@@ -359,17 +365,21 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
         var (raw, excluded) = Scorer.score(signals)
         var flaggedScore: Double? = nil
         if let verdict, raw != nil { flaggedScore = raw; raw = nil; excluded = verdict }
+        var poolSoft: Double? = nil
+        if raw == nil, excluded == "No child", Scorer.softScore(signals) == nil, let ps = Scorer.poolScore(signals) {
+            excluded = "No child seen"; poolSoft = ps
+        }
         let age: AgeGroup? = raw == nil ? nil : (signals.babyConfidence > 0.5 ? .baby : .kid)
         var p = PhotoScore(id: asset.localIdentifier, date: date,
                            raw: raw, excluded: excluded, age: age, caption: Scorer.caption(signals, date: date),
                            version: Scorer.version, faces: signals.faces.count,
                            faceRecords: (raw != nil || flaggedScore != nil) ? records : nil)
-        if raw == nil, let e = excluded, Scorer.softReasons.contains(e) || Scorer.heldBack.contains(e) {
-            p.soft = flaggedScore ?? Scorer.softScore(signals)
+        if raw == nil, let e = excluded, Scorer.softReasons.contains(e) || Scorer.heldBack.contains(e) || Scorer.poolOnly.contains(e) {
+            p.soft = flaggedScore ?? poolSoft ?? Scorer.softScore(signals)
             p.age = signals.babyConfidence > 0.5 ? .baby : .kid
         }
         p.softChecked = true
-        p.flagVersion = 2
+        p.flagVersion = 3
         p.featChecked = true
         if let base = raw ?? p.soft, !signals.scenePrint.isEmpty {
             p.feat = Learner.encode(signals: Learner.signals(signals, apple: base),
