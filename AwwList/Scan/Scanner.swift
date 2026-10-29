@@ -52,8 +52,10 @@ final class PhotoScanner: ObservableObject {
         // Counted photos from before Who's Who are measured again to get their face fingerprints.
         let known = Set(library.photos.values.filter {
             $0.version == Scorer.version && !(retryUnavailable && $0.excluded == Scorer.unavailable)
-                && ($0.raw == nil || $0.faceRecords != nil)
+                && ($0.raw == nil || ($0.faceRecords.map { $0.allSatisfy { $0.vec.count == People.dim } } ?? false))
         }.map(\.id))
+        // Photos already on the list keep their score if they can't be re-read this time.
+        let ranked = Set(library.photos.values.filter { $0.raw != nil }.map(\.id))
         let flag = cancelFlag
         let changes = self.changes
         let me = self
@@ -109,11 +111,13 @@ final class PhotoScanner: ObservableObject {
                         // No image even from iCloud: remember that, so it isn't retried on every launch
                         // (it's retried about once a day, and from Settings).
                         guard let img = got.image, let cg = img.cgImage else {
+                            if ranked.contains(asset.localIdentifier) { return nil }
                             return PhotoScore(id: asset.localIdentifier, date: asset.creationDate ?? .distantPast, raw: nil,
                                               excluded: Scorer.unavailable, age: nil, caption: "", version: Scorer.version)
                         }
                         // Vision couldn't read it: remember that too, same retry rules.
                         guard let measured = analyzer.analyze(cg, orientation: CGImagePropertyOrientation(img.imageOrientation)) else {
+                            if ranked.contains(asset.localIdentifier) { return nil }
                             return PhotoScore(id: asset.localIdentifier, date: asset.creationDate ?? .distantPast, raw: nil,
                                               excluded: Scorer.unavailable, age: nil, caption: "", version: Scorer.version)
                         }

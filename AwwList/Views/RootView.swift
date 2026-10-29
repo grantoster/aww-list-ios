@@ -24,6 +24,7 @@ struct RootView: View {
             if phase == .active {
                 status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
                 if status == .authorized || status == .limited { scanner.startIfNeeded(library: library) }
+                if !library.claudeBatches.isEmpty { Task { await Shared.claude.collect(library) } }
             } else if phase == .background {
                 library.save()
                 BackgroundScan.wrapUpAfterClosing()
@@ -89,6 +90,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             List {
+                ClaudeSection()
                 BirthdaysSection()
                 Section("Library") {
                     LabeledContent("Photos checked", value: library.photos.count.formatted())
@@ -149,11 +151,67 @@ struct BirthdaysSection: View {
         }
         // Saved a moment after the last change, so picking a date doesn't re-sort the library on every tap
         // and nothing is lost if the app is closed with Settings open.
+        .onDisappear { apply() }
         .task(id: kids.map(\.date)) {
             try? await Task.sleep(for: .milliseconds(700))
-            guard !Task.isCancelled, loaded else { return }
-            let dates = kids.map { Calendar.current.startOfDay(for: $0.date) }
-            if dates.sorted() != library.birthdays { library.setBirthdays(dates) }
+            guard !Task.isCancelled else { return }
+            apply()
+        }
+    }
+
+    private func apply() {
+        guard loaded else { return }
+        let dates = kids.map { Calendar.current.startOfDay(for: $0.date) }
+        if dates.sorted() != library.birthdays { library.setBirthdays(dates) }
+    }
+}
+
+/// Optional: Claude gives the final score, description and checks for the photos you choose.
+struct ClaudeSection: View {
+    @EnvironmentObject var library: Library
+    @EnvironmentObject var claude: ClaudeService
+    @State private var key = ""
+    @State private var hasKey = Claude.apiKey != nil
+    @State private var agreed = false
+
+    var body: some View {
+        Section {
+            if hasKey {
+                LabeledContent("API key", value: "Saved on this iPhone")
+                Button("Remove key", role: .destructive) { Claude.apiKey = nil; hasKey = false }
+            } else {
+                SecureField("Paste your Claude API key", text: $key)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                Button("Save key") { Claude.apiKey = key; key = ""; hasKey = Claude.apiKey != nil }
+                    .disabled(key.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            Picker("Model", selection: Binding(get: { library.claudeModel }, set: { library.setClaude(model: $0) })) {
+                ForEach(Claude.models, id: \.id) { m in Text(m.name).tag(m.id) }
+            }
+            Picker("Photos to send", selection: Binding(get: { library.claudeScope }, set: { library.setClaude(scope: $0) })) {
+                ForEach(Claude.scopes, id: \.n) { s in Text(s.name).tag(s.n) }
+            }
+            let n = claude.candidates(library).count
+            LabeledContent("Waiting for Claude", value: n == 0 ? "None" : "\(n.formatted()) photos")
+            if n > 0 {
+                Text("Estimated cost: about $\(String(format: "%.2f", Claude.estimatedCost(photos: n, model: library.claudeModel))) at batch prices (an estimate: ~1,240 tokens a photo; your Anthropic bill is the actual).")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            Toggle("Send these photos to Claude", isOn: $agreed)
+            Button(claude.busy ? "Working…" : "Score with Claude") { Task { await claude.send(library) } }
+                .disabled(!hasKey || !agreed || claude.busy || n == 0)
+            if !library.claudeBatches.isEmpty {
+                Button("Check for Claude's scores") { Task { await claude.collect(library) } }.disabled(claude.busy)
+            }
+            if !claude.status.isEmpty { Text(claude.status).font(.footnote).foregroundStyle(.secondary) }
+            if library.claudeScored > 0 {
+                LabeledContent("Scored by Claude", value: library.claudeScored.formatted())
+                Button("Go back to on-device scores only", role: .destructive) { library.clearClaude() }
+            }
+        } header: {
+            Text("Score with Claude")
+        } footer: {
+            Text("Optional. Your phone still checks every photo first; the photos you choose are then sent to Anthropic's Claude for the final 1–10 score, a description, and a second check for bath, swimwear, shirtless and AI or edited photos. Photos are sent at 768 px without location or file details, using your own API key from console.anthropic.com; charges go to your Anthropic account. Photos that aren't sent are capped at 6 so Claude's picks rank first.")
         }
     }
 }

@@ -30,12 +30,13 @@ struct HomeView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     if scanner.isScanning && scanner.total > 0 {
-                        ScanBanner().onAppear { BackgroundScan.continueInBackground() }
+                        ScanBanner()
                     }
                     scopeBar
                     ageBar
                     whoBar
-                    if age == .toddler && library.birthdays.isEmpty {
+                    if library.claudeScored > 0 { rankBar }
+                    if age == .toddler && library.birthdays.isEmpty && !library.people.contains(where: { $0.birthday != nil }) {
                         ContentUnavailableView {
                             Label("Add your kids' birthdays", systemImage: "birthday.cake")
                         } description: {
@@ -73,6 +74,9 @@ struct HomeView: View {
             .onChange(of: scope) { shown = 60 }
             .onChange(of: age) { shown = 60 }
             .onChange(of: person) { shown = 60 }
+            .onChange(of: library.people) {
+                if let p = person, !library.people.contains(where: { $0.id == p }) { person = nil }
+            }
         }
     }
 
@@ -94,6 +98,15 @@ struct HomeView: View {
                 Pill(title: "All ages", on: age == nil, small: true) { age = nil }
                 ForEach(AgeGroup.allCases) { g in Pill(title: g.label, on: age == g, small: true) { age = g } }
             }
+        }
+    }
+
+    /// Once Claude has scored photos: order the lists by Claude's score or by Apple's on-device score.
+    private var rankBar: some View {
+        HStack(spacing: 8) {
+            Text("Rank by").font(.subheadline).foregroundStyle(.secondary)
+            Pill(title: "Claude", on: library.rankBy == "claude", small: true) { library.setRankBy("claude") }
+            Pill(title: "Apple", on: library.rankBy != "claude", small: true) { library.setRankBy("apple") }
         }
     }
 
@@ -210,7 +223,7 @@ struct Card: View {
                     .clipShape(RoundedRectangle(cornerRadius: 16))
                     .overlay(alignment: .topLeading) { RankBadge(rank: rank).padding(8) }
                     .overlay(alignment: .topTrailing) { ScoreBadge(score: moment.score).padding(8) }
-                Text(moment.best.caption).font(.subheadline.bold()).lineLimit(2, reservesSpace: true)
+                Text(moment.caption).font(.subheadline.bold()).lineLimit(2, reservesSpace: true)
                 Text(moment.best.date.shortDay).font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -232,18 +245,25 @@ struct Tile: View {
         }
         .buttonStyle(.plain)
         .contentShape(RoundedRectangle(cornerRadius: 10))
-        .accessibilityLabel("Score \(moment.score), \(moment.best.caption), \(moment.best.date.shortDay)")
+        .accessibilityLabel("Score \(moment.score), \(moment.caption), \(moment.best.date.shortDay)")
     }
 }
 
 struct ScanBanner: View {
     @EnvironmentObject var scanner: PhotoScanner
+    @State private var asked = false
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Finding your cutest moments…").font(.subheadline.bold())
             ProgressView(value: Double(scanner.done), total: Double(max(1, scanner.total)))
-            Text("\(scanner.done.formatted()) of \(scanner.total.formatted()) photos checked. It keeps going after you leave the app on iOS 26 and later, and finishes overnight while your phone charges.")
+            Text("\(scanner.done.formatted()) of \(scanner.total.formatted()) photos checked. If you leave, it picks up overnight while your phone charges, or when you come back.")
                 .font(.caption).foregroundStyle(.secondary)
+            if BackgroundScan.canContinueInBackground {
+                Button(asked ? "It'll keep going after you leave" : "Keep scanning in the background") {
+                    BackgroundScan.continueInBackground(); asked = true
+                }
+                .buttonStyle(.bordered).font(.subheadline).disabled(asked)
+            }
         }
         .padding(12)
         .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))

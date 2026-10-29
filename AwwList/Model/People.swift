@@ -4,7 +4,7 @@ import Foundation
 struct FaceRecord: Codable, Hashable {
     /// Normalized box on the upright photo, bottom-left origin: x, y, width, height.
     var box: [Float]
-    /// 128 signed bytes: the face's appearance, projected and normalized (see People.embed).
+    /// 256 signed bytes: the face's appearance, projected and normalized (see People.embed).
     var vec: Data
 }
 
@@ -25,14 +25,14 @@ struct Person: Codable, Identifiable, Hashable {
 /// compared with Vision's image fingerprint of the face crop and grouped here; the user names the groups.
 /// This is looser than Apple's own face recognition, so the user confirms every name.
 enum People {
-    static let dim = 128
+    static let dim = 256
 
     // MARK: Fingerprints
 
     private static let lock = NSLock()
     private static var projections: [Int: [Float]] = [:]
 
-    /// A fixed random projection from the feature print's size down to 128 numbers (same every launch).
+    /// A fixed random projection from the feature print's size down to 256 numbers (same every launch).
     static func projection(for inputDim: Int) -> [Float] {
         lock.lock(); defer { lock.unlock() }
         if let p = projections[inputDim] { return p }
@@ -50,7 +50,7 @@ enum People {
         return m
     }
 
-    /// Turns a Vision feature print (any length) into a 128-byte fingerprint.
+    /// Turns a Vision feature print (any length) into a 256-byte fingerprint.
     static func embed(_ x: [Float]) -> Data {
         guard !x.isEmpty else { return Data(count: dim) }
         let p = projection(for: x.count)

@@ -4,6 +4,7 @@ import SwiftUI
 struct AwwListApp: App {
     @StateObject private var library = Shared.library
     @StateObject private var scanner = Shared.scanner
+    @StateObject private var claude = Shared.claude
 
     init() { BackgroundScan.register() }
 
@@ -12,6 +13,7 @@ struct AwwListApp: App {
             RootView()
                 .environmentObject(library)
                 .environmentObject(scanner)
+                .environmentObject(claude)
                 .tint(Theme.accent)
         }
     }

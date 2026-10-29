@@ -12,6 +12,12 @@ final class Library: ObservableObject {
     @Published private(set) var people: [Person] = []
     /// Who's Who grouping: 0 stricter, 1 normal, 2 looser.
     @Published private(set) var strictness = 1
+    /// Claude scoring settings and batches waiting for results.
+    @Published private(set) var claudeModel = "claude-sonnet-5-5"
+    @Published private(set) var claudeScope = 300
+    @Published private(set) var claudeBatches: [ClaudeBatch] = []
+    /// Which score orders the lists once Claude has scored something: "claude" or "apple".
+    @Published private(set) var rankBy = "claude"
 
     private static let saveQueue = DispatchQueue(label: "aww.save", qos: .utility)
     private var lastRebuild = Date.distantPast
@@ -25,6 +31,7 @@ final class Library: ObservableObject {
     private struct Saved: Codable {
         var photos: [PhotoScore]; var hidden: [String]; var birthdays: [Date]?
         var people: [Person]?; var strictness: Int?
+        var claudeModel: String?; var claudeScope: Int?; var claudeBatches: [ClaudeBatch]?; var rankBy: String?
     }
 
     init() { load() }
@@ -35,7 +42,7 @@ final class Library: ObservableObject {
         for p in new { photos[p.id] = p }
         unsaved += new.count
         if Date().timeIntervalSince(lastRebuild) > 2 { rebuild() }
-        if unsaved >= 1000 { save() }
+        if unsaved >= 200 { save() }
     }
 
     func finishScan() { rebuild(); save() }
@@ -45,6 +52,29 @@ final class Library: ObservableObject {
     func restoreHidden() { hidden.removeAll(); rebuild(); save() }
 
     func setBirthdays(_ dates: [Date]) { birthdays = dates.sorted(); rebuild(); save() }
+
+    // MARK: Claude
+
+    func setClaude(model: String? = nil, scope: Int? = nil) {
+        if let model { claudeModel = model }
+        if let scope { claudeScope = scope }
+        save()
+    }
+    func setRankBy(_ v: String) { rankBy = v; rebuild(); save() }
+    var rankingByClaude: Bool { rankBy == "claude" && moments.contains { $0.claudeScore != nil } }
+    func addClaudeBatch(_ b: ClaudeBatch) { claudeBatches.append(b); flush() }
+    func removeClaudeBatch(_ id: String) { claudeBatches.removeAll { $0.id == id }; save() }
+    func applyClaude(_ verdicts: [String: ClaudeVerdict]) {
+        guard !verdicts.isEmpty else { return }
+        for (id, v) in verdicts { photos[id]?.claude = v }
+        rebuild(); flush()
+    }
+    func clearClaude() {
+        for id in photos.keys where photos[id]?.claude != nil { photos[id]?.claude = nil }
+        claudeBatches = []
+        rebuild(); save()
+    }
+    var claudeScored: Int { moments.filter { $0.best.claude != nil }.count }
 
     // MARK: Who's Who
 
@@ -103,22 +133,48 @@ final class Library: ObservableObject {
         let scores = Scorer.calibrate(groups.map { $0.best.raw ?? 0 },
                                       years: groups.map { cal.component(.year, from: $0.best.date) })
         let named = people, t = threshold
-        let bdays = Array(Set(birthdays + named.compactMap(\.birthday)))
+        let gregorian = Calendar(identifier: .gregorian)
+        // A named person's birthday only sorts photos while they're a child (grown-ups named in Who's Who don't count).
+        func childAt(_ birth: Date, _ date: Date) -> Bool {
+            birth <= date && (gregorian.dateComponents([.year], from: birth, to: date).year ?? 0) < 13
+        }
         moments = zip(groups, scores).map { g, s in
             let who = Set((g.best.faceRecords ?? []).compactMap { People.match(People.floats($0.vec), people: named, threshold: t) })
             // Named people with birthdays give exact ages; otherwise ages come from the birthdays and the photo.
-            let known = named.filter { who.contains($0.id) }.compactMap(\.birthday).filter { $0 <= g.best.date }
+            let date = g.best.date
+            let known = named.filter { who.contains($0.id) }.compactMap(\.birthday).filter { childAt($0, date) }
+            let bdays = Array(Set(birthdays + named.compactMap(\.birthday).filter { childAt($0, date) || $0 > date }))
             let ages: Set<AgeGroup> = known.isEmpty
-                ? AgeGroup.tags(date: g.best.date, birthdays: bdays, looksLikeBaby: g.best.age == .baby, faces: g.best.faces ?? 1)
+                ? AgeGroup.tags(date: date, birthdays: bdays, looksLikeBaby: g.best.age == .baby, faces: g.best.faces ?? 1)
                 : Set(known.map { AgeGroup.of(birth: $0, at: g.best.date) })
             return Moment(best: g.best, shots: g.shots, memberIDs: g.ids, score: s, ages: ages, people: who)
         }
+        // Every moment keeps its Apple score; moments sent to Claude also get Claude's. Claude's safety checks
+        // (bath, swimwear, shirtless, AI or edited, no child) take a photo off the list in both rankings.
+        // Ranking by Claude: Claude's score leads, and moments it hasn't seen are capped at 6 so they can't
+        // outrank the ones it looked at (the same rule as the Aww List website).
+        let anyClaude = moments.contains { $0.best.claude != nil }
+        let useClaude = anyClaude && rankBy == "claude"
+        moments = moments.compactMap { m in
+            var m = m
+            m.apple = m.score
+            if let c = m.best.claude {
+                if c.exclude != nil { return nil }
+                m.claudeScore = c.score
+            }
+            if useClaude { m.score = m.claudeScore.map(Claude.displayScore) ?? min(m.apple, 6) }
+            return m
+        }
+        moments.sort(by: Library.ranked)
             .sorted(by: Library.ranked)
     }
 
     /// Higher score first; then higher raw score; then the earlier photo.
     nonisolated static func ranked(_ a: Moment, _ b: Moment) -> Bool {
         if a.score != b.score { return a.score > b.score }
+        let ca = a.claudeScore ?? 0, cb = b.claudeScore ?? 0
+        if ca != cb { return ca > cb }
+        if a.apple != b.apple { return a.apple > b.apple }
         let ra = a.best.raw ?? 0, rb = b.best.raw ?? 0
         if ra != rb { return ra > rb }
         return a.best.date < b.best.date
@@ -126,11 +182,18 @@ final class Library: ObservableObject {
 
     var years: [Int] { Array(Set(moments.map(\.year))).sorted(by: >) }
 
+    /// Saves now and waits for the write, so nothing is lost when iOS suspends or ends the app.
+    func flush() {
+        save()
+        Library.saveQueue.sync {}
+    }
+
     /// Writes to disk off the main thread.
     func save() {
         unsaved = 0
         let s = Saved(photos: Array(photos.values), hidden: Array(hidden), birthdays: birthdays,
-                      people: people, strictness: strictness)
+                      people: people, strictness: strictness,
+                      claudeModel: claudeModel, claudeScope: claudeScope, claudeBatches: claudeBatches, rankBy: rankBy)
         let u = url
         // One save at a time, in order, so an older snapshot can never land after a newer one.
         Library.saveQueue.async {
@@ -145,6 +208,10 @@ final class Library: ObservableObject {
         birthdays = s.birthdays ?? []
         people = s.people ?? []
         strictness = s.strictness ?? 1
+        claudeModel = s.claudeModel ?? claudeModel
+        claudeScope = s.claudeScope ?? claudeScope
+        claudeBatches = s.claudeBatches ?? []
+        rankBy = s.rankBy ?? "claude"
         rebuild()
     }
 }

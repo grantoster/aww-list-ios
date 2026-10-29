@@ -5,7 +5,6 @@ struct FaceThumb: View {
     let photo: String
     let box: [Float]
     var size: CGFloat = 56
-    @Environment(\.displayScale) private var scale
     @State private var image: UIImage?
 
     var body: some View {
@@ -15,15 +14,18 @@ struct FaceThumb: View {
             .frame(width: size, height: size)
             .task(id: photo) {
                 guard let full = await AssetImage.load(id: photo, size: CGSize(width: 900, height: 900), mode: .aspectFit) else { return }
-                image = Self.crop(full, box: box)
+                let b = box
+                image = await Task.detached(priority: .userInitiated) { Self.crop(full, box: b) }.value
             }
             .accessibilityHidden(true)
     }
 
     /// Crops a face (normalized, bottom-left origin) with some room around it.
-    static func crop(_ img: UIImage, box: [Float]) -> UIImage? {
+    nonisolated static func crop(_ img: UIImage, box: [Float]) -> UIImage? {
         guard box.count == 4 else { return img }
-        let upright = UIGraphicsImageRenderer(size: img.size).image { _ in img.draw(at: .zero) }
+        // Redraw only when the photo isn't already upright, at 1x (not screen scale) to keep memory small.
+        let fmt = UIGraphicsImageRendererFormat(); fmt.scale = 1
+        let upright = img.imageOrientation == .up ? img : UIGraphicsImageRenderer(size: img.size, format: fmt).image { _ in img.draw(at: .zero) }
         guard let cg = upright.cgImage else { return img }
         let w = CGFloat(cg.width), h = CGFloat(cg.height)
         let bw = CGFloat(box[2]) * w, bh = CGFloat(box[3]) * h
@@ -44,6 +46,7 @@ struct WhoView: View {
     @State private var loading = true
     @State private var naming: NamingGroup?
     @State private var editing: Person?
+    @State private var generation = 0
 
     struct NamingGroup: Identifiable {
         let id = UUID()
@@ -125,12 +128,17 @@ struct WhoView: View {
     /// Groups the unnamed faces off the main thread; groups of at least 3 photos are shown.
     private func regroup() {
         loading = true
+        generation += 1
+        let gen = generation
         let faces = library.unnamedFaces()
         let t = library.threshold
         Task.detached(priority: .userInitiated) {
             let vecs = faces.map { People.floats($0.face.vec) }
             let clusters = People.cluster(vecs, threshold: t).filter { $0.count >= 3 }.map { $0.map { faces[$0] } }
-            await MainActor.run { groups = clusters; loading = false }
+            await MainActor.run {
+                guard gen == generation else { return }     // a newer grouping is on its way
+                groups = clusters; loading = false
+            }
         }
     }
 }

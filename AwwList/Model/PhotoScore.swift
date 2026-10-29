@@ -59,6 +59,8 @@ struct PhotoScore: Codable, Hashable, Identifiable {
     var faces: Int? = nil
     /// Face fingerprints for Who's Who (counted photos only); nil until measured.
     var faceRecords: [FaceRecord]? = nil
+    /// Claude's score, description and checks, when this photo was sent to Claude.
+    var claude: ClaudeVerdict? = nil
 }
 
 /// One moment: photos taken less than 60 seconds apart (2 minutes at most), represented by its best shot.
@@ -74,5 +76,14 @@ struct Moment: Identifiable, Hashable {
     var ages: Set<AgeGroup> = []
     /// Named people (Who's Who) recognized in the best shot.
     var people: Set<UUID> = []
+    /// The on-device (Apple Vision) score, 1–10.
+    var apple: Int = 0
+    /// Claude's score (1–10, one decimal), when this moment was sent to Claude.
+    var claudeScore: Double? = nil
+    /// Claude's description when it has one, otherwise the on-device one.
+    var caption: String {
+        if let c = best.claude?.caption, !c.isEmpty { return c.prefix(1).uppercased() + c.dropFirst() }
+        return best.caption
+    }
     var year: Int { Calendar.current.component(.year, from: best.date) }
 }
