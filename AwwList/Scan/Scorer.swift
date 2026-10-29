@@ -7,6 +7,7 @@ struct FaceSignal: Equatable {
     var smile: Bool = false
     var eyesClosed: Bool = false
     var bareTorso: Double = 0     // 0...1, share of the chest below this face that matches its skin tone
+    var baby: Double? = nil       // "baby" label confidence on this person's own face-and-chest crop, when measured
 }
 
 /// Everything the analyzer measured on one photo. Pure data, so scoring can be unit tested.
@@ -26,7 +27,7 @@ struct Signals: Equatable {
 
 enum Scorer {
     /// Bump when scoring changes; photos scored by an older version are analyzed again.
-    static let version = 5
+    static let version = 6
 
     /// Minimum label confidence for a photo to count as having a child in it (unless the precise filter passed).
     static let childThreshold = 0.35
@@ -34,7 +35,7 @@ enum Scorer {
     /// photos (the whole session), 2 minutes around a shirtless one (its burst), since that check is a skin-tone guess.
     static let quarantineWindow: [String: TimeInterval] = ["Bath": 600, "Swimwear": 600, "Undressed": 600, "Shirtless": 120]
     static var sensitive: Set<String> { Set(quarantineWindow.keys) }
-    static let quarantine: TimeInterval = 600   // the longest window
+    static let quarantine: TimeInterval = quarantineWindow.values.max() ?? 0   // the longest window
     /// Share of the chest area that has to match the face's skin tone for a photo to count as shirtless.
     static let bareTorsoLimit = 0.6
     /// A year with fewer moments than this counts for less when spreading scores (so 3 photos from January
@@ -46,14 +47,20 @@ enum Scorer {
     static func score(_ s: Signals) -> (raw: Double?, excluded: String?) {
         if s.isScreenshot { return (nil, "Screenshot") }
         if let b = s.blockedLabel { return (nil, b.capitalized) }
+        // Shirtless: any bare chest counts except a baby's (babies in just a diaper are fine). Each bare-chested
+        // person's own crop is classified; when that wasn't measured, the smallest face stands in for the baby.
+        // Checked before the child test (with a lower bar) so an older kid the child label half-misses still
+        // hides the burst around them.
+        let fallbackBaby = s.babyConfidence > 0.5 ? s.faces.indices.min { s.faces[$0].area < s.faces[$1].area } : nil
+        let bare = s.faces.indices.contains { i in
+            let f = s.faces[i]
+            guard f.bareTorso >= bareTorsoLimit else { return false }
+            if let b = f.baby { return b <= 0.5 }
+            return i != fallbackBaby
+        }
+        if bare && (s.childPrecise || s.childConfidence >= 0.15) { return (nil, "Shirtless") }
         guard s.childPrecise || s.childConfidence >= childThreshold else { return (nil, "No child") }
         if s.waterScene { return (nil, "Water") }
-        // Shirtless: any bare chest counts, except the smallest face when a baby is in the picture
-        // (babies in just a diaper are fine; an older sibling or anyone else bare-chested is not).
-        let babyIndex = s.babyConfidence > 0.5 ? s.faces.indices.min { s.faces[$0].area < s.faces[$1].area } : nil
-        if s.faces.indices.contains(where: { $0 != babyIndex && s.faces[$0].bareTorso >= bareTorsoLimit }) {
-            return (nil, "Shirtless")
-        }
         guard let si = s.subjectIndex else { return (nil, "No face") }
         let subj = s.faces[si]
         let others = s.faces.enumerated().filter { $0.offset != si }.map(\.element)

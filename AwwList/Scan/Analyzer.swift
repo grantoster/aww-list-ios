@@ -27,7 +27,8 @@ final class Analyzer {
     ]
     /// Water scenes: a swimsuit with a covered chest gets past the shirtless check, so the scene decides. These fire on
     /// plenty of fully clothed photos too (a lake walk, a ferry), so they need a confident label and don't hide nearby shots.
-    static let waterScenes: Set<String> = ["lake", "ocean", "shore", "water_body", "waterways", "river", "sprinkler", "fountain"]
+    static let waterScenes: Set<String> = ["lake", "ocean", "shore", "water_body", "waterways", "river", "creek", "waterfall",
+                                           "water", "sprinkler", "fountain"]
     /// Name fragments matched against whatever labels this iOS actually supports, so a renamed or new label
     /// (bathtub, hot_tub, swimming_pool, water_park, ...) is still caught.
     static let blockedFragments: [(String, String)] = [
@@ -93,7 +94,6 @@ final class Analyzer {
             }
         }
         var subjectBox = CGRect.zero, subjectArea: CGFloat = -1
-        let largest = faceObs.map { $0.boundingBox.width * $0.boundingBox.height }.max() ?? 0
         for o in faceObs {
             let box = o.boundingBox
             var face = FaceSignal(area: Double(box.width * box.height), quality: Double(o.faceCaptureQuality ?? 0))
@@ -102,12 +102,27 @@ final class Analyzer {
                 face.eyesClosed = m.closed
             }
             if box.width * box.height > subjectArea { subjectBox = box; subjectArea = box.width * box.height }
-            // Shirtless check on every face in the picture, except far-off background faces.
-            if box.width * box.height >= largest * 0.25 { face.bareTorso = bareTorso(ci, face: box) }
+            // Shirtless check on every face big enough to measure (about 30 px tall or more), near or far.
+            if box.height >= 0.04 {
+                face.bareTorso = bareTorso(ci, face: box)
+                // A bare chest is fine only on a baby: ask the classifier about this person alone.
+                if face.bareTorso >= Scorer.bareTorsoLimit { face.baby = babyConfidence(handler, around: box) }
+            }
             s.faces.append(face)
         }
         s.sharpness = sharpness(ci, box: subjectBox)
         return s
+    }
+
+    /// "baby" label confidence for one person: the classifier run on their face and chest only.
+    private func babyConfidence(_ handler: VNImageRequestHandler, around b: CGRect) -> Double? {
+        let roi = CGRect(x: b.minX - b.width * 0.3, y: b.minY - b.height * 1.8, width: b.width * 1.6, height: b.height * 2.8)
+            .intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+        guard !roi.isNull, roi.width > 0.05, roi.height > 0.05 else { return nil }
+        let req = VNClassifyImageRequest()
+        req.regionOfInterest = roi
+        guard (try? handler.perform([req])) != nil else { return nil }
+        return Double(req.results?.first { $0.identifier == "baby" }?.confidence ?? 0)
     }
 
     /// Compares the skin tone in the middle of the face with the chest below it. The band starts half a face below

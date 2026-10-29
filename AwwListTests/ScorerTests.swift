@@ -45,6 +45,16 @@ final class ScorerTests: XCTestCase {
         var sibling = diaperBaby; sibling.faces[0].bareTorso = 0
         sibling.faces.append(FaceSignal(area: 0.2, quality: 0.8, smile: true, eyesClosed: false, bareTorso: 0.9))
         XCTAssertEqual(Scorer.score(sibling).excluded, "Shirtless")   // a baby in the shot doesn't excuse an older sibling
+        // the older sibling farther back (smaller face) is caught by their own crop's classification
+        var farSibling = diaperBaby; farSibling.faces[0].area = 0.15; farSibling.faces[0].baby = 0.9
+        farSibling.faces.append(FaceSignal(area: 0.06, quality: 0.8, smile: true, eyesClosed: false, bareTorso: 0.9, baby: 0.1))
+        XCTAssertEqual(Scorer.score(farSibling).excluded, "Shirtless")
+        // shirtless at a lake is filed as Shirtless (which hides its burst), not just Water
+        var lakeBoy = s; lakeBoy.waterScene = true
+        XCTAssertEqual(Scorer.score(lakeBoy).excluded, "Shirtless")
+        // an older kid the child label half-misses still counts as shirtless
+        var older = s; older.childConfidence = 0.3
+        XCTAssertEqual(Scorer.score(older).excluded, "Shirtless")
         let t = Date(timeIntervalSince1970: 1_700_000_000)
         let burst = [PhotoScore(id: "a", date: t, raw: nil, excluded: "Shirtless", age: nil, caption: ""),
                      PhotoScore(id: "b", date: t.addingTimeInterval(90), raw: 0.8, excluded: nil, age: .kid, caption: "")]
