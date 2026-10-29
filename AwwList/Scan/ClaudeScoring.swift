@@ -276,6 +276,7 @@ final class ClaudeService: ObservableObject {
     func send(_ library: Library) async {
         guard !busy else { return }
         busy = true; defer { busy = false }
+        library.rebuild()   // fresh never-send set and pool, including photos added since the list last redrew
         let list = candidates(library)
         toSend = list.count; sent = 0
         if list.isEmpty { status = "Everything chosen is already scored by Claude."; await collect(library); return }
