@@ -19,13 +19,15 @@ final class Analyzer {
         "bath": "bath", "bathroom": "bath", "shower": "bath", "jacuzzi": "bath", "bathrobe": "bath",
         "swimsuit": "swimwear", "swimming": "swimwear", "pool": "swimwear", "beach": "swimwear",
         "underwater": "swimwear", "waterpolo": "swimwear", "sunbathing": "swimwear",
-        // Water and shore scenes: a swimsuit with a covered chest gets past the shirtless check, so the scene decides.
-        "lake": "swimwear", "ocean": "swimwear", "shore": "swimwear", "water_body": "swimwear", "watersport": "swimwear",
+        "watersport": "swimwear",
         "surfing": "swimwear", "surfboard": "swimwear", "bodyboard": "swimwear", "wetsuit": "swimwear", "diving": "swimwear",
         "sandcastle": "swimwear", "snorkeling": "swimwear", "scuba": "swimwear", "wakeboarding": "swimwear",
         "kiteboarding": "swimwear", "windsurfing": "swimwear",
         "document": "document", "receipt": "document", "screenshot": "screenshot"
     ]
+    /// Water scenes: a swimsuit with a covered chest gets past the shirtless check, so the scene decides. These fire on
+    /// plenty of fully clothed photos too (a lake walk, a ferry), so they need a confident label and don't hide nearby shots.
+    static let waterScenes: Set<String> = ["lake", "ocean", "shore", "water_body", "waterways", "river", "sprinkler", "fountain"]
     /// Name fragments matched against whatever labels this iOS actually supports, so a renamed or new label
     /// (bathtub, hot_tub, swimming_pool, water_park, ...) is still caught.
     static let blockedFragments: [(String, String)] = [
@@ -68,6 +70,7 @@ final class Analyzer {
                obs.confidence > 0.5 || (obs.hasPrecisionRecallCurve && obs.hasMinimumPrecision(0.1, forRecall: 0.9)) {
                 s.blockedLabel = reason
             }
+            if s.waterScene == false, Self.waterScenes.contains(id), obs.confidence > 0.5 { s.waterScene = true }
             if Self.childLabels.contains(id) {
                 s.childConfidence = max(s.childConfidence, Double(obs.confidence))
                 if obs.hasPrecisionRecallCurve && obs.hasMinimumRecall(0.01, forPrecision: 0.9) { s.childPrecise = true }
@@ -90,6 +93,7 @@ final class Analyzer {
             }
         }
         var subjectBox = CGRect.zero, subjectArea: CGFloat = -1
+        let largest = faceObs.map { $0.boundingBox.width * $0.boundingBox.height }.max() ?? 0
         for o in faceObs {
             let box = o.boundingBox
             var face = FaceSignal(area: Double(box.width * box.height), quality: Double(o.faceCaptureQuality ?? 0))
@@ -98,21 +102,22 @@ final class Analyzer {
                 face.eyesClosed = m.closed
             }
             if box.width * box.height > subjectArea { subjectBox = box; subjectArea = box.width * box.height }
+            // Shirtless check on every face in the picture, except far-off background faces.
+            if box.width * box.height >= largest * 0.25 { face.bareTorso = bareTorso(ci, face: box) }
             s.faces.append(face)
         }
         s.sharpness = sharpness(ci, box: subjectBox)
-        // Every face is checked, so a shirtless child held by a clothed parent is still caught.
-        s.bareTorso = faceObs.map { bareTorso(ci, face: $0.boundingBox) }.max() ?? 0
         return s
     }
 
-    /// Compares the skin tone in the middle of the face with the area just below it (chest and shoulders).
+    /// Compares the skin tone in the middle of the face with the chest below it. The band starts half a face below
+    /// the chin, past the neck and collarbone, so tank tops and V-necks don't count as shirtless.
     private func bareTorso(_ ci: CIImage, face b: CGRect) -> Double {
         let faceCore = CGRect(x: b.minX + b.width * 0.25, y: b.minY + b.height * 0.2, width: b.width * 0.5, height: b.height * 0.45)
-        let chest = CGRect(x: b.minX - b.width * 0.25, y: b.minY - b.height * 1.6, width: b.width * 1.5, height: b.height * 1.3)
+        let chest = CGRect(x: b.minX - b.width * 0.1, y: b.minY - b.height * 1.8, width: b.width * 1.2, height: b.height * 1.3)
         // Judge whatever part of the chest is in the photo, as long as there's enough of it (close-ups included).
         let inside = chest.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
-        guard !inside.isNull, inside.width * inside.height >= chest.width * chest.height * 0.25, inside.height >= b.height * 0.3,
+        guard !inside.isNull, inside.width * inside.height >= chest.width * chest.height * 0.3, inside.height >= b.height * 0.4,
               let f = rgb(ci, faceCore, side: 16), let t = rgb(ci, inside, side: 32) else { return 0 }
         return Scorer.skinMatch(face: f, torso: t)
     }

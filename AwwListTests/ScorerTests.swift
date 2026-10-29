@@ -27,11 +27,10 @@ final class ScorerTests: XCTestCase {
         let list = Analyzer.blocklist(for: ["bathroom_room", "snorkeling", "lake", "sprinkler", "bathtub", "hot_tub", "swimming_pool", "diaper", "dog", "child"])
         XCTAssertEqual(list["bathroom_room"], "bath")
         XCTAssertEqual(list["snorkeling"], "swimwear")
-        XCTAssertEqual(list["lake"], "swimwear")
         XCTAssertEqual(list["bathtub"], "bath")
         XCTAssertEqual(list["hot_tub"], "bath")
         XCTAssertEqual(list["swimming_pool"], "swimwear")
-        XCTAssertNil(list["sprinkler"])       // ceiling fire sprinklers at parties
+        XCTAssertNil(list["sprinkler"])       // a water scene (confident label only), not a quarantine trigger
         XCTAssertNil(list["diaper"])          // diapers are fine
         XCTAssertNil(list["dog"])
         XCTAssertNil(list["child"])
@@ -39,14 +38,22 @@ final class ScorerTests: XCTestCase {
     }
 
     func testShirtlessIsLeftOut() {
-        var s = kid(); s.bareTorso = 0.8
+        var s = kid(); s.faces[0].bareTorso = 0.8
         XCTAssertEqual(Scorer.score(s).excluded, "Shirtless")
         var diaperBaby = s; diaperBaby.babyConfidence = 0.9
         XCTAssertNil(Scorer.score(diaperBaby).excluded)   // diapers are fine
+        var sibling = diaperBaby; sibling.faces[0].bareTorso = 0
+        sibling.faces.append(FaceSignal(area: 0.2, quality: 0.8, smile: true, eyesClosed: false, bareTorso: 0.9))
+        XCTAssertEqual(Scorer.score(sibling).excluded, "Shirtless")   // a baby in the shot doesn't excuse an older sibling
         let t = Date(timeIntervalSince1970: 1_700_000_000)
         let burst = [PhotoScore(id: "a", date: t, raw: nil, excluded: "Shirtless", age: nil, caption: ""),
                      PhotoScore(id: "b", date: t.addingTimeInterval(90), raw: 0.8, excluded: nil, age: .kid, caption: "")]
         XCTAssertTrue(Scorer.moments(from: burst).isEmpty)
+        let later = [burst[0], PhotoScore(id: "c", date: t.addingTimeInterval(300), raw: 0.8, excluded: nil, age: .kid, caption: "")]
+        XCTAssertEqual(Scorer.moments(from: later).map(\.best.id), ["c"])   // shirtless hides its burst, not the whole party
+        var lake = kid(); lake.waterScene = true
+        XCTAssertEqual(Scorer.score(lake).excluded, "Water")
+        XCTAssertFalse(Scorer.sensitive.contains("Water"))
         let skin: [UInt8] = Array([UInt8]([224, 172, 150]).repeated(64))
         let shirt: [UInt8] = Array([UInt8]([40, 80, 200]).repeated(64))
         XCTAssertEqual(Scorer.skinMatch(face: skin, torso: skin), 1)

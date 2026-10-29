@@ -6,6 +6,7 @@ struct FaceSignal: Equatable {
     var quality: Double = 0       // Vision faceCaptureQuality; only compared within a burst
     var smile: Bool = false
     var eyesClosed: Bool = false
+    var bareTorso: Double = 0     // 0...1, share of the chest below this face that matches its skin tone
 }
 
 /// Everything the analyzer measured on one photo. Pure data, so scoring can be unit tested.
@@ -15,7 +16,7 @@ struct Signals: Equatable {
     var babyConfidence: Double = 0       // 0...1
     var faces: [FaceSignal] = []
     var sharpness: Double = 0            // 0...1, measured on the subject's face crop
-    var bareTorso: Double = 0            // 0...1, share of the area under the subject's face that matches its skin tone
+    var waterScene: Bool = false         // confident lake/ocean/shore/river/sprinkler/fountain label
     var isScreenshot: Bool = false
     var blockedLabel: String? = nil      // "bath", "swimwear", "undressed", "document", "screenshot"
 
@@ -25,15 +26,17 @@ struct Signals: Equatable {
 
 enum Scorer {
     /// Bump when scoring changes; photos scored by an older version are analyzed again.
-    static let version = 4
+    static let version = 5
 
     /// Minimum label confidence for a photo to count as having a child in it (unless the precise filter passed).
     static let childThreshold = 0.35
-    /// Exclusion reasons that also hide every photo taken within 10 minutes of them.
-    static let sensitive: Set<String> = ["Bath", "Swimwear", "Undressed", "Shirtless"]
-    static let quarantine: TimeInterval = 600
+    /// How long before and after a sensitive photo every other shot is hidden: 10 minutes around bath and swim
+    /// photos (the whole session), 2 minutes around a shirtless one (its burst), since that check is a skin-tone guess.
+    static let quarantineWindow: [String: TimeInterval] = ["Bath": 600, "Swimwear": 600, "Undressed": 600, "Shirtless": 120]
+    static var sensitive: Set<String> { Set(quarantineWindow.keys) }
+    static let quarantine: TimeInterval = 600   // the longest window
     /// Share of the chest area that has to match the face's skin tone for a photo to count as shirtless.
-    static let bareTorsoLimit = 0.55
+    static let bareTorsoLimit = 0.6
     /// A year with fewer moments than this counts for less when spreading scores (so 3 photos from January
     /// can't claim a full year's share of 9s and 10s).
     static let fullYear = 200.0
@@ -43,9 +46,14 @@ enum Scorer {
     static func score(_ s: Signals) -> (raw: Double?, excluded: String?) {
         if s.isScreenshot { return (nil, "Screenshot") }
         if let b = s.blockedLabel { return (nil, b.capitalized) }
-        // Babies in just a diaper are fine; shirtless older children are not.
-        if s.bareTorso >= bareTorsoLimit && s.babyConfidence <= 0.5 { return (nil, "Shirtless") }
         guard s.childPrecise || s.childConfidence >= childThreshold else { return (nil, "No child") }
+        if s.waterScene { return (nil, "Water") }
+        // Shirtless: any bare chest counts, except the smallest face when a baby is in the picture
+        // (babies in just a diaper are fine; an older sibling or anyone else bare-chested is not).
+        let babyIndex = s.babyConfidence > 0.5 ? s.faces.indices.min { s.faces[$0].area < s.faces[$1].area } : nil
+        if s.faces.indices.contains(where: { $0 != babyIndex && s.faces[$0].bareTorso >= bareTorsoLimit }) {
+            return (nil, "Shirtless")
+        }
         guard let si = s.subjectIndex else { return (nil, "No face") }
         let subj = s.faces[si]
         let others = s.faces.enumerated().filter { $0.offset != si }.map(\.element)
@@ -151,16 +159,21 @@ enum Scorer {
     static func ceiling(_ r: Double) -> Int { r < 0.30 ? 4 : r < 0.45 ? 5 : r < 0.60 ? 7 : r < 0.70 ? 8 : 10 }
 
     /// Groups photos into moments: shots less than 60 s apart are one moment, but a moment never runs past 2 minutes.
-    /// Everything within 10 minutes of a bath, swimwear or undressed photo is left out too, so one missed frame
+    /// Everything within 10 minutes of a bath, swimwear or undressed photo (2 minutes of a shirtless one) is left out too, so one missed frame
     /// of a bath burst can't slip onto the list. The best shot wins; ties go to the earlier, then the smaller id.
     /// Every stored photo feeds the quarantine (old versions and hidden ones too); only photos that are shown —
     /// not hidden, and scored by `version` when given — can become moments.
     static func moments(from photos: [PhotoScore], hidden: Set<String> = [], version: Int? = nil) -> [(best: PhotoScore, shots: Int, ids: [String])] {
-        let hot = photos.filter { sensitive.contains($0.excluded ?? "") }.map(\.date).sorted()
+        let hot = photos.compactMap { p in quarantineWindow[p.excluded ?? ""].map { (date: p.date, window: $0) } }
+            .sorted { $0.date < $1.date }
         func quarantined(_ d: Date) -> Bool {
             var lo = 0, hi = hot.count
-            while lo < hi { let m = (lo + hi) / 2; if hot[m] < d.addingTimeInterval(-quarantine) { lo = m + 1 } else { hi = m } }
-            return lo < hot.count && hot[lo] <= d.addingTimeInterval(quarantine)
+            while lo < hi { let m = (lo + hi) / 2; if hot[m].date < d.addingTimeInterval(-quarantine) { lo = m + 1 } else { hi = m } }
+            while lo < hot.count && hot[lo].date <= d.addingTimeInterval(quarantine) {
+                if abs(hot[lo].date.timeIntervalSince(d)) <= hot[lo].window { return true }
+                lo += 1
+            }
+            return false
         }
         let counted = photos.filter { $0.raw != nil && !hidden.contains($0.id) && (version == nil || $0.version == version) && !quarantined($0.date) }
             .sorted { ($0.date, $0.id) < ($1.date, $1.id) }
