@@ -357,6 +357,21 @@ final class LearnerTests: XCTestCase {
             XCTAssertEqual(Learner.heldBack(morning), Learner.heldBack(morning.addingTimeInterval(3600 * 8)))
         }
     }
+
+    func testSubjectIsTheChildAndBackgroundFacesDontCount() {
+        var s = Signals()
+        s.faces = [FaceSignal(area: 0.10, box: [0.1, 0.4, 0.3, 0.3]), FaceSignal(area: 0.05, box: [0.45, 0.4, 0.2, 0.2]),
+                   FaceSignal(area: 0.001, box: [0.9, 0.9, 0.03, 0.03])]
+        s.faces[0].child = 0.1; s.faces[1].child = 0.6          // the grown-up's face is bigger; the kid's is the subject
+        XCTAssertEqual(s.subjectIndex, 1)
+        XCTAssertEqual(s.mainFaceIndices, [0, 1])               // a tiny face far behind isn't part of the shot
+        s.faces[1].child = 0.2; s.faces[1].childTight = true    // a face-only crop reads lower: still a kid
+        XCTAssertEqual(s.faces[1].isKid, true)
+        XCTAssertEqual(s.faces[0].isKid, false)
+        XCTAssertEqual(ShotKind.of(faces: 2, adults: 1), .family)
+        XCTAssertEqual(ShotKind.of(faces: 2, adults: 0), .kids)
+        XCTAssertEqual(ShotKind.of(faces: 3, adults: 0), .family)
+    }
 }
 
 private extension Array {

@@ -141,7 +141,9 @@ final class Analyzer {
             // Only worth it with two or more faces and some sign of a child (otherwise it can't change the subject).
             if faceObs.count >= 2 && (s.childPrecise || s.childConfidence >= 0.1)
                 && box.height >= 0.04 && boxes.filter({ $0.width * $0.height > box.width * box.height }).count < 4 {
-                face.child = childConfidence(handler, face: box, avoiding: boxes.filter { $0 != box })
+                let measured = childConfidence(handler, face: box, avoiding: boxes.filter { $0 != box })
+                face.child = measured?.value
+                face.childTight = measured?.tight ?? false
             }
             // Shirtless check on every face big enough to measure: about 30 px tall, or the main face(s) of the photo.
             if box.height >= 0.04 || box.width * box.height >= largest * 0.25 {
@@ -260,18 +262,25 @@ final class Analyzer {
     /// Child/baby label confidence for one person: the classifier run on their head and shoulders only.
     /// When another face is inside that region (cheek to cheek, a newborn under Grandpa's chin), only this person's
     /// own face is used; if a smaller face still touches even that, this face isn't measured (it can't be told apart).
-    private func childConfidence(_ handler: VNImageRequestHandler, face b: CGRect, avoiding others: [CGRect]) -> Double? {
+    private func childConfidence(_ handler: VNImageRequestHandler, face b: CGRect, avoiding others: [CGRect]) -> (value: Double, tight: Bool)? {
         var roi = CGRect(x: b.minX - b.width * 0.3, y: b.minY - b.height * 0.5, width: b.width * 1.6, height: b.height * 1.7)
+        var tight = false
         if others.contains(where: { $0.intersects(roi) }) {
+            tight = true
             roi = b.insetBy(dx: -b.width * 0.15, dy: -b.height * 0.15)
-            if others.contains(where: { $0.intersects(roi) && $0.width * $0.height < b.width * b.height }) { return nil }
+            // Still touching a smaller face: use the face box alone (face boxes of touching heads rarely overlap).
+            if others.contains(where: { $0.intersects(roi) && $0.width * $0.height < b.width * b.height }) {
+                roi = b
+                if others.contains(where: { $0.intersects(roi) && $0.width * $0.height < b.width * b.height }) { return nil }
+            }
         }
         roi = roi.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
         guard !roi.isNull, roi.width > 0.02, roi.height > 0.02 else { return nil }
         let req = VNClassifyImageRequest()
         req.regionOfInterest = roi
         guard (try? handler.perform([req])) != nil else { return nil }
-        return Double((req.results ?? []).filter { Self.childLabels.contains($0.identifier) }.map(\.confidence).max() ?? 0)
+        let v = Double((req.results ?? []).filter { Self.childLabels.contains($0.identifier) }.map(\.confidence).max() ?? 0)
+        return (v, tight)
     }
 
     /// "baby" label confidence for one person: the classifier run on their face and chest only.

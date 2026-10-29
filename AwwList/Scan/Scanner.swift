@@ -82,6 +82,7 @@ final class PhotoScanner: ObservableObject {
             ((Scorer.provenanceReasons.contains(p.excluded ?? "") || Scorer.heldBack.contains(p.excluded ?? "")) && (p.flagVersion ?? 0) < 2)
                 || (p.excluded == "No child" && p.soft == nil && (p.faces ?? 0) > 0 && (p.flagVersion ?? 0) < 3)
                 || Scorer.needsShirtlessRecheck(p) || Scorer.needsLabelRecheck(p)
+                || ((p.raw != nil || p.soft != nil) && (p.faces ?? 0) >= 2 && p.mainFaces == nil)
         }
         let flag = cancelFlag
         let changes = self.changes
@@ -317,6 +318,8 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
                                     caption: "", version: Scorer.version))
         }
         old.flagVersion = 5
+        old.mainFaces = old.mainFaces ?? old.faces   // couldn't be re-read: keep what's known, don't retry every scan
+        old.adults = old.adults ?? 0
         old.version = Scorer.version   // its held-back or flagged reason stands; just don't keep re-reading it
         return .done(old)
     }
@@ -396,9 +399,9 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
         }
         p.softChecked = true
         p.flagVersion = 5
-        p.adults = signals.faces.filter { $0.child != nil && ($0.child ?? 1) < 0.3 }.count
-        let largest = signals.faces.map(\.area).max() ?? 0
-        p.mainFaces = signals.faces.filter { f in (f.box.count == 4 && f.box[3] >= 0.04) || f.area >= largest * 0.25 }.count
+        let main = signals.mainFaceIndices
+        p.mainFaces = main.count
+        p.adults = main.filter { signals.faces[$0].isKid == false }.count
         if signals.privacyHint { p.privacyHold = true }
         // Flagged as a possible bath photo by an older check: the hold stays, even if the stricter check clears it.
         if let old = restamp[asset.localIdentifier], Scorer.heldBack.contains(old.excluded ?? "") || old.privacyHold == true {

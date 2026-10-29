@@ -9,6 +9,10 @@ struct FaceSignal: Equatable {
     var bareTorso: Double = 0     // 0...1, share of the chest below this face that matches its skin tone
     var baby: Double? = nil       // "baby" label confidence on this person's own face-and-chest crop, when measured
     var child: Double? = nil      // child/baby label confidence on this person's own head-and-shoulders, when measured
+    var childTight = false        // measured on the face alone (another face was right beside it): reads lower
+
+    /// True for a child, false for a grown-up, nil when not measured. A face-only crop reads lower, so it gets a lower bar.
+    var isKid: Bool? { child.map { $0 >= (childTight ? 0.15 : 0.3) } }
     var box: [Double] = []        // normalized x, y, width, height on the upright photo (bottom-left origin)
 }
 
@@ -33,11 +37,21 @@ struct Signals: Equatable {
     /// The main subject: the largest face that reads as a child (so in a selfie with a parent it's the kid, not the
     /// grown-up's bigger face), or simply the largest face when no face was checked or none reads as a child.
     var subjectIndex: Int? {
-        let kids = faces.indices.filter { (faces[$0].child ?? 0) >= 0.3 }
+        let kids = faces.indices.filter { faces[$0].isKid == true }
         let pool = kids.isEmpty ? Array(faces.indices) : kids
         return pool.max { faces[$0].area < faces[$1].area }
     }
     var subject: FaceSignal? { subjectIndex.map { faces[$0] } }
+
+    /// Faces that are part of the shot: at least a third as tall as the largest face (and 2% of the photo), so
+    /// people in the background don't make a close-up a group.
+    var mainFaceIndices: [Int] {
+        let tallest = faces.map { $0.box.count == 4 ? $0.box[3] : 0 }.max() ?? 0
+        return faces.indices.filter { i in
+            let h = faces[i].box.count == 4 ? faces[i].box[3] : 0
+            return h >= max(0.02, tallest / 3)
+        }
+    }
 }
 
 enum Scorer {
