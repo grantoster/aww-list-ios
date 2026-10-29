@@ -82,13 +82,13 @@ struct PhotoScore: Codable, Hashable, Identifiable {
     var appleFlag: String? { raw == nil && Scorer.softReasons.contains(excluded ?? "") ? excluded : nil }
 }
 
-/// Just kids (close-ups and kids together) or family and groups (a grown-up in the shot, or four or more faces).
+/// Just kids (close-ups, or two kids together) or family and groups (a grown-up in the shot, or three or more faces).
 enum ShotKind: String, CaseIterable, Identifiable {
     case kids, family
     var id: String { rawValue }
     var label: String { self == .kids ? "Just kids" : "Family & groups" }
     static func of(faces: Int?, adults: Int?) -> ShotKind {
-        (faces ?? 1) >= 4 || (adults ?? 0) >= 1 ? .family : .kids
+        (faces ?? 1) >= 3 || (adults ?? 0) >= 1 ? .family : .kids
     }
 }
 
