@@ -200,6 +200,9 @@ struct ClaudeSection: View {
                 Text("Estimated cost: about \(Claude.dollars(micros: Claude.costMicros(photos: n, model: library.claudeModel))) at batch prices. This is an estimate (about 1,200 tokens in and about 300 out a photo); your Anthropic bill shows the actual.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            if hasKey {
+                Button("Test connection") { Task { await claude.testConnection() } }.disabled(claude.busy)
+            }
             Toggle("Send these photos to Claude", isOn: $agreed)
             Button(claude.busy ? "Working…" : "Score with Claude") { Task { await claude.send(library) } }
                 .disabled(!hasKey || !agreed || claude.busy || n == 0)

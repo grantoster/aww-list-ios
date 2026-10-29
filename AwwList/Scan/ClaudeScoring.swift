@@ -134,6 +134,87 @@ final class ClaudeService: ObservableObject {
 
     private let endpoint = URL(string: "https://api.anthropic.com/v1/messages/batches")!
 
+    /// Its own connection pool: a fresh connection per app session, waits for the network instead of failing,
+    /// and generous timeouts for uploads on cellular.
+    private let session: URLSession = {
+        let c = URLSessionConfiguration.ephemeral
+        c.waitsForConnectivity = true
+        c.timeoutIntervalForRequest = 120
+        c.timeoutIntervalForResource = 600
+        return URLSession(configuration: c)
+    }()
+
+    /// Network hiccups worth another try ("The network connection was lost" is usually a stale connection).
+    private static func transient(_ e: Error) -> Bool {
+        guard let u = e as? URLError else { return false }
+        return [.networkConnectionLost, .timedOut, .cannotConnectToHost, .notConnectedToInternet,
+                .dnsLookupFailed, .cannotFindHost].contains(u.code)
+    }
+
+    /// One request, retried up to 3 times on network hiccups and on "busy" answers (429/529/5xx).
+    private func fetch(_ r: URLRequest) async throws -> (Data, Int) {
+        var wait: UInt64 = 2
+        for attempt in 1...3 {
+            do {
+                let (data, resp) = try await session.data(for: r)
+                let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                if (code == 429 || code >= 500) && attempt < 3 { try await Task.sleep(nanoseconds: wait * 1_000_000_000); wait *= 3; continue }
+                return (data, code)
+            } catch where Self.transient(error) && attempt < 3 {
+                try await Task.sleep(nanoseconds: wait * 1_000_000_000); wait *= 3
+            }
+        }
+        throw URLError(.networkConnectionLost)
+    }
+
+    /// Friendly words for network failures.
+    static func describe(_ e: Error) -> String {
+        if let u = e as? URLError {
+            switch u.code {
+            case .notConnectedToInternet: return "No internet connection. Try again when you're online."
+            case .secureConnectionFailed, .serverCertificateUntrusted, .serverCertificateHasBadDate,
+                 .serverCertificateNotYetValid, .serverCertificateHasUnknownRoot, .clientCertificateRejected:
+                return "This network blocked the secure connection to Claude. That's usually a VPN, an ad or content blocker, or work/school Wi-Fi. Try again on cellular (Wi-Fi off) or with the VPN or blocker off, and check Settings → General → Date & Time is set automatically."
+            case .networkConnectionLost, .timedOut:
+                return "The connection dropped while sending to Claude (tried 3 times). Try again on Wi-Fi; photos already sent are kept."
+            default: return "Couldn't reach Claude (\(u.code.rawValue)). Try again in a moment."
+            }
+        }
+        return e.localizedDescription
+    }
+
+    /// "Test connection" in Settings: reaches Claude with a tiny request and says what happened.
+    func testConnection() async {
+        guard !busy else { return }
+        busy = true; defer { busy = false }
+        status = "Testing the connection to Claude…"
+        do { try await checkKey(); status = "Connected. Your API key works." }
+        catch { status = Self.describe(error) }
+    }
+
+    /// Checks the key with a tiny request before any photos are prepared.
+    private func checkKey() async throws {
+        let (_, code) = try await fetch(request(URL(string: "https://api.anthropic.com/v1/models?limit=1")!))
+        if code == 401 || code == 403 { throw ClaudeError.http(401, "") }
+    }
+
+    /// After a dropped upload: did Anthropic create the batch anyway? (Avoids sending and paying twice.)
+    private func recentBatch(count: Int, since: Date) async -> String? {
+        guard let r = try? request(URL(string: "https://api.anthropic.com/v1/messages/batches?limit=10")!),
+              let (data, code) = try? await fetch(r), code == 200,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let list = obj["data"] as? [[String: Any]] else { return nil }
+        let iso = ISO8601DateFormatter(); iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let iso2 = ISO8601DateFormatter()
+        for b in list {
+            guard let id = b["id"] as? String, let created = b["created_at"] as? String,
+                  let when = iso.date(from: created) ?? iso2.date(from: created), when >= since.addingTimeInterval(-5),
+                  let counts = b["request_counts"] as? [String: Int] else { continue }
+            if counts.values.reduce(0, +) == count { return id }
+        }
+        return nil
+    }
+
     private func request(_ url: URL, method: String = "GET", body: Data? = nil) throws -> URLRequest {
         guard let key = Claude.apiKey else { throw ClaudeError.noKey }
         var r = URLRequest(url: url)
@@ -180,7 +261,9 @@ final class ClaudeService: ObservableObject {
         if list.isEmpty { status = "Everything chosen is already scored by Claude."; await collect(library); return }
         let model = library.claudeModel
         do {
-            for chunk in stride(from: 0, to: list.count, by: 50).map({ Array(list[$0..<min($0 + 50, list.count)]) }) {
+            status = "Checking your API key…"
+            try await checkKey()
+            for chunk in stride(from: 0, to: list.count, by: 25).map({ Array(list[$0..<min($0 + 25, list.count)]) }) {
                 var reqs: [[String: Any]] = [], map: [String: String] = [:]
                 for (i, m) in chunk.enumerated() {
                     status = "Preparing photo \((sent + i + 1).formatted()) of \(toSend.formatted())…"
@@ -207,12 +290,28 @@ final class ClaudeService: ObservableObject {
                     if ended.claim() { UIApplication.shared.endBackgroundTask(bg) }
                 }
                 defer { if ended.claim() { UIApplication.shared.endBackgroundTask(bg) } }
-                let (data, resp) = try await URLSession.shared.data(for: request(endpoint, method: "POST", body: body))
-                let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-                guard code == 200, let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let id = obj["id"] as? String else {
-                    throw ClaudeError.http(code, code == 429 || code >= 500 ? "Claude is busy; try again in a few minutes." : "")
+                // Upload; if the connection drops, check whether the batch was created before trying again.
+                let started = Date()
+                var id: String?
+                for attempt in 1...3 where id == nil {
+                    do {
+                        let (data, resp) = try await session.data(for: request(endpoint, method: "POST", body: body))
+                        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                        if code == 200, let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                            id = obj["id"] as? String
+                        } else if (code == 429 || code >= 500) && attempt < 3 {
+                            try await Task.sleep(nanoseconds: UInt64(attempt * 3) * 1_000_000_000)
+                        } else {
+                            throw ClaudeError.http(code, code == 429 || code >= 500 ? "Claude is busy; try again in a few minutes." : "")
+                        }
+                    } catch where Self.transient(error) {
+                        status = "Connection dropped; checking and retrying…"
+                        if let existing = await recentBatch(count: reqs.count, since: started) { id = existing; break }
+                        if attempt == 3 { throw error }
+                        try await Task.sleep(nanoseconds: UInt64(attempt * 3) * 1_000_000_000)
+                    }
                 }
+                guard let id else { throw URLError(.networkConnectionLost) }
                 library.addClaudeBatch(ClaudeBatch(id: id, model: model, photos: map, sent: Date()))
                 sent += reqs.count
             }
@@ -222,7 +321,7 @@ final class ClaudeService: ObservableObject {
                 status = "Sent \(sent.formatted()) photos. Claude's scores usually arrive within an hour; they're picked up when you open the app."
             }
         } catch {
-            status = error.localizedDescription
+            status = Self.describe(error)
         }
     }
 
@@ -230,8 +329,7 @@ final class ClaudeService: ObservableObject {
     func collect(_ library: Library) async {
         for b in library.claudeBatches {
             do {
-                let (data, resp) = try await URLSession.shared.data(for: request(endpoint.appendingPathComponent(b.id)))
-                let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                let (data, code) = try await fetch(request(endpoint.appendingPathComponent(b.id)))
                 if code == 404 { library.removeClaudeBatch(b.id); status = "A batch was no longer on Anthropic's side; those photos can be sent again."; continue }
                 guard code == 200, let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                     throw ClaudeError.http(code, code == 429 || code >= 500 ? "Claude is busy; try again in a few minutes." : "")
@@ -245,8 +343,7 @@ final class ClaudeService: ObservableObject {
                 guard let urlString = obj["results_url"] as? String, let url = URL(string: urlString) else {
                     library.removeClaudeBatch(b.id); continue
                 }
-                let (results, rresp) = try await URLSession.shared.data(for: request(url))
-                let rcode = (rresp as? HTTPURLResponse)?.statusCode ?? 0
+                let (results, rcode) = try await fetch(request(url))
                 guard rcode == 200 else { throw ClaudeError.http(rcode, "Couldn't download the results yet; they'll be retried.") }
                 var verdicts: [String: ClaudeVerdict] = [:]
                 var failed: [String] = [], firstError = ""
@@ -268,7 +365,7 @@ final class ClaudeService: ObservableObject {
                 status = "Claude scored \(verdicts.count.formatted()) photos." +
                     (failed.isEmpty ? "" : " \(failed.count.formatted()) couldn't be scored" + (firstError.isEmpty ? "." : ": \(firstError)"))
             } catch {
-                status = error.localizedDescription
+                status = Self.describe(error)
                 return
             }
         }
