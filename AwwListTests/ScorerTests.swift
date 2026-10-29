@@ -122,6 +122,22 @@ final class ScorerTests: XCTestCase {
         XCTAssertEqual(Scorer.moments(from: p, version: 4).map(\.best.id), ["new"])   // no list quarantine any more
     }
 
+    func testBalancedScoreWeighsMoreThanSmiles() {
+        func x(_ s: Signals, labels: [(String, Float)] = []) -> [Double] {
+            Learner.decode(Learner.encode(signals: Learner.signals(s, apple: 0.5), scene: Data(),
+                                          content: Learner.contentBytes(Learner.content(labels: labels))))!
+        }
+        let smiling = kid(), serious = kid(smile: false), blurry = kid(sharp: 0.1)
+        var pair = kid(); pair.faces.append(pair.faces[0])
+        XCTAssertGreaterThan(Scorer.balanced(x(smiling)), Scorer.balanced(x(serious)))
+        XCTAssertGreaterThan(Scorer.balanced(x(smiling)), Scorer.balanced(x(blurry)))
+        XCTAssertEqual(Scorer.balanced(x(pair)), Scorer.balanced(x(smiling)), accuracy: 0.02)   // no bonus for a second face
+        XCTAssertGreaterThan(Scorer.balanced(x(serious, labels: [("birthday_cake", 0.9)])), Scorer.balanced(x(serious)))
+        // A serious face at a special moment with a sharp, well-made photo isn't buried by smiles alone.
+        let smileShare = Scorer.balanced(x(smiling)) - Scorer.balanced(x(serious))
+        XCTAssertLessThanOrEqual(smileShare, 0.26)
+    }
+
     func testIdenticalFacesBothCount() {
         // A second face (an identical twin, say) is still read, but earns no bonus: a single child scores the same.
         var s = kid(); s.faces.append(s.faces[0])

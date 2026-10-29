@@ -294,7 +294,45 @@ enum Scorer {
     /// keeps the shot Claude scored.
     static func rankValue(_ p: PhotoScore, putBack: Set<String> = [], includePoolOnly: Bool = false) -> Double? {
         guard let v = listedValue(p, putBack: putBack, includePoolOnly: includePoolOnly) else { return nil }
+        if let f = p.feat, let x = Learner.decode(f) { return balanced(x) }
         return max(0, v - pairAdjustment(p))
+    }
+
+    /// Labels that mark a special moment or outing (Describe's moments, activities and outings; everyday things like
+    /// books, pizza and rooms don't count).
+    static let specialLabels: [String] = {
+        let everyday: Set<String> = ["book", "pizza", "pancake", "waffle", "stuffed_animals", "restaurant", "kitchen",
+                                     "kitchen_room", "bedroom", "sofa", "living_room", "airplane", "garden", "park"]
+        return Describe.scenes.filter { $0.kind != .container }.flatMap(\.labels).filter { !everyday.contains($0) }
+    }()
+
+    /// The balanced on-device score (0...1), computed when ranking from the measurements saved for each listed photo
+    /// (Learner.encode), so changing it needs no re-scan:
+    /// expression 25%, eyes open and looking at the camera 10%, photo quality (Apple's quality score and sharpness)
+    /// 30%, how big the child is in the frame 10%, a special moment or outing 10%, action and play 5%, and how
+    /// clearly a child is the subject 10%. Crowds of more than 5 faces count a little less. No bonus for extra faces.
+    static func balanced(_ x: [Double]) -> Double {
+        func at(_ i: Int) -> Double { i < x.count ? x[i] : 0 }
+        let smile = at(0), sleeping = at(2), presence = at(4), child = at(5), sharp = at(7)
+        let faces = at(8) * 6, eyesClosed = at(9), quality = at(12), hasQuality = at(13)
+        let smileCurve = at(15), mouthOpen = at(17), headTurn = at(19), armsUp = at(22), reach = at(25)
+        // A laugh (open-mouthed smile) beats a smile; a sleeping baby is a sweet moment, not a miss.
+        let expression = max(sleeping > 0.5 ? 0.8 : 0, smile > 0.5 ? 0.75 + 0.25 * mouthOpen : 0.3 * smileCurve)
+        let eyes = sleeping > 0.5 ? 1 : min(1, (eyesClosed > 0.5 ? 0 : 0.6) + 0.4 * (1 - headTurn))
+        let photo = hasQuality > 0.5 ? 0.5 * quality + 0.5 * sharp : sharp
+        let base = Learner.signalCount + Learner.sceneDims + Learner.faceDims
+        var special = 0.0
+        for label in specialLabels {
+            let h = Learner.stableHash([label])
+            let sign: Double = (h >> 32) & 1 == 0 ? 1 : -1
+            special = max(special, sign * at(base + Int(h % UInt64(Learner.contentDims))))
+        }
+        special = min(1, max(0, special / 0.8))
+        let action = max(armsUp, reach)
+        var raw = 0.25 * expression + 0.10 * eyes + 0.30 * photo + 0.10 * presence + 0.10 * special
+            + 0.05 * action + 0.10 * child
+        if faces > 5.5 { raw *= 0.85 }
+        return max(0, min(1, raw))
     }
 
     /// Apple's formula used to give any second face of similar size a 0.20 bonus. It no longer does; photos scored
