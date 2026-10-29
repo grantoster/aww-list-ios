@@ -3,6 +3,10 @@ default_platform(:ios)
 platform :ios do
   desc "Build a signed release and upload it to TestFlight"
   lane :beta do
+    # Temporary keychain on the CI Mac for this run's signing certificate.
+    setup_ci(keychain_name: "aww_ci")
+    keychain = File.expand_path("~/Library/Keychains/aww_ci-db")
+
     key_path = File.expand_path("AuthKey.p8")
     File.write(key_path, ENV.fetch("ASC_KEY_P8"))
     api_key = app_store_connect_api_key(
@@ -12,18 +16,42 @@ platform :ios do
     )
     team = ENV.fetch("AWW_TEAM_ID")
     bundle = ENV.fetch("AWW_BUNDLE_ID")
-    auth = "-allowProvisioningUpdates -authenticationKeyPath #{key_path} " \
-           "-authenticationKeyID #{ENV['ASC_KEY_ID']} -authenticationKeyIssuerID #{ENV['ASC_ISSUER_ID']}"
+    profile = "AwwListAppStoreCI"
+    cert_id = nil
 
-    build_app(
-      project: "AwwList.xcodeproj",
-      scheme: "AwwList",
-      export_method: "app-store",   # runner fastlane predates the "app-store-connect" name; Xcode maps it
-      export_team_id: team,
-      xcargs: "AWW_TEAM_ID=#{team} AWW_BUNDLE_ID=#{bundle} CURRENT_PROJECT_VERSION=#{Time.now.to_i / 60} #{auth}",
-      export_xcargs: auth
-    )
+    begin
+      # A fresh Apple Distribution certificate for this run only (the cloud Mac keeps nothing between runs).
+      # It is revoked again at the end so the account never hits Apple's certificate limit; revoking it
+      # does not affect builds already uploaded to TestFlight or the App Store.
+      get_certificates(api_key: api_key, force: true, generate_apple_certs: true,
+                       keychain_path: keychain, keychain_password: "")
+      cert_id = lane_context[SharedValues::CERT_CERTIFICATE_ID]
 
-    upload_to_testflight(api_key: api_key, skip_waiting_for_build_processing: true)
+      # An App Store provisioning profile for that certificate (needs no registered devices).
+      get_provisioning_profile(api_key: api_key, app_identifier: bundle, force: true,
+                               cert_id: cert_id, provisioning_name: profile)
+
+      build_app(
+        project: "AwwList.xcodeproj",
+        scheme: "AwwList",
+        configuration: "Release",
+        export_method: "app-store",   # runner fastlane predates the "app-store-connect" name; Xcode maps it
+        export_team_id: team,
+        xcargs: "AWW_TEAM_ID=#{team} AWW_BUNDLE_ID=#{bundle} CURRENT_PROJECT_VERSION=#{Time.now.to_i / 60} " \
+                "CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY='Apple Distribution' PROVISIONING_PROFILE_SPECIFIER=#{profile}",
+        export_options: { signingStyle: "manual", provisioningProfiles: { bundle => profile } }
+      )
+
+      upload_to_testflight(api_key: api_key, skip_waiting_for_build_processing: true)
+    ensure
+      if cert_id
+        begin
+          Spaceship::ConnectAPI::Certificate.get(certificate_id: cert_id).delete!
+          UI.message("Revoked this run's signing certificate")
+        rescue => e
+          UI.important("Could not revoke certificate #{cert_id}: #{e.message}")
+        end
+      end
+    end
   end
 end
