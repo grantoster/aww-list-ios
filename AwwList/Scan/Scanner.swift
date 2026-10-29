@@ -57,7 +57,7 @@ final class PhotoScanner: ObservableObject {
                 && !(Scorer.softReasons.contains($0.excluded ?? "") && $0.softChecked != true
                      && ($0.faces ?? 0) > 0)
                 // photos on the list (or offered to Claude) get the fingerprint the learned score needs
-                && !(($0.raw != nil || $0.soft != nil) && $0.feat?.count != Learner.featureCount)
+                && !(($0.raw != nil || $0.soft != nil) && $0.featChecked != true)
         }.map(\.id))
         // Photos already on the list keep their score if they can't be re-read this time.
         // Photos that already have a record keep it if they can't be re-read this time (a scored photo keeps its
@@ -321,6 +321,9 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
                                         excluded: Scorer.unavailable, age: nil, caption: "", version: Scorer.version))
             }
             signals = measured
+            if Scorer.score(measured).raw != nil || Scorer.softScore(measured) != nil {
+                signals.scenePrint = analyzer.scenePrint(cg, orientation: CGImagePropertyOrientation(img.imageOrientation))
+            }
             if Scorer.score(measured).raw != nil {
                 records = analyzer.facePrints(cg, orientation: CGImagePropertyOrientation(img.imageOrientation),
                                               faces: measured.faces)
@@ -343,7 +346,8 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
             p.age = signals.babyConfidence > 0.5 ? .baby : .kid
         }
         p.softChecked = true
-        if let base = raw ?? p.soft {
+        p.featChecked = true
+        if let base = raw ?? p.soft, !signals.scenePrint.isEmpty {
             p.feat = Learner.encode(signals: Learner.signals(signals, apple: base),
                                     scene: People.embed(signals.scenePrint, dims: Learner.sceneDims))
         }

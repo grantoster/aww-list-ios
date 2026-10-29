@@ -232,13 +232,20 @@ struct LearnedSection: View {
         Section {
             if let m = library.learned {
                 LabeledContent("Learned from", value: "\(m.trainedOn.formatted()) Claude scores")
-                LabeledContent("Within 1 point of Claude", value: "\(Int((m.within1 * 100).rounded(.toNearestOrAwayFromZero)))% of \(m.tested.formatted()) test photos")
-                LabeledContent("Average gap", value: String(format: "%.1f", (m.meanGap * 10).rounded(.toNearestOrAwayFromZero) / 10) + " points")
+                let pct = { (v: Double) in "\(Int((v * 100).rounded(.toNearestOrAwayFromZero)))%" }
+                let pts = { (v: Double) in String(format: "%.1f", (v * 10).rounded(.toNearestOrAwayFromZero) / 10) + " points" }
+                LabeledContent("Within 1 point of Claude", value: pct(m.within1))
+                LabeledContent("Average gap", value: pts(m.meanGap))
+                if let bw = m.baselineWithin1, let bg = m.baselineGap {
+                    LabeledContent("Just guessing the average", value: "\(pct(bw)) · \(pts(bg))")
+                }
+                Text("Checked on \(m.tested.formatted()) photos from days it didn't learn from, among the photos Claude scored (each year's top picks), so it may be less exact on photos further down the list.")
+                    .font(.footnote).foregroundStyle(.secondary)
                 LabeledContent("Last trained", value: m.date.formatted(date: .abbreviated, time: .shortened))
             } else {
                 let n = library.learnableCount
                 Text(n == 0 ? "Once Claude has scored some of your photos, the app learns from those scores and uses them to score every photo on this iPhone."
-                            : "Learning starts at about \(Learner.minimumExamples + Learner.minimumExamples / 4) Claude scores with fingerprints. You have \(n.formatted()) so far.")
+                            : "Learning starts once there are roughly 80–100 Claude scores (spread over enough days to test it fairly). You have \(n.formatted()) so far.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             if library.training { HStack { ProgressView(); Text("Learning…").foregroundStyle(.secondary) } }

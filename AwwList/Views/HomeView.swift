@@ -35,7 +35,7 @@ struct HomeView: View {
                     scopeBar
                     ageBar
                     whoBar
-                    if library.claudeScored > 0 { rankBar }
+                    if library.claudeScored > 0 || library.learned != nil { rankBar }
                     if age == .toddler && library.birthdays.isEmpty && !library.people.contains(where: { $0.birthday != nil }) {
                         ContentUnavailableView {
                             Label("Add your kids' birthdays", systemImage: "birthday.cake")

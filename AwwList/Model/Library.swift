@@ -95,32 +95,42 @@ final class Library: ObservableObject {
 
     /// Re-learns from every Claude score (off the main thread; a few seconds at most). Runs after new scores
     /// arrive, after a scan adds fingerprints, and at launch when the model is out of date.
+    private var pendingRetrain = false
+    private var trainedSignature: Int?
+
     func retrain() {
-        guard !training else { return }
-        let examples = photos.values.compactMap { p -> (id: String, x: [Double], y: Double)? in
+        guard !training else { pendingRetrain = true; return }   // run again once the current one finishes
+        var sig = Hasher()
+        let examples = photos.values.sorted { $0.id < $1.id }.compactMap { p -> (date: Date, x: [Double], y: Double)? in
             guard let c = p.claude, c.exclude == nil, let f = p.feat, let x = Learner.decode(f) else { return nil }
-            return (p.id, x, c.score)
+            sig.combine(p.id); sig.combine(c.score)
+            return (p.date, x, c.score)
         }
-        guard examples.count != learned?.trainedOn else { return }
+        let signature = sig.finalize()
+        guard signature != trainedSignature else { return }      // nothing new to learn from
         training = true
         Task.detached(priority: .utility) {
             let model = Learner.train(examples)
             await MainActor.run {
                 self.training = false
+                self.trainedSignature = signature
                 if let model { self.learned = model; self.rebuild(); self.save() }
+                if self.pendingRetrain { self.pendingRetrain = false; self.retrain() }
             }
         }
     }
     func clearClaude() {
         for id in photos.keys where photos[id]?.claude != nil { photos[id]?.claude = nil }
         claudeBatches = []
+        learned = nil; trainedSignature = nil
+        if rankBy == "learned" { rankBy = "apple" }
         rebuild(); save()
     }
     var claudeScored: Int { moments.filter { $0.claudeScore != nil }.count }
     /// The moments in Apple's on-device order (used to choose what to send to Claude).
     /// (Sorted once per rebuild, so Settings can show counts without re-sorting the library on every redraw.)
     /// What can be offered to Claude: Apple's list plus the photos Apple set aside for a soft reason, ranked
-    /// each year by on-device score (cached at each rebuild).
+    /// each year by the learned score once there is one, otherwise by on-device score (cached at each rebuild).
     private(set) var claudePool: [Moment] = []
     /// Photos Claude couldn't score, and how many times; after two tries they aren't re-sent (or re-billed).
     @Published private(set) var claudeFailures: [String: Int] = [:]
@@ -223,7 +233,8 @@ final class Library: ObservableObject {
             }
             m.learnedScore = learnedScore(for: m.best)
             if useClaude {
-                m.score = m.claudeScore.map(Claude.displayScore) ?? m.learnedScore.map(Claude.displayScore) ?? min(m.apple, 6)
+                // learned scores top out at 8 here, so Claude's own 9s and 10s stay Claude's
+                m.score = m.claudeScore.map(Claude.displayScore) ?? m.learnedScore.map { min(Claude.displayScore($0), 8) } ?? min(m.apple, 6)
             } else if useLearned {
                 m.score = m.learnedScore.map(Claude.displayScore) ?? m.apple
             }

@@ -15,6 +15,9 @@ struct LearnedModel: Codable, Equatable {
     var within1: Double        // share of held-back photos within 1 point of Claude
     var meanGap: Double        // average distance from Claude's score, in points
     var date: Date
+    /// The same check for simply guessing the average Claude score every time (to show what the model adds).
+    var baselineWithin1: Double? = nil
+    var baselineGap: Double? = nil
 }
 
 /// Turns photos into fingerprints and learns Claude's scoring from them. Pure math, so it's unit tested.
@@ -72,12 +75,16 @@ enum Learner {
 
     // MARK: Learning
 
-    /// Stable 1-in-5 split by photo id, so the held-back photos are the same every time.
-    static func heldBack(_ id: String) -> Bool {
+    /// Photos are grouped by the day they were taken, so near-identical shots from one outing never end up on
+    /// both sides of the test (which would make the accuracy look better than it is).
+    static func group(_ date: Date) -> UInt64 {
+        let c = Calendar(identifier: .gregorian).dateComponents([.year, .month, .day], from: date)
         var h: UInt64 = 14695981039346656037
-        for b in id.utf8 { h = (h ^ UInt64(b)) &* 1099511628211 }
-        return h % 5 == 0
+        for b in "\(c.year ?? 0)-\(c.month ?? 0)-\(c.day ?? 0)".utf8 { h = (h ^ UInt64(b)) &* 1099511628211 }
+        return h
     }
+    /// Stable 1-in-5 held-back split, by day.
+    static func heldBack(_ date: Date) -> Bool { group(date) % 5 == 0 }
 
     struct Fit { var mean: [Double]; var std: [Double]; var w: [Double]; var bias: Double }
 
@@ -146,21 +153,34 @@ enum Learner {
         predict(Fit(mean: m.mean, std: m.std, w: m.weights, bias: m.bias), x)
     }
 
-    /// Learns from (id, fingerprint, Claude's score). Picks the regularization on the held-back fifth, reports
-    /// how close it gets there, then refits on everything. Nil until there are enough scores.
-    static func train(_ examples: [(id: String, x: [Double], y: Double)]) -> LearnedModel? {
-        let test = examples.filter { heldBack($0.id) }, train = examples.filter { !heldBack($0.id) }
+    /// Learns from (photo date, fingerprint, Claude's score):
+    /// 1. holds back a fifth of the days, untouched, for the reported check;
+    /// 2. picks the regularization by 4-fold cross-validation on the rest (also grouped by day);
+    /// 3. reports how close that model gets on the held-back days, next to just guessing the average;
+    /// 4. refits on everything. Nil until there are enough scores.
+    static func train(_ examples: [(date: Date, x: [Double], y: Double)]) -> LearnedModel? {
+        let test = examples.filter { heldBack($0.date) }, train = examples.filter { !heldBack($0.date) }
         guard train.count >= minimumExamples, test.count >= 10 else { return nil }
-        var best: (lambda: Double, gap: Double, within: Double)?
+        func fold(_ d: Date) -> UInt64 { (group(d) / 5) % 4 }
+        var bestLambda = 100.0, bestGap = Double.infinity
         for lambda in [1.0, 10, 100, 1000] {
-            guard let f = fit(train.map(\.x), train.map(\.y), lambda: lambda) else { continue }
-            let gaps = test.map { abs(predict(f, $0.x) - $0.y) }
-            let gap = gaps.reduce(0, +) / Double(gaps.count)
-            let within = Double(gaps.filter { $0 <= 1 }.count) / Double(gaps.count)
-            if best == nil || gap < best!.gap { best = (lambda, gap, within) }
+            var total = 0.0, count = 0
+            for k in 0..<UInt64(4) {
+                let fitPart = train.filter { fold($0.date) != k }, checkPart = train.filter { fold($0.date) == k }
+                guard !checkPart.isEmpty, let f = fit(fitPart.map(\.x), fitPart.map(\.y), lambda: lambda) else { continue }
+                for e in checkPart { total += abs(predict(f, e.x) - e.y); count += 1 }
+            }
+            if count > 0, total / Double(count) < bestGap { bestGap = total / Double(count); bestLambda = lambda }
         }
-        guard let b = best, let all = fit(examples.map(\.x), examples.map(\.y), lambda: b.lambda) else { return nil }
-        return LearnedModel(mean: all.mean, std: all.std, weights: all.w, bias: all.bias, lambda: b.lambda,
-                            trainedOn: examples.count, tested: test.count, within1: b.within, meanGap: b.gap, date: Date())
+        guard let f = fit(train.map(\.x), train.map(\.y), lambda: bestLambda),
+              let all = fit(examples.map(\.x), examples.map(\.y), lambda: bestLambda) else { return nil }
+        let gaps = test.map { abs(predict(f, $0.x) - $0.y) }
+        let avg = train.map(\.y).reduce(0, +) / Double(train.count)
+        let baseGaps = test.map { abs(avg - $0.y) }
+        func within(_ g: [Double]) -> Double { Double(g.filter { $0 <= 1 }.count) / Double(g.count) }
+        func mean(_ g: [Double]) -> Double { g.reduce(0, +) / Double(g.count) }
+        return LearnedModel(mean: all.mean, std: all.std, weights: all.w, bias: all.bias, lambda: bestLambda,
+                            trainedOn: examples.count, tested: test.count, within1: within(gaps), meanGap: mean(gaps),
+                            date: Date(), baselineWithin1: within(baseGaps), baselineGap: mean(baseGaps))
     }
 }

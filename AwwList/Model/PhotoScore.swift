@@ -68,6 +68,8 @@ struct PhotoScore: Codable, Hashable, Identifiable {
     var softChecked: Bool? = nil
     /// On-device fingerprint for the learned score (Learner.encode), for photos on the list or offered to Claude.
     var feat: Data? = nil
+    /// True once the fingerprint was attempted (so a photo whose whole-scene print fails isn't retried forever).
+    var featChecked: Bool? = nil
 }
 
 /// One moment: photos taken less than 60 seconds apart (2 minutes at most), represented by its best shot.

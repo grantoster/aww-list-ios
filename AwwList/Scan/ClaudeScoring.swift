@@ -239,23 +239,28 @@ final class ClaudeService: ObservableObject {
         }
     }
 
-    /// The moments that still need Claude's score: each year's top N by Apple's on-device score (so the set
-    /// doesn't shift as Claude's own scores come in), minus ones already scored or waiting in a batch.
+    /// The moments still to send. Each year gets a fixed budget: N photos from Apple's list plus a fifth of N
+    /// that Apple set aside; photos Claude already scored (with this model) use up the budget, so re-ranking
+    /// (for example by the learned score) never sends more than the chosen number. Within the budget, the best
+    /// candidates go first: by the learned score once there is one, otherwise by Apple's.
     func candidates(_ library: Library) -> [Moment] {
         let model = library.claudeModel, n = library.claudeScope
         let pending = Set(library.claudeBatches.flatMap { $0.photos.values })
+        func done(_ m: Moment) -> Bool {
+            pending.contains(m.best.id) || (library.claudeFailures[m.best.id] ?? 0) >= 2
+                || (m.best.claude.map { $0.model == model && $0.rubric == Claude.rubric } ?? false)
+        }
         var byYear: [Int: [Moment]] = [:]
         for m in library.claudePool { byYear[m.year, default: []].append(m) }   // cached at each rebuild
-        // Apple's own picks fill each year's N; photos Apple set aside get an extra fifth of N on top.
         return byYear.values.flatMap { list -> [Moment] in
             let listed = list.filter { $0.best.raw != nil }, aside = list.filter { $0.best.raw == nil }
-            return n > 0 ? Array(listed.prefix(n)) + Array(aside.prefix(max(1, n / 5))) : list
-        }
-            .filter { m in
-                guard !pending.contains(m.best.id), (library.claudeFailures[m.best.id] ?? 0) < 2 else { return false }
-                if let c = m.best.claude { return c.model != model || c.rubric != Claude.rubric }
-                return true
+            guard n > 0 else { return list.filter { !done($0) } }
+            func pick(_ group: [Moment], budget: Int) -> [Moment] {
+                let left = max(0, budget - group.filter(done).count)
+                return Array(group.filter { !done($0) }.prefix(left))
             }
+            return pick(listed, budget: n) + pick(aside, budget: max(1, n / 5))
+        }
     }
 
     /// Sends the next photos in batches of 50 (small enough to finish uploading if the app is closed), then checks for results.

@@ -63,11 +63,7 @@ final class Analyzer {
         let classify = VNClassifyImageRequest()
         let faces = VNDetectFaceCaptureQualityRequest()
         let handler = VNImageRequestHandler(cgImage: image, orientation: orientation, options: [:])
-        let scene = VNGenerateImageFeaturePrintRequest()
-        do { try handler.perform([classify, faces, scene]) } catch { return nil }
-        if let fp = scene.results?.first, fp.elementType == .float {
-            s.scenePrint = fp.data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
-        }
+        do { try handler.perform([classify, faces]) } catch { return nil }
 
         for obs in classify.results ?? [] {
             let id = obs.identifier
@@ -122,6 +118,15 @@ final class Analyzer {
         }
         s.sharpness = sharpness(ci, box: subjectBox)
         return s
+    }
+
+    /// Vision's feature print of the whole photo, for the learned score. Run only for photos on the list or
+    /// offered to Claude; empty if it fails (the photo still counts, without a learned score).
+    func scenePrint(_ image: CGImage, orientation: CGImagePropertyOrientation) -> [Float] {
+        let req = VNGenerateImageFeaturePrintRequest()
+        guard (try? VNImageRequestHandler(cgImage: image, orientation: orientation, options: [:]).perform([req])) != nil,
+              let fp = req.results?.first, fp.elementType == .float else { return [] }
+        return fp.data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
     }
 
     /// Face fingerprints for Who's Who: Vision's image feature print of each of the (up to 4) largest faces.
