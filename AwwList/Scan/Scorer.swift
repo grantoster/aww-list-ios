@@ -17,7 +17,7 @@ struct Signals: Equatable {
     var babyConfidence: Double = 0       // 0...1
     var faces: [FaceSignal] = []
     var sharpness: Double = 0            // 0...1, measured on the subject's face crop
-    var waterScene: Bool = false         // confident lake/ocean/shore/river/sprinkler/fountain label
+    var waterScene: Bool = false         // confident water-scene label (Analyzer.waterScenes)
     var isScreenshot: Bool = false
     var blockedLabel: String? = nil      // "bath", "swimwear", "undressed", "document", "screenshot"
 
@@ -27,7 +27,7 @@ struct Signals: Equatable {
 
 enum Scorer {
     /// Bump when scoring changes; photos scored by an older version are analyzed again.
-    static let version = 6
+    static let version = 7
 
     /// Minimum label confidence for a photo to count as having a child in it (unless the precise filter passed).
     static let childThreshold = 0.35
@@ -51,13 +51,18 @@ enum Scorer {
         // person's own crop is classified; when that wasn't measured, the smallest face stands in for the baby.
         // Checked before the child test (with a lower bar) so an older kid the child label half-misses still
         // hides the burst around them.
-        let fallbackBaby = s.babyConfidence > 0.5 ? s.faces.indices.min { s.faces[$0].area < s.faces[$1].area } : nil
-        let bare = s.faces.indices.contains { i in
-            let f = s.faces[i]
-            guard f.bareTorso >= bareTorsoLimit else { return false }
-            if let b = f.baby { return b <= 0.5 }
-            return i != fallbackBaby
+        // At most one bare chest is exempt: the smallest bare-chested face, and only when the photo reads as a baby
+        // photo and that person's own crop does too (or, if no crop was measured, by being the smallest face).
+        let bareIdx = s.faces.indices.filter { s.faces[$0].bareTorso >= bareTorsoLimit }
+        let anyMeasured = s.faces.contains { $0.baby != nil }
+        let smallestBare = bareIdx.min { s.faces[$0].area < s.faces[$1].area }
+        let smallestFace = s.faces.indices.min { s.faces[$0].area < s.faces[$1].area }
+        var exempt: Int? = nil
+        if s.babyConfidence > 0.5, let i = smallestBare {
+            if let b = s.faces[i].baby { if b > 0.5 { exempt = i } }
+            else if !anyMeasured && i == smallestFace { exempt = i }
         }
+        let bare = bareIdx.contains { $0 != exempt }
         if bare && (s.childPrecise || s.childConfidence >= 0.15) { return (nil, "Shirtless") }
         guard s.childPrecise || s.childConfidence >= childThreshold else { return (nil, "No child") }
         if s.waterScene { return (nil, "Water") }

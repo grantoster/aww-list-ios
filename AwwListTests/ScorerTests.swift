@@ -49,6 +49,14 @@ final class ScorerTests: XCTestCase {
         var farSibling = diaperBaby; farSibling.faces[0].area = 0.15; farSibling.faces[0].baby = 0.9
         farSibling.faces.append(FaceSignal(area: 0.06, quality: 0.8, smile: true, eyesClosed: false, bareTorso: 0.9, baby: 0.1))
         XCTAssertEqual(Scorer.score(farSibling).excluded, "Shirtless")
+        // a shirtless older brother holding a diaper baby: only the smallest bare chest can be exempt
+        var holding = diaperBaby; holding.faces[0].area = 0.05; holding.faces[0].baby = 0.9
+        holding.faces.append(FaceSignal(area: 0.12, quality: 0.8, smile: true, eyesClosed: false, bareTorso: 0.85, baby: 0.8))
+        XCTAssertEqual(Scorer.score(holding).excluded, "Shirtless")
+        // a crop that couldn't be measured is not a baby when another face was measured
+        var unmeasured = diaperBaby; unmeasured.faces[0].area = 0.15; unmeasured.faces[0].bareTorso = 0; unmeasured.faces[0].baby = 0.9
+        unmeasured.faces.append(FaceSignal(area: 0.03, quality: 0.8, smile: true, eyesClosed: false, bareTorso: 0.9, baby: nil))
+        XCTAssertEqual(Scorer.score(unmeasured).excluded, "Shirtless")
         // shirtless at a lake is filed as Shirtless (which hides its burst), not just Water
         var lakeBoy = s; lakeBoy.waterScene = true
         XCTAssertEqual(Scorer.score(lakeBoy).excluded, "Shirtless")
