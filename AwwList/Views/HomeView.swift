@@ -66,8 +66,8 @@ struct HomeView: View {
                         }
                         .padding(.top, 24)
                     } else if pool.isEmpty {
-                        ContentUnavailableView("No moments yet", systemImage: "heart.circle",
-                                               description: Text(scanner.isScanning ? "Still looking through your photos." : "Nothing matched this filter."))
+                        ContentUnavailableView("No awws yet", systemImage: "heart.circle",
+                                               description: Text(scanner.isScanning ? "Still looking through your photos. The good ones show up here as they're found." : "Nothing here for this filter. Try another one."))
                             .padding(.top, 40)
                     } else {
                         topSection
@@ -77,7 +77,8 @@ struct HomeView: View {
                 .padding(.horizontal, 16)
                 .padding(.bottom, 32)
             }
-            .navigationTitle(selecting ? "\(picked.count) selected" : "Aww List")
+            .background(Theme.background.ignoresSafeArea())
+            .navigationTitle(selecting ? "\(picked.count) picked" : "aww list")
             .safeAreaInset(edge: .bottom) { if selecting { selectionBar } }
             .overlay(alignment: .bottom) {
                 if let note {
@@ -181,7 +182,7 @@ struct HomeView: View {
     private var topSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(scopeTitle + " top 30").font(Theme.display(26)).lineLimit(1).minimumScaleFactor(0.7)
-            Text("\(pool.count.formatted()) moments ranked").font(.subheadline).foregroundStyle(.secondary)
+            Text("\(pool.count.formatted()) moments ranked").font(Theme.label(15)).foregroundStyle(.secondary)
             // While picking, this row stays (blank) so the photos don't jump under your finger.
             Group {
                 let n = min(maxPick, top.count)
@@ -289,6 +290,11 @@ struct HomeView: View {
 
     private var selectionBar: some View {
         HStack(spacing: 10) {
+            Button { favoritePicked() } label: {
+                Image(systemName: "heart").frame(minWidth: 28)
+            }
+            .buttonStyle(.bordered)
+            .accessibilityLabel("Favorite in Photos")
             Button { send(picked, copy: true) } label: {
                 Label("Copy", systemImage: "doc.on.doc").frame(maxWidth: .infinity)
             }
@@ -355,6 +361,19 @@ struct HomeView: View {
         }
     }
 
+    /// Favorites every picked photo in Photos too (the one change Aww List can make to the library).
+    private func favoritePicked() {
+        let ids = picked
+        guard !ids.isEmpty, !preparing else { return }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        Task {
+            let ok = await Favorites.set(ids, favorite: true)
+            let n = ids.count
+            flash(ok ? "Favorited \(n) in Photos" : "Photos didn't allow that. Check photo access in Settings.")
+            if ok && selecting && picked == ids { endSelecting() }
+        }
+    }
+
     private func flash(_ text: String) {
         let id = UUID()
         withAnimation { note = (id, text) }
@@ -380,9 +399,9 @@ struct Pill: View {
     var body: some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: small ? 14 : 16, weight: .bold, design: .rounded))
+                .font(Theme.label(small ? 15 : 17))
                 .padding(.horizontal, small ? 12 : 16).frame(minHeight: 40)
-                .background(on ? Theme.accent : Color.secondary.opacity(0.12), in: Capsule())
+                .background(on ? Theme.accent : Theme.surface, in: Capsule())
                 .foregroundStyle(on ? Color.white : Color.primary)
         }
         .buttonStyle(.plain)
@@ -406,7 +425,7 @@ struct Card: View {
                 .overlay { PickMark(picked: picked, cornerRadius: 16) }
                 .overlay(alignment: .topLeading) { RankBadge(rank: rank).padding(8) }
                 .overlay(alignment: .topTrailing) { ScoreBadge(score: moment.score).padding(8) }
-            Text(moment.caption).font(.subheadline.bold()).lineLimit(2, reservesSpace: true)
+            Text(moment.caption).font(Theme.label(16)).lineLimit(2, reservesSpace: true)
             Text(moment.best.date.shortDay).font(.caption).foregroundStyle(.secondary)
         }
         .contentShape(Rectangle())

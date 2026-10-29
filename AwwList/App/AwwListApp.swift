@@ -6,7 +6,7 @@ struct AwwListApp: App {
     @StateObject private var scanner = Shared.scanner
     @StateObject private var claude = Shared.claude
 
-    init() { BackgroundScan.register() }
+    init() { BackgroundScan.register(); Theme.styleNavigationBars() }
 
     var body: some Scene {
         WindowGroup {

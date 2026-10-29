@@ -19,11 +19,16 @@ jobs:
       - name: Read-only guard (the app must never change, add to or delete from the photo library)
         run: |
           PAT='performChanges|PHAssetChangeRequest|PHAssetCreationRequest|PHAssetCollectionChangeRequest|PHCollectionListChangeRequest|deleteAssets|UIImageWriteToSavedPhotosAlbum|UISaveVideoAtPathToSavedPhotosAlbum|PHContentEditingOutput|ShareLink|NSPhotoLibraryAddUsageDescription'
-          if grep -rnE "$PAT" AwwList project.yml; then echo "::error::Photo-library write API found. Aww List must stay read-only."; exit 1; fi
+          # One exception, allowed by the owner: Model/Favorites.swift may set a photo's favorite, and nothing else.
+          F=AwwList/Model/Favorites.swift
+          if grep -rnE "$PAT" AwwList project.yml | grep -v "^$F:"; then echo "::error::Photo-library write API found. Aww List must stay read-only (favorites only, in $F)."; exit 1; fi
+          if grep -nE "PHAssetCreationRequest|PHAssetCollectionChangeRequest|PHCollectionListChangeRequest|deleteAssets|creationRequest|ContentEditing|revertAssetContent|UIImageWrite|ShareLink|NSPhotoLibraryAddUsageDescription|\.location *=|\.creationDate *=|\.isHidden" "$F"; then echo "::error::$F may only change favorites."; exit 1; fi
+          if grep -n "PHAssetChangeRequest" "$F" | grep -vE 'PHAssetChangeRequest\(for: [A-Za-z]+\)\.isFavorite = [A-Za-z]+$'; then echo "::error::$F may only set isFavorite."; exit 1; fi
+          [ "$(grep -c 'performChanges' "$F")" -le 1 ] || { echo "::error::$F may make only one kind of change."; exit 1; }
           grep -qE '^[[:space:]]*vc\.excludedActivityTypes = \[\.saveToCameraRoll, .*StreamShareService' AwwList/Views/ViewerView.swift || { echo "::error::The share sheet must keep excluding Save Image and Shared Album."; exit 1; }
           # Never look in the Hidden album.
           if grep -rnE "includeHiddenAssets *= *[^f ]|isHidden|hiddenAlbum|smartAlbumAllHidden|AllHidden|withLocalIdentifiers|withBurstIdentifier|forKey: *\"includeHiddenAssets" AwwList; then echo "::error::The app must never look in the Hidden album."; exit 1; fi
-          echo "No photo-library write APIs or Hidden-album access found."
+          echo "No photo-library writes (other than favorites) and no Hidden-album access found."
       - name: Select newest Xcode 26 (App Store uploads need the iOS 26 SDK)
         run: |
           X=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)

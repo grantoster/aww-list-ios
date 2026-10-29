@@ -49,20 +49,20 @@ struct WelcomeView: View {
         ScrollView {
         VStack(spacing: 20) {
             Spacer(minLength: 0)
-            Image(systemName: "heart.text.square.fill").font(.system(size: 72)).foregroundStyle(Theme.accent)
-            Text("Aww List").font(Theme.display(40))
-            Text("Finds the cutest photos of your kids and ranks them, year by year.")
-                .font(.title3).multilineTextAlignment(.center).foregroundStyle(.secondary)
+            Image("BrandMark").resizable().scaledToFit().frame(width: 150, height: 150).accessibilityHidden(true)
+            Text("aww list").font(Theme.display(44, relativeTo: .largeTitle)).foregroundStyle(Theme.accent)
+            Text("Finds the photos of your kids that make everyone go aww, and ranks them year by year.")
+                .font(Theme.label(19, relativeTo: .title3)).multilineTextAlignment(.center).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 10) {
                 Label("Scoring happens on this iPhone. Photos are only uploaded if you choose to score them with Claude.", systemImage: "lock.fill")
-                Label("Read only: it never changes or deletes anything in your library.", systemImage: "hand.raised")
+                Label("It never edits, adds or deletes photos. The only change it can make is a favorite, when you tap the heart.", systemImage: "hand.raised")
                 Label("Screenshots and possible bath photos are left out.", systemImage: "eye.slash")
                 Label("Bursts count as one moment, using the best shot.", systemImage: "square.stack")
             }
-            .font(.subheadline).padding().background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 14))
+            .font(.subheadline).padding().background(Theme.surface, in: RoundedRectangle(cornerRadius: 18))
             Spacer(minLength: 0)
             Button(action: onStart) {
-                Text("Choose photos to scan").font(.headline).frame(maxWidth: .infinity, minHeight: 52)
+                Text("Find my awws").font(Theme.label(19, relativeTo: .headline)).frame(maxWidth: .infinity, minHeight: 52)
             }
             .buttonStyle(.borderedProminent)
             Text("For the full list, allow access to all photos.").font(.caption).foregroundStyle(.secondary)
@@ -71,6 +71,7 @@ struct WelcomeView: View {
         .frame(minHeight: geo.size.height)   // fills the screen, and scrolls when text is large
         }
         }
+        .background(Theme.background.ignoresSafeArea())
     }
 }
 
@@ -126,7 +127,7 @@ struct SettingsView: View {
                         .font(.footnote)
                     Text("Everything else Apple isn't sure about stays on the list with a flag: no child spotted, water scenes, swimwear, shirtless, and files that look AI-generated, face-retouched or not from a camera. Claude makes the call on those, and once the app has learned from Claude's calls, it hides the ones it expects Claude would remove when ranking by Claude or by the learned score. Ranking by Apple shows them all.")
                         .font(.footnote)
-                    Text("Aww List only reads your photo library. It never changes, adds to or deletes anything in it; Remove from list only hides a photo inside this app.")
+                    Text("Aww List reads your photo library. It never edits, adds or deletes photos; the only change it can make is a favorite, when you tap the heart. Remove from list only hides a photo inside this app.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("How scores work") {
@@ -140,6 +141,8 @@ struct SettingsView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(Theme.background.ignoresSafeArea())
             .navigationTitle("Settings")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }

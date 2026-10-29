@@ -9,6 +9,9 @@ struct ViewerView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var shareImage: UIImage?
     @State private var sharing: UIImage?
+    /// Whether Photos has this one as a favorite (nil while checking).
+    @State private var favorite: Bool?
+    @State private var favNote: String?
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -37,6 +40,9 @@ struct ViewerView: View {
             if v.translation.height > 120 && abs(v.translation.width) < 60 { dismiss() }
         })
         .task(id: index) {
+            favorite = nil
+            let id = moments[index].best.id
+            favorite = await Task.detached { Favorites.isFavorite(id) }.value
             shareImage = nil
             shareImage = await AssetImage.load(id: moments[index].best.id, size: CGSize(width: 2048, height: 2048), mode: .aspectFit)
         }
@@ -50,9 +56,17 @@ struct ViewerView: View {
             let m = moments[index]
             VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("\(m.score)").font(Theme.display(34)).foregroundStyle(m.score >= 9 ? Theme.gold : Color.white)
+                    Text("\(m.score)").font(Theme.display(38)).foregroundStyle(m.score >= 9 ? Theme.sunny : Color.white)
                     Text("/10").foregroundStyle(.white.opacity(0.7))
                     Spacer()
+                    if let favorite {
+                        Button { toggleFavorite(m, to: !favorite) } label: {
+                            Image(systemName: favorite ? "heart.fill" : "heart").font(.title3)
+                                .foregroundStyle(favorite ? Theme.sunny : Color.white).frame(width: 44, height: 44)
+                                .contentTransition(.symbolEffect(.replace))
+                        }
+                        .accessibilityLabel(favorite ? "Unfavorite in Photos" : "Favorite in Photos")
+                    }
                     if let shareImage {
                         Button { sharing = shareImage } label: {
                             Image(systemName: "square.and.arrow.up").font(.title3).foregroundStyle(.white).frame(width: 44, height: 44)
@@ -64,12 +78,30 @@ struct ViewerView: View {
                         Image(systemName: "ellipsis.circle").font(.title3).foregroundStyle(.white).frame(width: 44, height: 44)
                     }
                 }
-                Text(m.caption).font(.headline).foregroundStyle(.white)
+                if let favNote { Text(favNote).font(Theme.label(14)).foregroundStyle(Theme.sunny) }
+                Text(m.caption).font(Theme.label(18, relativeTo: .headline)).foregroundStyle(.white)
                 Text(bothScores(m)).font(.caption.monospacedDigit()).foregroundStyle(.white.opacity(0.85))
                 Text(m.best.date.shortDay + (m.shots > 1 ? " · +\(m.shots - 1) similar" : "")).font(.caption).foregroundStyle(.white.opacity(0.75))
             }
             .padding(16)
             .background(LinearGradient(colors: [.clear, .black.opacity(0.8)], startPoint: .top, endPoint: .bottom))
+        }
+    }
+
+    /// Hearts (or un-hearts) the photo in Photos too. If Photos says no, the heart goes back and says why.
+    private func toggleFavorite(_ m: Moment, to on: Bool) {
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        favorite = on
+        Task {
+            let ok = await Favorites.set([m.best.id], favorite: on)
+            guard moments.indices.contains(index), moments[index].id == m.id else { return }
+            if !ok {
+                favorite = !on
+                favNote = "Photos didn't allow that. Check Aww List's photo access in Settings."
+                AccessibilityNotification.Announcement(favNote ?? "").post()
+            } else {
+                favNote = nil
+            }
         }
     }
 

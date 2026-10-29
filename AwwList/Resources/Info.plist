@@ -25,7 +25,7 @@
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Aww List reads your photos to find and rank your cutest moments. It never changes or deletes anything in your library. Photos leave this iPhone only if you choose to have Claude score them in Settings.</string>
+	<string>Aww List reads your photos to find and rank your cutest moments. It never edits, adds or deletes photos. The only change it can make is the heart: favoriting a photo in Aww List favorites it in Photos too. Photos leave this iPhone only if you choose to have Claude score them in Settings.</string>
 	<key>PHPhotoLibraryPreventAutomaticLimitedAccessAlert</key>
 	<true/>
 	<key>UIBackgroundModes</key>
@@ -36,6 +36,11 @@
 	<array>
 		<string>$(PRODUCT_BUNDLE_IDENTIFIER).scan</string>
 		<string>$(PRODUCT_BUNDLE_IDENTIFIER).continued.*</string>
+	</array>
+	<key>UIAppFonts</key>
+	<array>
+		<string>Fonts/Baloo2-ExtraBold.ttf</string>
+		<string>Fonts/Baloo2-SemiBold.ttf</string>
 	</array>
 	<key>UILaunchScreen</key>
 	<dict>
