@@ -43,7 +43,7 @@ enum Describe {
         (["paintbrush", "easel"], "making art", .activity),
         (["piano", "guitar", "ukulele"], "making music", .activity),
         (["ice_cream", "popsicle"], "with ice cream", .moment),
-        (["pizza"], "with pizza", .moment), (["pancake", "waffle"], "at breakfast", .moment),
+        (["pizza"], "with pizza", .moment), (["pancake", "waffle"], "at breakfast", .activity),
         (["high_chair"], "in the high chair", .container),
         (["crib"], "in the crib", .container),
         (["stroller"], "in the stroller", .container),
@@ -108,7 +108,7 @@ enum Describe {
         }
         if faces.count == 2 {
             if smiles == 2 { return "Two big smiles" }
-            if smiles == 1 { return baby ? "Smiles with baby" : "Grinning side by side" }
+            if smiles == 1 { return baby ? "Cuddles and smiles" : "Grinning side by side" }
             return baby ? "Snuggling baby" : "Side by side"
         }
         guard let f = subj else { return baby ? "Little baby moment" : "Little moment" }
@@ -140,11 +140,11 @@ enum Describe {
 /// no camera produces. Photos sent through messaging apps (which strip details) are not penalized.
 enum Provenance {
     static let aiTools = ["midjourney", "dall-e", "dall·e", "dalle", "openai", "chatgpt", "stable diffusion",
-                          "stablediffusion", "stable_diffusion", "firefly", "imagen", "gemini", "image playground",
+                          "stablediffusion", "stable_diffusion", "adobe firefly", "google imagen", "gemini", "image playground",
                           "imageplayground", "ideogram", "leonardo.ai", "nightcafe", "dreamstudio", "image creator",
-                          "copilot designer", "meta ai", "grok", "flux.1", "black forest labs", "google imagen"]
+                          "copilot designer", "meta ai", "grok", "flux.1", "black forest labs"]
     static let retouchApps = ["adobe photoshop", "facetune", "faceapp", "lensa", "remini", "picsart", "airbrush",
-                              "beautyplus", "youcam", "meitu", "b612", "peachy", "perfect365", "photoroom"]
+                              "beautyplus", "youcam perfect", "youcam makeup", "meitu", "b612", "peachy", "perfect365", "photoroom"]
 
     struct FileInfo {
         var filename: String = ""
@@ -152,15 +152,16 @@ enum Provenance {
         var aiMarker: Bool = false       // IPTC/C2PA "trainedAlgorithmicMedia" found in the file
         var cameraMake: String = ""      // TIFF Make (empty when there is no camera information)
         var isPNG: Bool = false
+        var headerRead: Bool = true      // false when the original's details couldn't be read (iCloud-only)
     }
 
     /// File-name patterns these tools use when you save their output (kept narrow: ordinary words like
     /// "imagen", Spanish for "image", must not trip it).
     static let aiFilenames = ["dall-e", "dall·e", "midjourney", "chatgpt image", "gemini_generated",
-                              "firefly", "stablediffusion", "stable_diffusion", "ideogram", "imageplayground"]
+                              "adobe firefly", "stablediffusion", "stable_diffusion", "ideogram", "imageplayground"]
     static let retouchFilenames = ["faceapp", "facetune", "lensa_", "remini_", "remini-"]
     /// Photo editors that adjust light and color but don't reshape people; never counted as retouching.
-    static let ordinaryEditors = ["adobe photoshop lightroom", "adobe photoshop express", "lightroom", "photoshop express", "snapseed", "vsco"]
+    static let ordinaryEditors = ["adobe photoshop lightroom", "adobe photoshop express", "adobe photoshop camera raw", "camera raw", "lightroom", "photoshop express", "snapseed", "vsco"]
 
     /// "AI image", "Edited" or nil.
     static func verdict(_ f: FileInfo) -> String? {
@@ -170,7 +171,7 @@ enum Provenance {
         let swNoOrdinary = ordinaryEditors.reduce(sw) { $0.replacingOccurrences(of: $1, with: "") }
         if retouchApps.contains(where: { swNoOrdinary.contains($0) }) || retouchFilenames.contains(where: { name.contains($0) }) { return "Edited" }
         // Cameras save HEIC or JPEG with camera details; a PNG with none came out of an app or an editor.
-        if f.isPNG && f.cameraMake.isEmpty { return "Not a camera photo" }
+        if f.isPNG && f.headerRead && f.cameraMake.isEmpty { return "Not a camera photo" }
         return nil
     }
 

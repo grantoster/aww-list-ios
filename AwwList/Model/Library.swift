@@ -9,6 +9,7 @@ final class Library: ObservableObject {
     /// The children's birthdays, which sort photos into Baby / Toddler / Kid.
     @Published private(set) var birthdays: [Date] = []
 
+    private static let saveQueue = DispatchQueue(label: "aww.save", qos: .utility)
     private var lastRebuild = Date.distantPast
     private var unsaved = 0
 
@@ -77,7 +78,8 @@ final class Library: ObservableObject {
         unsaved = 0
         let s = Saved(photos: Array(photos.values), hidden: Array(hidden), birthdays: birthdays)
         let u = url
-        Task.detached(priority: .utility) {
+        // One save at a time, in order, so an older snapshot can never land after a newer one.
+        Library.saveQueue.async {
             if let data = try? JSONEncoder().encode(s) { try? data.write(to: u, options: .atomic) }
         }
     }

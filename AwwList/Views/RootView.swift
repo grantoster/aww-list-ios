@@ -120,24 +120,35 @@ struct SettingsView: View {
 
 /// The children's birthdays: they sort photos into Baby (under 1), Toddler (1–3) and Kid (4+).
 struct BirthdaysSection: View {
+    struct Child: Identifiable { let id = UUID(); var date: Date }
     @EnvironmentObject var library: Library
-    @State private var dates: [Date] = []
+    @State private var kids: [Child] = []
+    @State private var loaded = false
     var body: some View {
         Section {
-            ForEach(dates.indices, id: \.self) { i in
-                DatePicker("Child \(i + 1)", selection: Binding(get: { dates[i] }, set: { dates[i] = $0; library.setBirthdays(dates) }),
+            ForEach($kids) { $kid in
+                DatePicker("Child \((kids.firstIndex { $0.id == kid.id } ?? 0) + 1)", selection: $kid.date,
                            in: ...Date(), displayedComponents: .date)
             }
-            .onDelete { dates.remove(atOffsets: $0); library.setBirthdays(dates) }
+            .onDelete { kids.remove(atOffsets: $0) }
             Button("Add a child's birthday") {
-                dates.append(Calendar.current.date(byAdding: .year, value: -1, to: Date()) ?? Date())
-                library.setBirthdays(dates)
+                let start = Calendar.current.startOfDay(for: Date())
+                kids.append(Child(date: Calendar.current.date(byAdding: .year, value: -1, to: start) ?? start))
             }
         } header: {
             Text("Your kids' birthdays")
         } footer: {
             Text("Used only on this iPhone to sort photos into Baby (under 1), Toddler (1–3) and Kid (4 and up). Swipe left to remove one.")
         }
-        .onAppear { dates = library.birthdays }
+        .onAppear {
+            guard !loaded else { return }
+            loaded = true
+            kids = library.birthdays.map { Child(date: $0) }
+        }
+        // Applied when you leave Settings, so picking a date doesn't re-sort the library on every tap.
+        .onDisappear {
+            let dates = kids.map { Calendar.current.startOfDay(for: $0.date) }
+            if dates.sorted() != library.birthdays { library.setBirthdays(dates) }
+        }
     }
 }

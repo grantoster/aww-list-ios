@@ -238,6 +238,9 @@ final class DescribeTests: XCTestCase {
         XCTAssertEqual(Provenance.verdict(f), "AI image")
         f = Provenance.FileInfo(filename: "IMG_9.JPG", software: "Facetune", cameraMake: "Apple")
         XCTAssertEqual(Provenance.verdict(f), "Edited")
+        XCTAssertNil(Provenance.verdict(Provenance.FileInfo(filename: "image.png", isPNG: true, headerRead: false)))
+        XCTAssertNil(Provenance.verdict(Provenance.FileInfo(filename: "firefly_jar.jpg")))
+        XCTAssertNil(Provenance.verdict(Provenance.FileInfo(filename: "a.jpg", software: "Adobe Photoshop Camera Raw 16.0", cameraMake: "Canon")))
         f = Provenance.FileInfo(filename: "image.png", isPNG: true)
         XCTAssertEqual(Provenance.verdict(f), "Not a camera photo")          // a PNG no camera made
         f = Provenance.FileInfo(filename: "DSC_0042.jpg", software: "Adobe Photoshop Lightroom Classic 13.2", cameraMake: "NIKON")
@@ -276,8 +279,17 @@ final class AgeTagTests: XCTestCase {
         XCTAssertEqual(AgeGroup.tags(date: d(2018, 2, 1), birthdays: [son, daughter], looksLikeBaby: true, faces: 1), [.baby])
         // one face that doesn't look like a baby: the toddler
         XCTAssertEqual(AgeGroup.tags(date: d(2018, 2, 1), birthdays: [son, daughter], looksLikeBaby: false, faces: 1), [.toddler])
-        // both together: both tags
-        XCTAssertEqual(AgeGroup.tags(date: d(2018, 2, 1), birthdays: [son, daughter], looksLikeBaby: true, faces: 2), [.baby, .toddler])
+        // two faces that look like a baby with someone: just Baby (usually held by a grown-up)
+        XCTAssertEqual(AgeGroup.tags(date: d(2018, 2, 1), birthdays: [son, daughter], looksLikeBaby: true, faces: 2), [.baby])
+        // two kids together, not baby-looking: both tags
+        XCTAssertEqual(AgeGroup.tags(date: d(2019, 2, 1), birthdays: [son, daughter], looksLikeBaby: false, faces: 2), [.toddler])
+        XCTAssertEqual(AgeGroup.tags(date: d(2021, 2, 1), birthdays: [son, daughter], looksLikeBaby: false, faces: 2), [.kid, .toddler])
+        // before any child was born: no age tag
+        XCTAssertEqual(AgeGroup.tags(date: d(2014, 6, 1), birthdays: [son, daughter], looksLikeBaby: false, faces: 3), [])
+        // first-birthday party: Toddler all day, whatever time the birthday was saved with
+        let sonAt3pm = Calendar(identifier: .gregorian).date(from: DateComponents(year: 2016, month: 7, day: 29, hour: 15))!
+        let party10am = Calendar(identifier: .gregorian).date(from: DateComponents(year: 2017, month: 7, day: 29, hour: 10))!
+        XCTAssertEqual(AgeGroup.of(birth: sonAt3pm, at: party10am), .toddler)
         // no birthdays saved
         XCTAssertEqual(AgeGroup.tags(date: d(2018, 2, 1), birthdays: [], looksLikeBaby: false, faces: 1), [.kid])
     }

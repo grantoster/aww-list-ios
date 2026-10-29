@@ -10,7 +10,9 @@ enum AgeGroup: String, Codable, CaseIterable, Identifiable {
 
     /// The group a child born on `birth` is in on `date`.
     static func of(birth: Date, at date: Date, calendar: Calendar = Calendar(identifier: .gregorian)) -> AgeGroup {
-        let years = calendar.dateComponents([.year], from: birth, to: date).year ?? 0
+        // Whole days only, so a birthday-party photo counts as the new age all day long.
+        let years = calendar.dateComponents([.year], from: calendar.startOfDay(for: birth),
+                                            to: calendar.startOfDay(for: date)).year ?? 0
         return years < 1 ? .baby : years < 4 ? .toddler : .kid
     }
 
@@ -20,12 +22,19 @@ enum AgeGroup: String, Codable, CaseIterable, Identifiable {
     /// - one child old enough to be in it: that child's group;
     /// - several children, one face: Baby if it looks like a baby and one of them is a baby, otherwise the
     ///   older children's groups;
-    /// - several children, several faces: every child's group (they're probably together).
-    static func tags(date: Date, birthdays: [Date], looksLikeBaby: Bool, faces: Int) -> Set<AgeGroup> {
-        let groups = Set(birthdays.filter { $0 <= date }.map { of(birth: $0, at: date) })
-        if groups.isEmpty { return looksLikeBaby ? [.baby] : [.kid] }
-        if groups.count == 1 || faces >= 2 { return groups }
-        if looksLikeBaby && groups.contains(.baby) { return [.baby] }
+    /// - several children and at least as many faces: every child's group (they're probably together);
+    ///   a baby with one other face is most likely being held by a grown-up, so just Baby;
+    /// - taken before any of the children was born: no age tag (shown under All ages only).
+    static func tags(date: Date, birthdays: [Date], looksLikeBaby: Bool, faces: Int,
+                     calendar: Calendar = Calendar(identifier: .gregorian)) -> Set<AgeGroup> {
+        if birthdays.isEmpty { return looksLikeBaby ? [.baby] : [.kid] }
+        let day = calendar.startOfDay(for: date)
+        let born = birthdays.filter { calendar.startOfDay(for: $0) <= day }
+        let groups = Set(born.map { of(birth: $0, at: date, calendar: calendar) })
+        if groups.isEmpty { return [] }
+        if groups.count == 1 { return groups }
+        if looksLikeBaby && groups.contains(.baby) && faces <= 2 { return [.baby] }
+        if faces >= 2 && faces >= born.count { return groups }
         let older = groups.subtracting([.baby])
         return older.isEmpty ? groups : older
     }

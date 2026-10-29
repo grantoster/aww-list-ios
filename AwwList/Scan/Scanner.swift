@@ -151,11 +151,17 @@ private func fileInfo(_ asset: PHAsset, manager: PHImageManager) -> Provenance.F
     info.isPNG = (original?.uniformTypeIdentifier ?? "").lowercased().contains("png")
     // The original, plus the edited version when the photo was edited (where AI tools leave their tag).
     let edited = resources.first { $0.type == .fullSizePhoto }
+    info.headerRead = false
     for (resource, isOriginal) in [(original, true), (edited, false)] {
-        guard let resource, let data = headerBytes(resource) else { continue }
+        guard let resource, let header = headerBytes(resource) else { continue }
+        let (data, complete) = header
+        if isOriginal { info.headerRead = true }
         if Provenance.hasAIMarker(data) { info.aiMarker = true }
-        let src = CGImageSourceCreateIncremental(nil)
-        CGImageSourceUpdateData(src, data as CFData, false)
+        var src = CGImageSourceCreateIncremental(nil)
+        CGImageSourceUpdateData(src, data as CFData, complete)
+        if CGImageSourceCopyPropertiesAtIndex(src, 0, nil) == nil, let whole = CGImageSourceCreateWithData(data as CFData, nil) {
+            src = whole
+        }
         if let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any] {
             let tiff = props[kCGImagePropertyTIFFDictionary] as? [CFString: Any] ?? [:]
             if let sw = tiff[kCGImagePropertyTIFFSoftware] as? String { info.software += " " + sw }
@@ -169,8 +175,9 @@ private func fileInfo(_ asset: PHAsset, manager: PHImageManager) -> Provenance.F
     return info
 }
 
-/// The first `limit` bytes of a resource that is stored on the phone, or nil (iCloud-only, or no answer in 10 s).
-private func headerBytes(_ resource: PHAssetResource, limit: Int = 512 * 1024) -> Data? {
+/// The first `limit` bytes of a resource that is stored on the phone (and whether that was the whole file),
+/// or nil (iCloud-only, or nothing arrived within 10 s).
+private func headerBytes(_ resource: PHAssetResource, limit: Int = 512 * 1024) -> (Data, Bool)? {
     let manager = PHAssetResourceManager.default()
     let opts = PHAssetResourceRequestOptions()
     opts.isNetworkAccessAllowed = false
@@ -181,8 +188,9 @@ private func headerBytes(_ resource: PHAssetResource, limit: Int = 512 * 1024) -
     }, completionHandler: { _ in sem.signal() })
     box.requestID = rid
     if box.isFull { manager.cancelDataRequest(rid) }
-    if sem.wait(timeout: .now() + 10) == .timedOut { manager.cancelDataRequest(rid); return nil }
-    return box.data.isEmpty ? nil : box.data
+    if sem.wait(timeout: .now() + 10) == .timedOut { manager.cancelDataRequest(rid) }
+    let data = box.data
+    return data.isEmpty ? nil : (data, data.count < limit)
 }
 
 private final class HeaderBox: @unchecked Sendable {
