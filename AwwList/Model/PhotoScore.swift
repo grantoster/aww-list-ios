@@ -50,7 +50,7 @@ struct PhotoScore: Codable, Hashable, Identifiable {
     let raw: Double?
     /// Why the photo was left out (screenshot, no child, swimwear, ...). Nil when it counts.
     let excluded: String?
-    let age: AgeGroup?
+    var age: AgeGroup?
     /// Short description built from the labels, e.g. "Big smile" or "Two kids together".
     let caption: String
     /// Scorer.version that produced this result; nil for results saved by the first release.
@@ -61,6 +61,11 @@ struct PhotoScore: Codable, Hashable, Identifiable {
     var faceRecords: [FaceRecord]? = nil
     /// Claude's score, description and checks, when this photo was sent to Claude.
     var claude: ClaudeVerdict? = nil
+    /// For photos Apple set aside for a soft reason (Scorer.softReasons): the score they'd have had,
+    /// so Claude can still be offered them.
+    var soft: Double? = nil
+    /// True once `soft` has been worked out (it may still be nil when there was nothing to go on).
+    var softChecked: Bool? = nil
 }
 
 /// One moment: photos taken less than 60 seconds apart (2 minutes at most), represented by its best shot.

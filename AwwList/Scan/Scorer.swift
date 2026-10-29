@@ -29,7 +29,7 @@ struct Signals: Equatable {
 
 enum Scorer {
     /// Bump when scoring changes; photos scored by an older version are analyzed again.
-    static let version = 9
+    static let version = 9   // (soft scores are filled in for set-aside photos without a full rescan)
     /// Exclusion reason for a photo whose image couldn't be loaded (offline iCloud photo).
     static let unavailable = "Unavailable"
 
@@ -178,7 +178,28 @@ enum Scorer {
     /// of a bath burst can't slip onto the list. The best shot wins; ties go to the earlier, then the smaller id.
     /// Every stored photo feeds the quarantine (old versions and hidden ones too); only photos that are shown —
     /// not hidden, and scored by `version` when given — can become moments.
-    static func moments(from photos: [PhotoScore], hidden: Set<String> = [], version: Int? = nil) -> [(best: PhotoScore, shots: Int, ids: [String])] {
+    /// Reasons Apple's check sets a photo aside that Claude may overrule: Apple's labels miss children seen from
+    /// behind or far away, and its bath/swim/water/shirtless checks lean hard toward leaving photos out.
+    static let softReasons: Set<String> = ["No child", "No face", "Water", "Bath", "Swimwear", "Undressed", "Shirtless"]
+
+    /// A score for a photo Apple set aside for a soft reason, as if that check hadn't fired, so it can still be
+    /// offered to Claude. Nil when there's nothing to go on (no face and no hint of a child) or it's a screenshot
+    /// or document.
+    static func softScore(_ s: Signals) -> Double? {
+        if s.isScreenshot || s.blockedLabel == "document" || s.blockedLabel == "screenshot" { return nil }
+        guard s.childConfidence >= 0.10 || !s.faces.isEmpty else { return nil }
+        var t = s
+        t.blockedLabel = nil; t.waterScene = false; t.childPrecise = true
+        for i in t.faces.indices { t.faces[i].bareTorso = 0 }
+        if t.faces.isEmpty { return 0.15 * min(1, s.childConfidence) * (0.4 + 0.6 * min(1, max(0, s.sharpness))) }
+        return score(t).raw
+    }
+
+    /// `soft` also groups photos Apple set aside for a soft reason (scored by `softScore`) and skips the
+    /// quarantine: that's the pool offered to Claude, which makes the final call.
+    static func moments(from photos: [PhotoScore], hidden: Set<String> = [], version: Int? = nil,
+                        soft: Bool = false) -> [(best: PhotoScore, shots: Int, ids: [String])] {
+        func value(_ p: PhotoScore) -> Double? { soft ? (p.raw ?? p.soft) : p.raw }
         let hot = photos.compactMap { p in quarantineWindow[p.excluded ?? ""].map { (date: p.date, window: $0) } }
             .sorted { $0.date < $1.date }
         func quarantined(_ d: Date) -> Bool {
@@ -190,13 +211,13 @@ enum Scorer {
             }
             return false
         }
-        let counted = photos.filter { $0.raw != nil && !hidden.contains($0.id) && (version == nil || $0.version == version) && !quarantined($0.date) }
+        let counted = photos.filter { value($0) != nil && !hidden.contains($0.id) && (version == nil || $0.version == version) && (soft || !quarantined($0.date)) }
             .sorted { ($0.date, $0.id) < ($1.date, $1.id) }
         var result: [(best: PhotoScore, shots: Int, ids: [String])] = []
         var group: [PhotoScore] = []
         func flush() {
             guard var best = group.first else { return }
-            for p in group.dropFirst() where (p.raw ?? 0) > (best.raw ?? 0) { best = p }
+            for p in group.dropFirst() where (value(p) ?? 0) > (value(best) ?? 0) { best = p }
             result.append((best: best, shots: group.count, ids: group.map(\.id)))
             group = []
         }

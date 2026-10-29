@@ -13,7 +13,7 @@ final class Library: ObservableObject {
     /// Who's Who grouping: 0 stricter, 1 normal, 2 looser.
     @Published private(set) var strictness = 1
     /// Claude scoring settings and batches waiting for results.
-    @Published private(set) var claudeModel = "claude-sonnet-5-5"
+    @Published private(set) var claudeModel = "claude-haiku-5-5"
     @Published private(set) var claudeScope = 300
     @Published private(set) var claudeBatches: [ClaudeBatch] = []
     /// Which score orders the lists once Claude has scored something: "claude" or "apple".
@@ -45,7 +45,7 @@ final class Library: ObservableObject {
             photos[p.id] = p
         }
         unsaved += new.count
-        if Date().timeIntervalSince(lastRebuild) > 6 { rebuild() }   // re-ranking everything is costly; keep it occasional while scanning
+        if Date().timeIntervalSince(lastRebuild) > 15 { rebuild() }   // re-ranking everything is costly; keep it occasional while scanning
         if unsaved >= 200 { save() }
     }
 
@@ -81,6 +81,9 @@ final class Library: ObservableObject {
     /// The moments in Apple's on-device order (used to choose what to send to Claude).
     /// (Sorted once per rebuild, so Settings can show counts without re-sorting the library on every redraw.)
     private(set) var appleRanked: [Moment] = []
+    /// What can be offered to Claude: Apple's list plus the photos Apple set aside for a soft reason, ranked
+    /// each year by on-device score (cached at each rebuild).
+    private(set) var claudePool: [Moment] = []
     /// Photos Claude couldn't score, and how many times; after two tries they aren't re-sent (or re-billed).
     @Published private(set) var claudeFailures: [String: Int] = [:]
     func noteClaudeFailures(_ ids: [String]) {
@@ -153,7 +156,7 @@ final class Library: ObservableObject {
         func childAt(_ birth: Date, _ date: Date) -> Bool {
             birth <= date && (gregorian.dateComponents([.year], from: birth, to: date).year ?? 0) < 13
         }
-        moments = zip(groups, scores).map { g, s in
+        func makeMoment(_ g: (best: PhotoScore, shots: Int, ids: [String]), _ s: Int) -> Moment {
             let who = Set((g.best.faceRecords ?? []).compactMap { People.match(People.floats($0.vec), people: named, threshold: t) })
             // Named people with birthdays give exact ages; otherwise ages come from the birthdays and the photo.
             let date = g.best.date
@@ -164,6 +167,7 @@ final class Library: ObservableObject {
                 : Set(known.map { AgeGroup.of(birth: $0, at: g.best.date) })
             return Moment(best: g.best, shots: g.shots, memberIDs: g.ids, score: s, ages: ages, people: who)
         }
+        moments = zip(groups, scores).map { makeMoment($0, $1) }
         // Every moment keeps its Apple score; moments sent to Claude also get Claude's. Claude's safety checks
         // (bath, swimwear, shirtless, AI or edited, no child) take a photo off the list in both rankings.
         // Ranking by Claude: Claude's score leads, and moments it hasn't seen are capped at 6 so they can't
@@ -179,6 +183,24 @@ final class Library: ObservableObject {
             }
             if useClaude { m.score = m.claudeScore.map(Claude.displayScore) ?? min(m.apple, 6) }
             return m
+        }
+        // The wider pool for Claude: Apple's moments plus set-aside ones (no child seen, water, etc.).
+        let listed = Set(moments.flatMap(\.memberIDs))
+        let softGroups = Scorer.moments(from: Array(photos.values), hidden: hidden, version: Scorer.version, soft: true)
+            .filter { $0.best.raw == nil && listed.isDisjoint(with: $0.ids) }
+        let softMoments = softGroups.map { g -> Moment in var m = makeMoment(g, 0); m.claudeScore = g.best.claude?.score; return m }
+        claudePool = (moments + softMoments).sorted { a, b in
+            let va = a.best.raw ?? a.best.soft ?? 0, vb = b.best.raw ?? b.best.soft ?? 0
+            return va != vb ? va > vb : a.best.date < b.best.date
+        }
+        // Set-aside photos Claude looked at and cleared join the list when ranking by Claude.
+        if useClaude {
+            for var m in softMoments {
+                guard let c = m.best.claude, c.exclude == nil else { continue }
+                m.claudeScore = c.score
+                m.score = Claude.displayScore(c.score)
+                moments.append(m)
+            }
         }
         moments.sort(by: Library.ranked)
         appleRanked = moments.sorted { a, b in
@@ -234,6 +256,8 @@ final class Library: ObservableObject {
         }
         strictness = s.strictness ?? 1
         claudeModel = s.claudeModel ?? claudeModel
+        // Haiku is the default; switch earlier saves that were on the old default and never sent anything.
+        if claudeModel == "claude-sonnet-5-5" && !s.photos.contains(where: { $0.claude != nil }) { claudeModel = "claude-haiku-5-5" }
         claudeScope = s.claudeScope ?? claudeScope
         claudeBatches = s.claudeBatches ?? []
         rankBy = s.rankBy ?? "claude"

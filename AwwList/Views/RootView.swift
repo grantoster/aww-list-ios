@@ -217,7 +217,7 @@ struct ClaudeSection: View {
         } header: {
             Text("Score with Claude")
         } footer: {
-            Text("Optional. Your phone still checks every photo first; the photos you choose are then sent to Anthropic's Claude for the final 1–10 score, a description, and a second check for bath, swimwear, shirtless and AI or edited photos. Each year's top photos are chosen by Apple's score. Photos are sent at 768 px without location or file details. Photos the phone's own check missed are sent too, so Claude can catch them. It uses your own API key from console.anthropic.com; charges go to your Anthropic account. When ranking by Claude, photos Claude hasn't seen are held at 6 or below.")
+            Text("Optional. Your phone still checks every photo first; the photos you choose are then sent to Anthropic's Claude for the final 1–10 score, a description, and a second check for bath, swimwear, shirtless and AI or edited photos. Each year's top photos are chosen by Apple's score, including photos Apple's check set aside (no child seen, water, possible bath or swimwear) so Claude can decide; any Claude clears join the list when ranking by Claude. Photos are sent at 768 px without location or file details. Photos the phone's own check missed are sent too, so Claude can catch them. It uses your own API key from console.anthropic.com; charges go to your Anthropic account. When ranking by Claude, photos Claude hasn't seen are held at 6 or below.")
         }
     }
 }

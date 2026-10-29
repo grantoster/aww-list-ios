@@ -28,8 +28,8 @@ enum Claude {
     static let rubric = 1
     static let models: [(id: String, name: String, inPerM: Double, outPerM: Double)] = [
         // Batch prices (USD per million tokens) from Anthropic's pricing page.
-        ("claude-haiku-5-5", "Haiku (cheapest)", 0.05, 0.25),
-        ("claude-sonnet-5-5", "Sonnet (recommended)", 1, 5),
+        ("claude-haiku-5-5", "Haiku (default, cheapest)", 0.05, 0.25),
+        ("claude-sonnet-5-5", "Sonnet", 1, 5),
         ("claude-opus-5-5", "Opus (most careful)", 2, 10)
     ]
     /// How many photos to send: each year's top 100, 300 or 1,000 moments, or every counted moment (0).
@@ -243,7 +243,7 @@ final class ClaudeService: ObservableObject {
         let model = library.claudeModel, n = library.claudeScope
         let pending = Set(library.claudeBatches.flatMap { $0.photos.values })
         var byYear: [Int: [Moment]] = [:]
-        for m in library.appleRanked { byYear[m.year, default: []].append(m) }   // cached at each rebuild
+        for m in library.claudePool { byYear[m.year, default: []].append(m) }   // cached at each rebuild
         return byYear.values.flatMap { n > 0 ? Array($0.prefix(n)) : $0 }
             .filter { m in
                 guard !pending.contains(m.best.id), (library.claudeFailures[m.best.id] ?? 0) < 2 else { return false }

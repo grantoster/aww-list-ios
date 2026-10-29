@@ -53,6 +53,9 @@ final class PhotoScanner: ObservableObject {
         let known = Set(library.photos.values.filter {
             $0.version == Scorer.version && !(retryUnavailable && $0.excluded == Scorer.unavailable)
                 && ($0.raw == nil || ($0.faceRecords.map { $0.allSatisfy { $0.vec.count == People.dim } } ?? false))
+                // set-aside photos from before Claude could overrule Apple get one more look
+                && !(Scorer.softReasons.contains($0.excluded ?? "") && $0.softChecked != true
+                     && ($0.excluded != "No child" || ($0.faces ?? 0) > 0))
         }.map(\.id))
         // Photos already on the list keep their score if they can't be re-read this time.
         let ranked = Set(library.photos.values.filter { $0.raw != nil }.map(\.id))
@@ -327,10 +330,16 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
         }
         let (raw, excluded) = Scorer.score(signals)
         let age: AgeGroup? = raw == nil ? nil : (signals.babyConfidence > 0.5 ? .baby : .kid)
-        return .done(PhotoScore(id: asset.localIdentifier, date: date,
-                                raw: raw, excluded: excluded, age: age, caption: Scorer.caption(signals, date: date),
-                                version: Scorer.version, faces: signals.faces.count,
-                                faceRecords: raw == nil ? nil : records))
+        var p = PhotoScore(id: asset.localIdentifier, date: date,
+                           raw: raw, excluded: excluded, age: age, caption: Scorer.caption(signals, date: date),
+                           version: Scorer.version, faces: signals.faces.count,
+                           faceRecords: raw == nil ? nil : records)
+        if raw == nil, Scorer.softReasons.contains(excluded ?? "") {
+            p.soft = Scorer.softScore(signals)
+            p.age = signals.babyConfidence > 0.5 ? .baby : .kid
+        }
+        p.softChecked = true
+        return .done(p)
     }
 }
 

@@ -48,4 +48,19 @@ final class ClaudeTests: XCTestCase {
         lib.add([again])
         XCTAssertEqual(lib.photos["keep-test"]?.claude?.exclude, "swimwear")
     }
+
+    func testSetAsidePhotosAreOfferedToClaude() {
+        var sig = Signals(); sig.childConfidence = 0.2
+        sig.faces = [FaceSignal(area: 0.1, quality: 0.6, smile: true)]; sig.sharpness = 1
+        XCTAssertEqual(Scorer.score(sig).excluded, "No child")
+        let soft = Scorer.softScore(sig)
+        XCTAssertNotNil(soft)
+        var screenshot = sig; screenshot.isScreenshot = true
+        XCTAssertNil(Scorer.softScore(screenshot))
+        let t = Date(timeIntervalSince1970: 1_700_000_000)
+        var p = PhotoScore(id: "aside", date: t, raw: nil, excluded: "No child", age: .kid, caption: "", version: Scorer.version)
+        p.soft = soft
+        XCTAssertTrue(Scorer.moments(from: [p]).isEmpty)                  // not on Apple's list
+        XCTAssertEqual(Scorer.moments(from: [p], soft: true).count, 1)    // but offered to Claude
+    }
 }
