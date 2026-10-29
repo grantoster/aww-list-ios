@@ -18,7 +18,7 @@ platform :ios do
     build_app(
       project: "AwwList.xcodeproj",
       scheme: "AwwList",
-      export_method: "app-store"   # the runner's fastlane predates the "app-store-connect" name; Xcode maps it,
+      export_method: "app-store",   # runner fastlane predates the "app-store-connect" name; Xcode maps it
       export_team_id: team,
       xcargs: "AWW_TEAM_ID=#{team} AWW_BUNDLE_ID=#{bundle} CURRENT_PROJECT_VERSION=#{Time.now.to_i / 60} #{auth}",
       export_xcargs: auth
