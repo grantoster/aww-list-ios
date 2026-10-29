@@ -447,7 +447,8 @@ final class Library: ObservableObject {
         let bIdx = groups.indices.filter { balancedVals[$0] != nil }, fIdx = groups.indices.filter { balancedVals[$0] == nil }
         for (k, v) in zip(bIdx, Scorer.calibrate(bIdx.map { balancedVals[$0]! }, years: bIdx.map { years[$0] },
                                                 ceiling: Scorer.balancedCeiling)) { scores[k] = v }
-        for (k, v) in zip(fIdx, Scorer.calibrate(fIdx.map { fallbackVals[$0] }, years: fIdx.map { years[$0] })) { scores[k] = v }
+        // Not yet re-read: at most 6, like Apple-only moments in the Claude view (a small group's best isn't a 10).
+        for (k, v) in zip(fIdx, Scorer.calibrate(fIdx.map { fallbackVals[$0] }, years: fIdx.map { years[$0] })) { scores[k] = min(v, 6) }
         let rankRaws = groups.indices.map { balancedVals[$0] ?? fallbackVals[$0] }
         let named = people, t = threshold
         // Centroids only here (fast, on the main thread); the thorough matching comes from learnPeople.
@@ -482,7 +483,7 @@ final class Library: ObservableObject {
         // What can be sent to Claude: every listed moment except any that contains a photo that must never be sent
         // (possible bath/undressed and their sessions, even after a put back; swimwear/shirtless unless allowed).
         // Once the app has learned, it picks what to send Claude by its prediction of Claude's score.
-        func poolValue(_ m: Moment) -> Double { m.learnedScore ?? 10 * m.rankRaw }   // worked out once per moment
+        func poolValue(_ m: Moment) -> Double { m.learnedScore ?? 10 * m.rankRaw }   // once per moment; not-yet-re-read photos (old scale) sort a bit lower
         let forbidden = Scorer.neverSend(Array(photos.values), allowSwimShirtless: claudeSensitive, removed: claudeRemoved)
         neverSend = forbidden
         // Photos with faces but no child label: not listed, but offered to Claude too (Apple's labels miss kids).

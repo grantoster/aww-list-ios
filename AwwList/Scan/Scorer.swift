@@ -239,7 +239,7 @@ enum Scorer {
     /// Each full year carries equal weight, so one huge year can't push every other year up or down;
     /// a year with under 200 moments counts in proportion to its size.
     /// Tied raw scores get the same score. A weak photo can't earn a high score just by being the best of a weak bunch.
-    static func calibrate(_ raws: [Double], years: [Int]? = nil, ceiling cap: (Double) -> Int = ceiling) -> [Int] {
+    static func calibrate(_ raws: [Double], years: [Int]? = nil, ceiling cap: (Double) -> Int = Scorer.ceiling) -> [Int] {
         guard !raws.isEmpty else { return [] }
         let yrs = years ?? Array(repeating: 0, count: raws.count)
         let perYear = Dictionary(grouping: yrs, by: { $0 }).mapValues { 1.0 / max(Double($0.count), fullYear) }
@@ -303,7 +303,14 @@ enum Scorer {
     static func balancedValue(_ p: PhotoScore, putBack: Set<String> = [], includePoolOnly: Bool = false) -> Double? {
         guard listedValue(p, putBack: putBack, includePoolOnly: includePoolOnly) != nil,
               let f = p.feat, let x = Learner.decode(f) else { return nil }
-        return balanced(x, special: p.special)
+        return balanced(x, special: p.special ?? specialFromCaption(p.caption))
+    }
+
+    /// For photos scanned before `special` was recorded: Apple's caption names the first scene it matched
+    /// (Describe.scenePhrase), so a special scene's phrase in it means Apple saw that label. 0 otherwise.
+    static func specialFromCaption(_ caption: String) -> Double {
+        let phrases = Describe.scenes.filter { sc in sc.kind != .container && sc.labels.contains(where: specialLabels.contains) }.map(\.phrase)
+        return phrases.contains(where: caption.contains) ? 1 : 0
     }
 
     /// Labels that mark a special moment or outing (Describe's moments, activities and outings; everyday things like
