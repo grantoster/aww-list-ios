@@ -126,10 +126,11 @@ enum BackgroundScan {
         let done = Once()
         var id = UIBackgroundTaskIdentifier.invalid
         id = UIApplication.shared.beginBackgroundTask(withName: "Aww List scan") {
-            Task { @MainActor in
-                guard !taskOwnsScan else { if done.claim() { UIApplication.shared.endBackgroundTask(id) }; return }
-                scanner.stop(); Shared.library.flush()
+            // Runs on the main thread: end the task right away (iOS is waiting), then save in the background queue.
+            MainActor.assumeIsolated {
+                if !taskOwnsScan { scanner.stop() }
                 if done.claim() { UIApplication.shared.endBackgroundTask(id) }
+                Shared.library.save()
             }
         }
         scanner.whenFinished {

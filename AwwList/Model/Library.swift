@@ -39,7 +39,10 @@ final class Library: ObservableObject {
     /// New results from the scanner. The list is rebuilt at most every 2 seconds while scanning.
     func add(_ new: [PhotoScore]) {
         guard !new.isEmpty else { return }
-        for p in new { photos[p.id] = p }
+        for var p in new {
+            if p.claude == nil { p.claude = photos[p.id]?.claude }   // a rescan never throws away Claude's verdict
+            photos[p.id] = p
+        }
         unsaved += new.count
         if Date().timeIntervalSince(lastRebuild) > 2 { rebuild() }
         if unsaved >= 200 { save() }
@@ -61,7 +64,6 @@ final class Library: ObservableObject {
         save()
     }
     func setRankBy(_ v: String) { rankBy = v; rebuild(); save() }
-    var rankingByClaude: Bool { rankBy == "claude" && moments.contains { $0.claudeScore != nil } }
     func addClaudeBatch(_ b: ClaudeBatch) { claudeBatches.append(b); flush() }
     func removeClaudeBatch(_ id: String) { claudeBatches.removeAll { $0.id == id }; save() }
     func applyClaude(_ verdicts: [String: ClaudeVerdict]) {
@@ -74,7 +76,15 @@ final class Library: ObservableObject {
         claudeBatches = []
         rebuild(); save()
     }
-    var claudeScored: Int { moments.filter { $0.best.claude != nil }.count }
+    var claudeScored: Int { moments.filter { $0.claudeScore != nil }.count }
+    /// The moments in Apple's on-device order (used to choose what to send to Claude).
+    var appleRanked: [Moment] {
+        moments.sorted { a, b in
+            if a.apple != b.apple { return a.apple > b.apple }
+            if (a.best.raw ?? 0) != (b.best.raw ?? 0) { return (a.best.raw ?? 0) > (b.best.raw ?? 0) }
+            return a.best.date < b.best.date
+        }
+    }
 
     // MARK: Who's Who
 
@@ -153,7 +163,7 @@ final class Library: ObservableObject {
         // (bath, swimwear, shirtless, AI or edited, no child) take a photo off the list in both rankings.
         // Ranking by Claude: Claude's score leads, and moments it hasn't seen are capped at 6 so they can't
         // outrank the ones it looked at (the same rule as the Aww List website).
-        let anyClaude = moments.contains { $0.best.claude != nil }
+        let anyClaude = moments.contains { $0.best.claude != nil && $0.best.claude?.exclude == nil }
         let useClaude = anyClaude && rankBy == "claude"
         moments = moments.compactMap { m in
             var m = m
@@ -205,7 +215,12 @@ final class Library: ObservableObject {
         photos = Dictionary(s.photos.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         hidden = Set(s.hidden)
         birthdays = s.birthdays ?? []
-        people = s.people ?? []
+        // Names saved with an older fingerprint size can't be compared; keep the names, ask for faces again.
+        people = (s.people ?? []).map { p in
+            var p = p
+            if p.centroid.count != People.dim { p.centroid = []; p.count = 0 }
+            return p
+        }
         strictness = s.strictness ?? 1
         claudeModel = s.claudeModel ?? claudeModel
         claudeScope = s.claudeScope ?? claudeScope

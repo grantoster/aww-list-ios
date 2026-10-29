@@ -50,11 +50,17 @@ enum Claude {
     "exclude": null or one of the reasons above}
     """
 
-    /// Rough cost of one photo: a 768 px photo (~600–784 image tokens) plus the instructions (~400) in,
-    /// ~40 tokens out. Shown in Settings as an estimate before sending.
+    /// Rough cost of one photo: a 768 px photo (~600–784 image tokens) plus the instructions (~400) in, and up to
+    /// ~300 tokens out (the reply plus any brief thinking at low effort). Shown in Settings as an estimate.
     static func estimatedCost(photos: Int, model: String) -> Double {
         guard let m = models.first(where: { $0.id == model }) else { return 0 }
-        return Double(photos) * (1_200 * m.inPerM + 40 * m.outPerM) / 1_000_000
+        return Double(photos) * (1_200 * m.inPerM + 300 * m.outPerM) / 1_000_000
+    }
+
+    /// Dollars to cents, halves rounding up, for display.
+    static func dollars(_ v: Double) -> String {
+        let cents = Int((v * 100).rounded(.toNearestOrAwayFromZero))
+        return "$\(cents / 100).\(String(format: "%02d", cents % 100))"
     }
 
     // MARK: Key (Keychain)
@@ -89,7 +95,8 @@ enum Claude {
         let caption = (obj["caption"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let allowed: Set<String> = ["swimwear", "bath", "undressed", "no_child", "screenshot", "ai_or_edited"]
         let ex = (obj["exclude"] as? String).flatMap { allowed.contains($0) ? $0 : nil }
-        return ClaudeVerdict(score: max(1, min(10, score)), caption: caption, exclude: ex, model: model, rubric: rubric)
+        let oneDecimal = (max(1, min(10, score)) * 10).rounded(.toNearestOrAwayFromZero) / 10   // halves round up
+        return ClaudeVerdict(score: oneDecimal, caption: caption, exclude: ex, model: model, rubric: rubric)
     }
 
     /// One line of a batch results file -> (custom_id, reply text) when it succeeded.
@@ -98,6 +105,7 @@ enum Claude {
               let id = obj["custom_id"] as? String,
               let result = obj["result"] as? [String: Any], result["type"] as? String == "succeeded",
               let msg = result["message"] as? [String: Any],
+              msg["stop_reason"] as? String != "max_tokens",          // cut off: treat as not scored
               let content = msg["content"] as? [[String: Any]] else { return nil }
         let text = content.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }.joined()
         return (id, text)
@@ -134,17 +142,18 @@ final class ClaudeService: ObservableObject {
         var errorDescription: String? {
             switch self {
             case .noKey: "Add your Claude API key first."
-            case .http(let code, let msg): code == 401 ? "Claude didn't accept the API key." : "Claude returned an error (\(code)): \(msg)"
+            case .http(let code, let msg): code == 401 ? "Claude didn't accept the API key. Check it in Settings." : "Claude returned an error (\(code)). \(msg)"
             }
         }
     }
 
-    /// The moments that still need Claude's score under the current settings.
+    /// The moments that still need Claude's score: each year's top N by Apple's on-device score (so the set
+    /// doesn't shift as Claude's own scores come in), minus ones already scored or waiting in a batch.
     func candidates(_ library: Library) -> [Moment] {
         let model = library.claudeModel, n = library.claudeScope
         let pending = Set(library.claudeBatches.flatMap { $0.photos.values })
         var byYear: [Int: [Moment]] = [:]
-        for m in library.moments { byYear[m.year, default: []].append(m) }   // already ranked best first
+        for m in library.appleRanked { byYear[m.year, default: []].append(m) }
         return byYear.values.flatMap { n > 0 ? Array($0.prefix(n)) : $0 }
             .filter { m in
                 guard !pending.contains(m.best.id) else { return false }
@@ -170,7 +179,8 @@ final class ClaudeService: ObservableObject {
                     let cid = "p\(sent + i)_\(Int(Date().timeIntervalSince1970))"
                     map[cid] = m.best.id
                     reqs.append(["custom_id": cid, "params": [
-                        "model": model, "max_tokens": 200, "system": Claude.system,
+                        "model": model, "max_tokens": 2000, "system": Claude.system,
+                        "output_config": ["effort": "low"],
                         "messages": [["role": "user", "content": [
                             ["type": "image", "source": ["type": "base64", "media_type": "image/jpeg",
                                                          "data": jpeg.base64EncodedString()]],
@@ -178,20 +188,23 @@ final class ClaudeService: ObservableObject {
                         ]]]
                     ]])
                 }
-                if reqs.isEmpty { sent += chunk.count; continue }
+                if reqs.isEmpty { continue }
                 status = "Sending \(reqs.count) photos to Claude…"
-                let body = try JSONSerialization.data(withJSONObject: ["requests": reqs])
+                let body = try JSONSerialization.data(withJSONObject: ["requests": reqs], options: [.withoutEscapingSlashes])
+                // Finish the upload (and record the batch) even if the app is closed mid-send.
+                let bg = UIApplication.shared.beginBackgroundTask(withName: "Send to Claude")
+                defer { UIApplication.shared.endBackgroundTask(bg) }
                 let (data, resp) = try await URLSession.shared.data(for: request(endpoint, method: "POST", body: body))
                 let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
                 guard code == 200, let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                       let id = obj["id"] as? String else {
-                    throw ClaudeError.http(code, String(data: data, encoding: .utf8)?.prefix(200).description ?? "")
+                    throw ClaudeError.http(code, code == 429 || code >= 500 ? "Claude is busy; try again in a few minutes." : "")
                 }
                 library.addClaudeBatch(ClaudeBatch(id: id, model: model, photos: map, sent: Date()))
-                sent += chunk.count
+                sent += reqs.count
             }
-            status = "Sent \(sent.formatted()) photos. Claude's scores usually arrive within an hour; they're picked up when you open the app."
             await collect(library)
+            status = "Sent \(sent.formatted()) photos. Claude's scores usually arrive within an hour; they're picked up when you open the app."
         } catch {
             status = error.localizedDescription
         }
@@ -201,8 +214,12 @@ final class ClaudeService: ObservableObject {
     func collect(_ library: Library) async {
         for b in library.claudeBatches {
             do {
-                let (data, _) = try await URLSession.shared.data(for: request(endpoint.appendingPathComponent(b.id)))
-                guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+                let (data, resp) = try await URLSession.shared.data(for: request(endpoint.appendingPathComponent(b.id)))
+                let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                if code == 404 { library.removeClaudeBatch(b.id); status = "A batch was no longer on Anthropic's side; those photos can be sent again."; continue }
+                guard code == 200, let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    throw ClaudeError.http(code, code == 429 || code >= 500 ? "Claude is busy; try again in a few minutes." : "")
+                }
                 if obj["processing_status"] as? String != "ended" {
                     if let counts = obj["request_counts"] as? [String: Int] {
                         status = "Claude is scoring… \((counts["succeeded"] ?? 0).formatted()) of \(b.photos.count.formatted()) done in the latest batch."
@@ -212,7 +229,9 @@ final class ClaudeService: ObservableObject {
                 guard let urlString = obj["results_url"] as? String, let url = URL(string: urlString) else {
                     library.removeClaudeBatch(b.id); continue
                 }
-                let (results, _) = try await URLSession.shared.data(for: request(url))
+                let (results, rresp) = try await URLSession.shared.data(for: request(url))
+                let rcode = (rresp as? HTTPURLResponse)?.statusCode ?? 0
+                guard rcode == 200 else { throw ClaudeError.http(rcode, "Couldn't download the results yet; they'll be retried.") }
                 var verdicts: [String: ClaudeVerdict] = [:]
                 for line in String(decoding: results, as: UTF8.self).split(separator: "\n") {
                     guard let r = Claude.parseResultLine(String(line)), let photo = b.photos[r.id],
@@ -229,9 +248,13 @@ final class ClaudeService: ObservableObject {
         }
     }
 
-    /// The photo at 768 px as JPEG. Re-encoding drops location and other file details.
+    /// The photo upright, at most 768 px on its long side, as JPEG. Redrawing drops location and other file details.
     static func jpeg(_ id: String) async -> Data? {
         guard let img = await AssetImage.load(id: id, size: CGSize(width: 768, height: 768), mode: .aspectFit) else { return nil }
-        return img.jpegData(compressionQuality: 0.8)
+        let k = min(1, 768 / max(img.size.width, img.size.height))
+        let size = CGSize(width: (img.size.width * k).rounded(), height: (img.size.height * k).rounded())
+        let fmt = UIGraphicsImageRendererFormat(); fmt.scale = 1; fmt.opaque = true
+        let upright = UIGraphicsImageRenderer(size: size, format: fmt).image { _ in img.draw(in: CGRect(origin: .zero, size: size)) }
+        return upright.jpegData(compressionQuality: 0.8)
     }
 }

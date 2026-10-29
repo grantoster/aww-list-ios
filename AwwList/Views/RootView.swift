@@ -192,9 +192,12 @@ struct ClaudeSection: View {
                 ForEach(Claude.scopes, id: \.n) { s in Text(s.name).tag(s.n) }
             }
             let n = claude.candidates(library).count
-            LabeledContent("Waiting for Claude", value: n == 0 ? "None" : "\(n.formatted()) photos")
+            LabeledContent("Not sent yet", value: n == 0 ? "None" : "\(n.formatted()) photos")
+            if !library.claudeBatches.isEmpty {
+                LabeledContent("Being scored", value: "\(library.claudeBatches.reduce(0) { $0 + $1.photos.count }.formatted()) photos")
+            }
             if n > 0 {
-                Text("Estimated cost: about $\(String(format: "%.2f", Claude.estimatedCost(photos: n, model: library.claudeModel))) at batch prices (an estimate: ~1,240 tokens a photo; your Anthropic bill is the actual).")
+                Text("Estimated cost: about \(Claude.dollars(Claude.estimatedCost(photos: n, model: library.claudeModel))) at batch prices. This is an estimate (about 1,200 tokens in and up to 300 out a photo); your Anthropic bill shows the actual.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Toggle("Send these photos to Claude", isOn: $agreed)
@@ -211,7 +214,7 @@ struct ClaudeSection: View {
         } header: {
             Text("Score with Claude")
         } footer: {
-            Text("Optional. Your phone still checks every photo first; the photos you choose are then sent to Anthropic's Claude for the final 1–10 score, a description, and a second check for bath, swimwear, shirtless and AI or edited photos. Photos are sent at 768 px without location or file details, using your own API key from console.anthropic.com; charges go to your Anthropic account. Photos that aren't sent are capped at 6 so Claude's picks rank first.")
+            Text("Optional. Your phone still checks every photo first; the photos you choose are then sent to Anthropic's Claude for the final 1–10 score, a description, and a second check for bath, swimwear, shirtless and AI or edited photos. Each year's top photos are chosen by Apple's score. Photos are sent at 768 px without location or file details (including any the phone's own check might have missed, so Claude can catch them), using your own API key from console.anthropic.com; charges go to your Anthropic account. When ranking by Claude, photos Claude hasn't seen are held at 6 or below.")
         }
     }
 }

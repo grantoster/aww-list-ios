@@ -110,7 +110,7 @@ enum People {
     /// The named person a face belongs to, if any is similar enough.
     static func match(_ v: [Float], people: [Person], threshold: Float) -> UUID? {
         var best: UUID?, bestSim = threshold
-        for p in people {
+        for p in people where p.centroid.count == v.count {
             let s = cosine(v, p.centroid)
             if s >= bestSim { bestSim = s; best = p.id }
         }
