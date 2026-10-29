@@ -7,6 +7,7 @@ struct HomeView: View {
     @EnvironmentObject var scanner: PhotoScanner
     @State private var scope: ListScope = .all
     @State private var age: AgeGroup?
+    @State private var shot: ShotKind?
     @State private var person: UUID?
     @State private var showWho = false
     @State private var sortByDate = false
@@ -18,6 +19,7 @@ struct HomeView: View {
         library.moments.filter { m in
             if case .year(let y) = scope, m.year != y { return false }
             if let age, !m.ages.contains(age) { return false }
+            if let shot, m.shot != shot { return false }
             if let person, !m.people.contains(person) { return false }
             return true
         }
@@ -34,6 +36,7 @@ struct HomeView: View {
                     }
                     scopeBar
                     ageBar
+                    shotBar
                     whoBar
                     if library.claudeScored > 0 || library.learned != nil { rankBar }
                     if age == .toddler && library.birthdays.isEmpty && !library.people.contains(where: { $0.birthday != nil }) {
@@ -73,6 +76,7 @@ struct HomeView: View {
             .fullScreenCover(item: $viewer) { v in ViewerView(moments: v.list, index: v.index) }
             .onChange(of: scope) { shown = 60 }
             .onChange(of: age) { shown = 60 }
+            .onChange(of: shot) { shown = 60 }
             .onChange(of: person) { shown = 60 }
             .onChange(of: library.people) {
                 if let p = person, !library.people.contains(where: { $0.id == p }) { person = nil }
@@ -97,6 +101,17 @@ struct HomeView: View {
                 Text("Age").font(.subheadline).foregroundStyle(.secondary)
                 Pill(title: "All ages", on: age == nil, small: true) { age = nil }
                 ForEach(AgeGroup.allCases) { g in Pill(title: g.label, on: age == g, small: true) { age = g } }
+            }
+        }
+    }
+
+    /// Just kids (close-ups and kids together) or family and groups (grown-ups in the shot, or a crowd).
+    private var shotBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                Text("Shots").font(.subheadline).foregroundStyle(.secondary)
+                Pill(title: "All", on: shot == nil, small: true) { shot = nil }
+                ForEach(ShotKind.allCases) { k in Pill(title: k.label, on: shot == k, small: true) { shot = k } }
             }
         }
     }
