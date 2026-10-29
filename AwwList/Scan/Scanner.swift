@@ -63,7 +63,8 @@ final class PhotoScanner: ObservableObject {
                         signals = measured
                     }
                     // Undated photos can't be placed in a year or grouped into moments, so they stay off the list.
-                    guard let date = asset.creationDate ?? asset.modificationDate else {
+                    // (No fallback to the modification date: that's the edit or import date, which would misfile them.)
+                    guard let date = asset.creationDate else {
                         return PhotoScore(id: asset.localIdentifier, date: .distantPast, raw: nil, excluded: "No date",
                                           age: nil, caption: "", version: Scorer.version)
                     }

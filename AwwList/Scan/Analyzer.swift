@@ -13,21 +13,39 @@ final class Analyzer {
     /// Vision classifier labels that mean a child is in the picture (exact identifiers from Apple's taxonomy).
     static let childLabels: Set<String> = ["baby", "child"]
     static let babyLabels: Set<String> = ["baby"]
-    /// Labels that keep a photo off the list. Checked with Apple's high-recall filter, so borderline cases are left out.
-    static let blocked: [String: String] = [
+    /// Labels that keep a photo off the list, checked with Apple's high-recall filter so borderline cases are left out.
+    /// Exact names from Apple's published taxonomy; diapers are fine, so "diaper" is deliberately not here.
+    static let blockedExact: [String: String] = [
         "bath": "bath", "bathroom": "bath", "shower": "bath", "jacuzzi": "bath", "bathrobe": "bath",
         "swimsuit": "swimwear", "swimming": "swimwear", "pool": "swimwear", "beach": "swimwear",
         "underwater": "swimwear", "waterpolo": "swimwear", "sunbathing": "swimwear",
-        "diaper": "undressed",
         "document": "document", "receipt": "document", "screenshot": "screenshot"
     ]
+    /// Name fragments matched against whatever labels this iOS actually supports, so a renamed or new label
+    /// (bathtub, hot_tub, swimming_pool, water_park, ...) is still caught.
+    static let blockedFragments: [(String, String)] = [
+        ("bath", "bath"), ("shower", "bath"), ("jacuzzi", "bath"), ("hot_tub", "bath"), ("hottub", "bath"),
+        ("swim", "swimwear"), ("pool", "swimwear"), ("beach", "swimwear"), ("bikini", "swimwear"),
+        ("water_park", "swimwear"), ("waterpark", "swimwear"), ("sprinkler", "swimwear"), ("splash", "swimwear"),
+        ("underwater", "swimwear"), ("waterpolo", "swimwear"), ("snorkel", "swimwear"), ("scuba", "swimwear"),
+        ("underwear", "undressed"), ("lingerie", "undressed"), ("nude", "undressed"), ("shirtless", "undressed")
+    ]
+    /// The full blocklist for a given set of supported labels: the exact names plus every label containing a fragment.
+    static func blocklist(for supported: [String]) -> [String: String] {
+        var out = blockedExact
+        for id in supported {
+            let l = id.lowercased()
+            if out[id] == nil, let hit = blockedFragments.first(where: { l.contains($0.0) }) { out[id] = hit.1 }
+        }
+        return out
+    }
+    private let blocked: [String: String]
 
     init() {
-        // If a future iOS renames a label, say so in the log instead of silently never matching.
-        if let ids = try? VNClassifyImageRequest().supportedIdentifiers() {
-            let missing = Set(Self.blocked.keys).union(Self.childLabels).subtracting(ids)
-            if !missing.isEmpty { NSLog("Aww List: classifier labels not found on this iOS: \(missing.sorted())") }
-        }
+        let ids = (try? VNClassifyImageRequest().supportedIdentifiers()) ?? []
+        blocked = Self.blocklist(for: ids)
+        let missing = Set(Self.blockedExact.keys).union(Self.childLabels).subtracting(ids)
+        if !ids.isEmpty && !missing.isEmpty { NSLog("Aww List: classifier labels not on this iOS (fragments still apply): \(missing.sorted())") }
     }
 
     /// Nil when Vision failed, so the caller stores nothing and the photo is tried again on the next scan.
@@ -41,7 +59,7 @@ final class Analyzer {
 
         for obs in classify.results ?? [] {
             let id = obs.identifier
-            if s.blockedLabel == nil, let reason = Self.blocked[id],
+            if s.blockedLabel == nil, let reason = blocked[id],
                obs.confidence > 0.5 || (obs.hasPrecisionRecallCurve && obs.hasMinimumPrecision(0.1, forRecall: 0.9)) {
                 s.blockedLabel = reason
             }
@@ -66,7 +84,7 @@ final class Analyzer {
                 ciFaces.append((b, f.hasSmile, f.leftEyeClosed && f.rightEyeClosed))
             }
         }
-        var subjectBox = CGRect.zero
+        var subjectBox = CGRect.zero, subjectArea: CGFloat = -1
         for o in faceObs {
             let box = o.boundingBox
             var face = FaceSignal(area: Double(box.width * box.height), quality: Double(o.faceCaptureQuality ?? 0))
@@ -74,11 +92,39 @@ final class Analyzer {
                 face.smile = m.smile
                 face.eyesClosed = m.closed
             }
-            if face.area > subjectBox.width * subjectBox.height { subjectBox = box }
+            if box.width * box.height > subjectArea { subjectBox = box; subjectArea = box.width * box.height }
             s.faces.append(face)
         }
         s.sharpness = sharpness(ci, box: subjectBox)
+        s.bareTorso = bareTorso(ci, face: subjectBox)
         return s
+    }
+
+    /// Compares the skin tone in the middle of the face with the area just below it (chest and shoulders).
+    private func bareTorso(_ ci: CIImage, face b: CGRect) -> Double {
+        let faceCore = CGRect(x: b.minX + b.width * 0.25, y: b.minY + b.height * 0.2, width: b.width * 0.5, height: b.height * 0.45)
+        let chest = CGRect(x: b.minX - b.width * 0.25, y: b.minY - b.height * 1.6, width: b.width * 1.5, height: b.height * 1.3)
+        // Only judge when most of the chest area is inside the photo.
+        let inside = chest.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+        guard !inside.isNull, inside.width * inside.height >= chest.width * chest.height * 0.6,
+              let f = rgb(ci, faceCore, side: 16), let t = rgb(ci, inside, side: 32) else { return 0 }
+        return Scorer.skinMatch(face: f, torso: t)
+    }
+
+    /// Renders a normalized region to a small RGB buffer.
+    private func rgb(_ ci: CIImage, _ n: CGRect, side: Int) -> [UInt8]? {
+        let e = ci.extent
+        let r = CGRect(x: e.minX + n.minX * e.width, y: e.minY + n.minY * e.height,
+                       width: n.width * e.width, height: n.height * e.height).integral.intersection(e)
+        guard !r.isNull, r.width >= 4, r.height >= 4 else { return nil }
+        let img = ci.cropped(to: r).transformed(by: CGAffineTransform(translationX: -r.minX, y: -r.minY))
+            .transformed(by: CGAffineTransform(scaleX: CGFloat(side) / r.width, y: CGFloat(side) / r.height))
+        var px = [UInt8](repeating: 0, count: side * side * 4)
+        ciContext.render(img, toBitmap: &px, rowBytes: side * 4, bounds: CGRect(x: 0, y: 0, width: side, height: side),
+                         format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
+        var out = [UInt8](); out.reserveCapacity(side * side * 3)
+        for i in stride(from: 0, to: px.count, by: 4) { out += [px[i], px[i + 1], px[i + 2]] }
+        return out
     }
 
     private func iou(_ a: CGRect, _ b: CGRect) -> CGFloat {
@@ -88,20 +134,21 @@ final class Analyzer {
         return inter / (a.width * a.height + b.width * b.height - inter)
     }
 
-    /// Renders the face crop to a 128 px grayscale square and measures its sharpness.
+    /// Renders the face crop to grayscale (shrunk to 128 px at most, never enlarged) and measures its sharpness.
     private func sharpness(_ ci: CIImage, box: CGRect) -> Double {
         let e = ci.extent
         let r = CGRect(x: e.minX + box.minX * e.width, y: e.minY + box.minY * e.height,
                        width: box.width * e.width, height: box.height * e.height).integral.intersection(e)
-        guard !r.isNull, r.width >= 16, r.height >= 16 else { return 0 }
-        let side = 128
+        guard !r.isNull, r.width >= 8, r.height >= 8 else { return 0 }
+        let k = min(1, 128 / max(r.width, r.height))
+        let w = max(3, Int(r.width * k)), h = max(3, Int(r.height * k))
         let crop = ci.cropped(to: r)
             .transformed(by: CGAffineTransform(translationX: -r.minX, y: -r.minY))
-            .transformed(by: CGAffineTransform(scaleX: CGFloat(side) / r.width, y: CGFloat(side) / r.height))
-        var px = [UInt8](repeating: 0, count: side * side)
-        ciContext.render(crop, toBitmap: &px, rowBytes: side,
-                         bounds: CGRect(x: 0, y: 0, width: side, height: side),
+            .transformed(by: CGAffineTransform(scaleX: CGFloat(w) / r.width, y: CGFloat(h) / r.height))
+        var px = [UInt8](repeating: 0, count: w * h)
+        ciContext.render(crop, toBitmap: &px, rowBytes: w,
+                         bounds: CGRect(x: 0, y: 0, width: w, height: h),
                          format: .L8, colorSpace: CGColorSpaceCreateDeviceGray())
-        return Scorer.sharpness(gray: px, side: side)
+        return Scorer.sharpness(gray: px, width: w, height: h)
     }
 }

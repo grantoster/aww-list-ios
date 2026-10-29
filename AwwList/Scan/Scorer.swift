@@ -15,37 +15,47 @@ struct Signals: Equatable {
     var babyConfidence: Double = 0       // 0...1
     var faces: [FaceSignal] = []
     var sharpness: Double = 0            // 0...1, measured on the subject's face crop
+    var bareTorso: Double = 0            // 0...1, share of the area under the subject's face that matches its skin tone
     var isScreenshot: Bool = false
     var blockedLabel: String? = nil      // "bath", "swimwear", "undressed", "document", "screenshot"
 
-    var subject: FaceSignal? { faces.max { $0.area < $1.area } }
+    var subjectIndex: Int? { faces.indices.max { faces[$0].area < faces[$1].area } }
+    var subject: FaceSignal? { subjectIndex.map { faces[$0] } }
 }
 
 enum Scorer {
     /// Bump when scoring changes; photos scored by an older version are analyzed again.
-    static let version = 2
+    static let version = 3
 
     /// Minimum label confidence for a photo to count as having a child in it (unless the precise filter passed).
     static let childThreshold = 0.35
     /// Exclusion reasons that also hide every photo taken within 10 minutes of them.
     static let sensitive: Set<String> = ["Bath", "Swimwear", "Undressed"]
     static let quarantine: TimeInterval = 600
+    /// Share of the chest area that has to match the face's skin tone for a photo to count as shirtless.
+    static let bareTorsoLimit = 0.55
+    /// A year with fewer moments than this counts for less when spreading scores (so 3 photos from January
+    /// can't claim a full year's share of 9s and 10s).
+    static let fullYear = 200.0
 
     /// Returns (raw 0...1, excluded reason). Mirrors the Aww List rubric:
     /// the child's own expression counts most, then real closeness, then the moment; blur pulls everything down.
     static func score(_ s: Signals) -> (raw: Double?, excluded: String?) {
         if s.isScreenshot { return (nil, "Screenshot") }
         if let b = s.blockedLabel { return (nil, b.capitalized) }
+        if s.bareTorso >= bareTorsoLimit { return (nil, "Shirtless") }
         guard s.childPrecise || s.childConfidence >= childThreshold else { return (nil, "No child") }
-        guard let subj = s.subject else { return (nil, "No face") }
-        let others = s.faces.filter { $0 != subj }
+        guard let si = s.subjectIndex else { return (nil, "No face") }
+        let subj = s.faces[si]
+        let others = s.faces.enumerated().filter { $0.offset != si }.map(\.element)
 
         // Expression: the subject (largest face) counts double; everyone else shares the rest.
         // Two smiling adults beside a serious baby no longer beat one smiling child.
         var emotion = (2 * (subj.smile ? 1.0 : 0) + Double(others.filter(\.smile).count)) / Double(2 + others.count)
-        // A sleeping baby filling the frame is a sweet moment, not a miss.
-        let sleepingBaby = s.babyConfidence > 0.5 && subj.eyesClosed && !subj.smile && others.isEmpty && subj.area > 0.08
-        if sleepingBaby { emotion = 0.6 }
+        // A sleeping baby is a sweet moment, not a miss, whether alone or in someone's arms.
+        let isBaby = s.babyConfidence > 0.5
+        let sleepingBaby = isBaby && s.faces.contains { $0.eyesClosed && !$0.smile && $0.area > 0.03 }
+        if sleepingBaby { emotion = max(emotion, 0.6) }
 
         // Closeness: a second face of comparable size, not strangers in the background.
         let connection = others.contains { $0.area >= subj.area * 0.25 } ? 1.0 : 0
@@ -53,26 +63,42 @@ enum Scorer {
         let child = min(1, s.childConfidence)
 
         var raw = 0.45 * emotion + 0.20 * connection + 0.20 * presence + 0.15 * child
-        if subj.eyesClosed && !subj.smile && !others.isEmpty { raw -= 0.10 }   // a blink in a group shot
+        if !isBaby && subj.eyesClosed && !subj.smile && !others.isEmpty { raw -= 0.10 }   // a blink in a group shot
         if s.faces.count > 5 { raw *= 0.85 }                                   // crowds aren't child portraits
         raw *= 0.4 + 0.6 * min(1, max(0, s.sharpness))                         // blur caps how good a photo can be
         return (max(0, min(1, raw)), nil)
     }
 
-    /// Variance of the Laplacian over a square grayscale crop: high for sharp detail, low for blur.
-    /// Returned on a 0...1 scale (150 or more counts as fully sharp).
-    static func sharpness(gray px: [UInt8], side n: Int) -> Double {
-        guard n >= 3, px.count >= n * n else { return 0 }
+    /// Variance of the Laplacian over a grayscale crop (row-major, w x h): high for sharp detail, low for blur.
+    /// Returned on a 0...1 scale (150 or more counts as fully sharp). Measured at the crop's own resolution,
+    /// never upscaled, so small faces aren't mistaken for blurry ones.
+    static func sharpness(gray px: [UInt8], width w: Int, height h: Int) -> Double {
+        guard w >= 3, h >= 3, px.count >= w * h else { return 0 }
         var sum = 0.0, sumSq = 0.0, count = 0.0
-        for y in 1..<(n - 1) {
-            for x in 1..<(n - 1) {
-                let i = y * n + x
-                let l = Double(px[i - n]) + Double(px[i + n]) + Double(px[i - 1]) + Double(px[i + 1]) - 4 * Double(px[i])
+        for y in 1..<(h - 1) {
+            for x in 1..<(w - 1) {
+                let i = y * w + x
+                let l = Double(px[i - w]) + Double(px[i + w]) + Double(px[i - 1]) + Double(px[i + 1]) - 4 * Double(px[i])
                 sum += l; sumSq += l * l; count += 1
             }
         }
         let mean = sum / count
         return min(1, max(0, sumSq / count - mean * mean) / 150)
+    }
+
+    /// Share of `torso` pixels (RGB triples) whose chroma is close to the median chroma of `face`.
+    /// Shirts in a skin-like color also match, which errs toward leaving a photo out.
+    static func skinMatch(face: [UInt8], torso: [UInt8]) -> Double {
+        func chroma(_ p: [UInt8], _ i: Int) -> (Double, Double) {
+            let r = Double(p[i]), g = Double(p[i + 1]), b = Double(p[i + 2])
+            return (128 - 0.168736 * r - 0.331264 * g + 0.5 * b, 128 + 0.5 * r - 0.418688 * g - 0.081312 * b)
+        }
+        guard face.count >= 3, torso.count >= 3 else { return 0 }
+        let f = stride(from: 0, to: face.count - 2, by: 3).map { chroma(face, $0) }
+        let cb = f.map(\.0).sorted()[f.count / 2], cr = f.map(\.1).sorted()[f.count / 2]
+        let t = stride(from: 0, to: torso.count - 2, by: 3).map { chroma(torso, $0) }
+        let hits = t.filter { abs($0.0 - cb) < 8 && abs($0.1 - cr) < 8 }.count
+        return Double(hits) / Double(t.count)
     }
 
     static func bucket(_ p: Double) -> Int {
@@ -92,13 +118,14 @@ enum Scorer {
 
     /// Turns raw scores into 1...10 by percentile, so 9s and 10s stay rare:
     /// top 1% → 9–10, next 4% → 8, next 10% → 7, next 20% → 6, next 25% → 5, the rest 1–4.
-    /// Each year carries equal weight, so one huge year can't push every other year up or down.
+    /// Each full year carries equal weight, so one huge year can't push every other year up or down;
+    /// a year with under 200 moments counts in proportion to its size.
     /// Tied raw scores get the same score. Small libraries top out lower, and a weak photo
     /// can't earn a high score just by being the best of a weak bunch.
     static func calibrate(_ raws: [Double], years: [Int]? = nil) -> [Int] {
         guard !raws.isEmpty else { return [] }
         let yrs = years ?? Array(repeating: 0, count: raws.count)
-        let perYear = Dictionary(grouping: yrs, by: { $0 }).mapValues { 1.0 / Double($0.count) }
+        let perYear = Dictionary(grouping: yrs, by: { $0 }).mapValues { 1.0 / max(Double($0.count), fullYear) }
         let weight = yrs.map { perYear[$0]! }
         let total = weight.reduce(0, +)
         let order = raws.indices.sorted { raws[$0] > raws[$1] }

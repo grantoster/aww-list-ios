@@ -22,10 +22,25 @@ final class ScorerTests: XCTestCase {
         XCTAssertEqual(Scorer.score(b).excluded, "Bath")
     }
 
-    func testBlockedLabelsAreRealClassifierLabels() {
-        XCTAssertEqual(Analyzer.blocked["bath"], "bath")
-        XCTAssertEqual(Analyzer.blocked["swimsuit"], "swimwear")
-        XCTAssertEqual(Analyzer.blocked["diaper"], "undressed")
+    func testBlocklistCatchesLabelVariantsButNotDiapers() {
+        let list = Analyzer.blocklist(for: ["bathtub", "hot_tub", "swimming_pool", "water_park", "diaper", "dog", "child"])
+        XCTAssertEqual(list["bathtub"], "bath")
+        XCTAssertEqual(list["hot_tub"], "bath")
+        XCTAssertEqual(list["swimming_pool"], "swimwear")
+        XCTAssertEqual(list["water_park"], "swimwear")
+        XCTAssertNil(list["diaper"])          // diapers are fine
+        XCTAssertNil(list["dog"])
+        XCTAssertNil(list["child"])
+        XCTAssertEqual(list["bath"], "bath")  // exact names are always included
+    }
+
+    func testShirtlessIsLeftOut() {
+        var s = kid(); s.bareTorso = 0.8
+        XCTAssertEqual(Scorer.score(s).excluded, "Shirtless")
+        let skin: [UInt8] = Array([UInt8]([224, 172, 150]).repeated(64))
+        let shirt: [UInt8] = Array([UInt8]([40, 80, 200]).repeated(64))
+        XCTAssertEqual(Scorer.skinMatch(face: skin, torso: skin), 1)
+        XCTAssertEqual(Scorer.skinMatch(face: skin, torso: shirt), 0)
     }
 
     func testSmilesBeatNoSmiles() {
@@ -50,14 +65,23 @@ final class ScorerTests: XCTestCase {
         var asleep = kid(smile: false); asleep.babyConfidence = 0.9; asleep.faces[0].eyesClosed = true
         var crying = kid(smile: false); crying.babyConfidence = 0.9
         XCTAssertGreaterThan(Scorer.score(asleep).raw!, Scorer.score(crying).raw!)
+        // asleep in a parent's arms (parent's face is larger) isn't penalized either
+        var held = asleep; held.faces.append(FaceSignal(area: 0.15, quality: 0.8, smile: false))
+        var awakeHeld = crying; awakeHeld.faces.append(FaceSignal(area: 0.15, quality: 0.8, smile: false))
+        XCTAssertGreaterThanOrEqual(Scorer.score(held).raw!, Scorer.score(awakeHeld).raw!)
+    }
+
+    func testIdenticalFacesBothCount() {
+        var s = kid(); s.faces.append(s.faces[0])
+        XCTAssertGreaterThan(Scorer.score(s).raw!, Scorer.score(kid()).raw!)
     }
 
     func testSharpnessMeasure() {
         let n = 32
         let flat = [UInt8](repeating: 128, count: n * n)
         let checker = (0..<(n * n)).map { i in UInt8(((i / n) + (i % n)) % 2 == 0 ? 0 : 255) }
-        XCTAssertEqual(Scorer.sharpness(gray: flat, side: n), 0)
-        XCTAssertEqual(Scorer.sharpness(gray: checker, side: n), 1)
+        XCTAssertEqual(Scorer.sharpness(gray: flat, width: n, height: n), 0)
+        XCTAssertEqual(Scorer.sharpness(gray: checker, width: n, height: n), 1)
     }
 
     func testCalibrationKeepsTopScoresRare() {
@@ -80,6 +104,14 @@ final class ScorerTests: XCTestCase {
         let weighted = Scorer.calibrate(small + big, years: Array(repeating: 2020, count: 100) + Array(repeating: 2021, count: 3000))
         let pooled = Scorer.calibrate(small + big)
         XCTAssertLessThan(weighted[..<100].filter { $0 >= 8 }.count, pooled[..<100].filter { $0 >= 8 }.count)
+    }
+
+    func testATinyYearDoesNotClaimAFullYearOfTopScores() {
+        let a = (0..<1000).map { 0.3 + Double($0) / 2000 }, b = (0..<1000).map { 0.3 + Double($0) / 2000 }
+        let cal = Scorer.calibrate(a + b + [0.9], years: Array(repeating: 2024, count: 1000) + Array(repeating: 2025, count: 1000) + [2026])
+        XCTAssertGreaterThanOrEqual(cal[999], 9)            // best of 2024 stays at the top
+        let pooled = Scorer.calibrate(a + b + [0.9]).filter { $0 >= 8 }.count
+        XCTAssertLessThanOrEqual(abs(cal.filter { $0 >= 8 }.count - pooled), 5)   // equal per-year weight would add ~50
     }
 
     func testBurstsCollapseToBestShot() {
@@ -114,4 +146,8 @@ final class ScorerTests: XCTestCase {
         let p = ["z", "x", "y"].map { PhotoScore(id: $0, date: t, raw: 0.5, excluded: nil, age: .kid, caption: "") }
         for _ in 0..<20 { XCTAssertEqual(Scorer.moments(from: p.shuffled())[0].best.id, "x") }
     }
+}
+
+private extension Array {
+    func repeated(_ n: Int) -> [Element] { (0..<n).flatMap { _ in self } }
 }
