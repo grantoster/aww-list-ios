@@ -95,7 +95,7 @@ final class Analyzer {
         }
         var subjectBox = CGRect.zero, subjectArea: CGFloat = -1
         let largest = faceObs.map { $0.boundingBox.width * $0.boundingBox.height }.max() ?? 0
-        let centers = faceObs.map { CGPoint(x: $0.boundingBox.midX, y: $0.boundingBox.midY) }
+        let boxes = faceObs.map(\.boundingBox)
         for o in faceObs {
             let box = o.boundingBox
             var face = FaceSignal(area: Double(box.width * box.height), quality: Double(o.faceCaptureQuality ?? 0))
@@ -109,8 +109,7 @@ final class Analyzer {
                 face.bareTorso = bareTorso(ci, face: box)
                 // A bare chest is fine only on a baby: ask the classifier about this person alone.
                 if face.bareTorso >= Scorer.bareTorsoLimit {
-                    let others = centers.filter { $0 != CGPoint(x: box.midX, y: box.midY) }
-                    face.baby = babyConfidence(handler, around: box, avoiding: others)
+                    face.baby = babyConfidence(handler, around: box, avoiding: boxes.filter { $0 != box })
                 }
             }
             s.faces.append(face)
@@ -120,11 +119,15 @@ final class Analyzer {
     }
 
     /// "baby" label confidence for one person: the classifier run on their face and chest only.
-    /// If another face sits in that face-and-chest region (someone holding a baby), only this person's face is used,
-    /// so a held baby can't make the person holding them read as a baby.
-    private func babyConfidence(_ handler: VNImageRequestHandler, around b: CGRect, avoiding others: [CGPoint]) -> Double? {
+    /// If another face overlaps that face-and-chest region (someone holding a baby), only this person's face is used,
+    /// so a held baby can't make the person holding them read as a baby; if a smaller face still touches even that,
+    /// this person is not treated as the baby at all.
+    private func babyConfidence(_ handler: VNImageRequestHandler, around b: CGRect, avoiding others: [CGRect]) -> Double? {
         var roi = CGRect(x: b.minX - b.width * 0.3, y: b.minY - b.height * 1.8, width: b.width * 1.6, height: b.height * 2.8)
-        if others.contains(where: { roi.contains($0) }) { roi = b.insetBy(dx: -b.width * 0.15, dy: -b.height * 0.15) }
+        if others.contains(where: { $0.intersects(roi) }) {
+            roi = b.insetBy(dx: -b.width * 0.15, dy: -b.height * 0.15)
+            if others.contains(where: { $0.intersects(roi) && $0.width * $0.height < b.width * b.height }) { return 0 }
+        }
         roi = roi.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
         guard !roi.isNull, roi.width > 0.02, roi.height > 0.02 else { return nil }
         let req = VNClassifyImageRequest()

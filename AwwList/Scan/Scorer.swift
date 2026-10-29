@@ -47,8 +47,7 @@ enum Scorer {
     static func score(_ s: Signals) -> (raw: Double?, excluded: String?) {
         if s.isScreenshot { return (nil, "Screenshot") }
         if let b = s.blockedLabel { return (nil, b.capitalized) }
-        // Shirtless: any bare chest counts except a baby's (babies in just a diaper are fine). Each bare-chested
-        // person's own crop is classified; when that wasn't measured, the smallest face stands in for the baby.
+        // Shirtless: any bare chest counts except a baby's (babies in just a diaper are fine).
         // Checked before the child test (with a lower bar) so an older kid the child label half-misses still
         // hides the burst around them.
         // At most one bare chest is exempt: the smallest bare-chested face, and only when the photo reads as a baby
