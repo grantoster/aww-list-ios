@@ -12,11 +12,14 @@ on:
 
 jobs:
   build-and-test:
-    runs-on: macos-14
+    runs-on: macos-15
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+      - name: Select newest Xcode 26 (App Store uploads need the iOS 26 SDK)
+        run: |
+          X=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          echo "Using $X"; sudo xcode-select -s "$X"; xcodebuild -version
       - name: Generate Xcode project
         run: brew install xcodegen && xcodegen generate
       - name: Build and run unit tests (simulator, no signing)
@@ -24,15 +27,16 @@ jobs:
         run: |
           set -o pipefail
           gem list -i xcpretty >/dev/null || gem install xcpretty --no-document
+          SIM=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k in sorted(d, reverse=True) if 'iOS' in k for x in d[k] if x['name'].startswith('iPhone')))")
           xcodebuild test \
             -project AwwList.xcodeproj -scheme AwwList \
-            -destination 'platform=iOS Simulator,name=iPhone 15,OS=17.5' \
+            -destination "id=$SIM" \
             CODE_SIGNING_ALLOWED=NO | xcpretty
 
   testflight:
     needs: build-and-test
     if: github.event_name == 'workflow_dispatch' && inputs.testflight
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
       ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
@@ -41,8 +45,10 @@ jobs:
       AWW_BUNDLE_ID: ${{ secrets.BUNDLE_ID }}
     steps:
       - uses: actions/checkout@v4
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+      - name: Select newest Xcode 26 (App Store uploads need the iOS 26 SDK)
+        run: |
+          X=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          echo "Using $X"; sudo xcode-select -s "$X"; xcodebuild -version
       - name: Generate Xcode project
         run: brew install xcodegen && xcodegen generate
       - name: Build, sign and upload to TestFlight
