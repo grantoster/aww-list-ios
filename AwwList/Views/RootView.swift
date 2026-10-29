@@ -292,15 +292,29 @@ struct LearnedSection: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             if library.learnedIsBuiltIn || library.filterIsBuiltIn {
-                Text("Using the learning built into the app (from \(library.builtInScores.formatted()) Claude scores). Your own Claude scores take over once there are at least as many.")
+                Text("Using the learning built into the app (from \(library.builtInScores.formatted()) Claude scores). This phone's own learning takes over once it has learned from at least as many, or right away if you turn off the built-in learning below.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            if library.hasBuiltIn {
+                Toggle("Use the built-in learning", isOn: Binding(get: { library.useBuiltInLearning },
+                                                                   set: { library.setUseBuiltInLearning($0) }))
+            }
+            if let own = library.ownModel {
+                LabeledContent("This phone's own learning", value: "\(own.trainedOn.formatted()) Claude scores")
+            }
+            Button("Start learning over") { library.relearn(); copied = false }
+                .disabled(library.training)
+            Text("Throws away this phone's own learning and learns again from every Claude score on this iPhone (\(library.learnableCount.formatted()) so far). The built-in learning isn't affected.")
+                .font(.footnote).foregroundStyle(.secondary)
             if let text = library.learningText {
                 Button(copied ? "Copied" : "Copy learning") {
                     UIPasteboard.general.string = text
                     copied = true
                 }
-                Text("Copies this phone's learning (numbers only, no photos) so it can be built into the app as the starting point for new installs.")
+                Text("Copies this phone's own learning (numbers only, no photos) so it can be built into the app as the starting point for new installs.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            } else {
+                Text("Copy learning appears once this phone has learned from its own Claude scores (about 80–100 of them, spread over enough days).")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             if library.training { HStack { ProgressView(); Text("Learning…").foregroundStyle(.secondary) } }

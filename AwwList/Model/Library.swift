@@ -69,12 +69,13 @@ final class Library: ObservableObject {
         var claudeModel: String?; var claudeScope: Int?; var claudeBatches: [ClaudeBatch]?; var rankBy: String?
         var claudeFailures: [String: Int]?; var learned: LearnedModel?; var claudeSensitive: Bool?
         var putBack: [String]?; var keptOut: [String]?; var learnedFilter: LearnedFilter?; var trainedSignature: UInt64?
+        var useBuiltInLearning: Bool?
         var claudeRemoved: [String: String]?; var claudeSent: [String: [String]]?; var claudeSentYear: [String: Int]?
     }
 
     init() {
         load()
-        if learned == nil || learnedFilter == nil { useBuiltInWhereMissing(); rebuild() }
+        applyLearning(); rebuild()
     }
 
     /// New results from the scanner. The list is rebuilt at most every 2 seconds while scanning.
@@ -150,16 +151,37 @@ final class Library: ObservableObject {
         return LearningPack.read(t)
     }()
     var builtInScores: Int { builtIn.model?.trainedOn ?? 0 }
+    var hasBuiltIn: Bool { builtIn.model != nil || builtIn.filter != nil }
     @Published private(set) var learnedIsBuiltIn = false
     @Published private(set) var filterIsBuiltIn = false
-    /// This phone's own learning (not the built-in one) as text, for building into the app.
+    /// What this phone learned from its own Claude verdicts (kept even while the built-in learning is in use).
+    @Published private(set) var ownModel: LearnedModel?
+    @Published private(set) var ownFilter: LearnedFilter?
+    /// Use the built-in learning until this phone's own has learned from at least as many verdicts (default),
+    /// or only this phone's own learning.
+    @Published private(set) var useBuiltInLearning = true
+    func setUseBuiltInLearning(_ v: Bool) { useBuiltInLearning = v; applyLearning(); rebuild(); save() }
+
+    /// This phone's own learning as text (for building into the app); nil until it has learned something.
     var learningText: String? {
-        let m = learnedIsBuiltIn ? nil : learned, f = filterIsBuiltIn ? nil : learnedFilter
-        return m == nil && f == nil ? nil : LearningPack(model: m, filter: f).text()
+        ownModel == nil && ownFilter == nil ? nil : LearningPack(model: ownModel, filter: ownFilter).text()
     }
-    private func useBuiltInWhereMissing() {
-        if learned == nil, let m = builtIn.model { learned = m; learnedIsBuiltIn = true }
-        if learnedFilter == nil, let f = builtIn.filter { learnedFilter = f; filterIsBuiltIn = true }
+    /// Picks what's in use: this phone's own learning, or the built-in one where it's bigger (unless turned off).
+    private func applyLearning() {
+        func preferBuiltIn(_ own: Int?, _ b: Int?) -> Bool {
+            guard useBuiltInLearning, let b else { return false }
+            return own.map { $0 < b } ?? true
+        }
+        if preferBuiltIn(ownModel?.trainedOn, builtIn.model?.trainedOn) { learned = builtIn.model; learnedIsBuiltIn = true }
+        else { learned = ownModel; learnedIsBuiltIn = false }
+        if preferBuiltIn(ownFilter?.trainedOn, builtIn.filter?.trainedOn) { learnedFilter = builtIn.filter; filterIsBuiltIn = true }
+        else { learnedFilter = ownFilter; filterIsBuiltIn = false }
+    }
+    /// Throws away this phone's own learning and learns again from every Claude verdict on hand.
+    func relearn() {
+        ownModel = nil; ownFilter = nil; trainedSignature = nil; generation += 1
+        applyLearning(); rebuild(); save()
+        retrain()
     }
 
     /// Claude scores that have a fingerprint to learn from.
@@ -209,14 +231,10 @@ final class Library: ObservableObject {
                     self.pendingRetrain = false; self.retrain(); return
                 }
                 self.trainedSignature = signature
-                // Too few scores (for example after clearing) means no learning of this phone's own: fall back to the
-                // built-in learning, or none. This phone's own learning takes over from the built-in one only once it
-                // has learned from at least as many Claude verdicts, so a fresh install doesn't trade 1,600 scores for 60.
-                let keepModel = model.map { m in self.builtIn.model.map { m.trainedOn >= $0.trainedOn } ?? true } ?? false
-                let keepFilter = filter.map { f in self.builtIn.filter.map { f.trainedOn >= $0.trainedOn } ?? true } ?? false
-                self.learned = keepModel ? model : nil; self.learnedIsBuiltIn = false
-                self.learnedFilter = keepFilter ? filter : nil; self.filterIsBuiltIn = false
-                self.useBuiltInWhereMissing()
+                // This phone's own learning is always kept (and can be copied out); it's used once it has learned
+                // from at least as many verdicts as the built-in one, or right away if the built-in one is turned off.
+                self.ownModel = model; self.ownFilter = filter
+                self.applyLearning()
                 self.rebuild(); self.save()
                 if self.pendingRetrain { self.pendingRetrain = false; self.retrain() }
             }
@@ -226,9 +244,8 @@ final class Library: ObservableObject {
         for id in photos.keys where photos[id]?.claude != nil { photos[id]?.claude = nil }
         claudeBatches = []
         claudeSent = [:]   // starting over: each year's budget is available again (removals are kept, never re-sent)
-        learned = nil; learnedFilter = nil; trainedSignature = nil; generation += 1
-        learnedIsBuiltIn = false; filterIsBuiltIn = false
-        useBuiltInWhereMissing()
+        ownModel = nil; ownFilter = nil; trainedSignature = nil; generation += 1
+        applyLearning()
         if rankBy == "learned" { rankBy = "apple" }
         rebuild(); save()
     }
@@ -459,9 +476,9 @@ final class Library: ObservableObject {
         unsaved = 0
         let s = Saved(photos: Array(photos.values), hidden: Array(hidden), birthdays: birthdays,
                       people: people, strictness: strictness,
-                      claudeModel: claudeModel, claudeScope: claudeScope, claudeBatches: claudeBatches, rankBy: rankBy, claudeFailures: claudeFailures, learned: learnedIsBuiltIn ? nil : learned, claudeSensitive: claudeSensitive,
-                      putBack: nil, keptOut: Array(keptOut), learnedFilter: filterIsBuiltIn ? nil : learnedFilter,
-                      trainedSignature: trainedSignature,
+                      claudeModel: claudeModel, claudeScope: claudeScope, claudeBatches: claudeBatches, rankBy: rankBy, claudeFailures: claudeFailures, learned: ownModel, claudeSensitive: claudeSensitive,
+                      putBack: nil, keptOut: Array(keptOut), learnedFilter: ownFilter,
+                      trainedSignature: trainedSignature, useBuiltInLearning: useBuiltInLearning,
                       claudeRemoved: claudeRemoved, claudeSent: claudeSent.mapValues { Array($0) },
                       claudeSentYear: claudeSentYear)
         let u = url
@@ -491,8 +508,8 @@ final class Library: ObservableObject {
         }
         keptOut = Set(s.keptOut ?? [])
         claudeSensitive = s.claudeSensitive ?? false
-        learnedFilter = s.learnedFilter.flatMap { $0.weights.count == Learner.featureCount ? $0 : nil }
-        if let f = learnedFilter, let b = builtIn.filter, f.trainedOn < b.trainedOn { learnedFilter = nil }
+        ownFilter = s.learnedFilter.flatMap { $0.weights.count == Learner.featureCount ? $0 : nil }
+        useBuiltInLearning = s.useBuiltInLearning ?? true
         trainedSignature = s.trainedSignature
         claudeRemoved = s.claudeRemoved ?? [:]
         claudeSent = (s.claudeSent ?? [:]).mapValues(Set.init)
@@ -505,10 +522,9 @@ final class Library: ObservableObject {
             }
         }
         // A filter saved before its check counted removals would stay switched off: learn again once.
-        if let f = learnedFilter, f.testRemovals == nil { trainedSignature = nil }
-        learned = s.learned.flatMap { $0.weights.count == Learner.featureCount ? $0 : nil }
-        // A model of this phone's own that learned from fewer verdicts than the built-in one gives way to it.
-        if let m = learned, let b = builtIn.model, m.trainedOn < b.trainedOn { learned = nil }
+        if let f = ownFilter, f.testRemovals == nil { trainedSignature = nil }
+        ownModel = s.learned.flatMap { $0.weights.count == Learner.featureCount ? $0 : nil }
+        applyLearning()
         claudeScope = s.claudeScope ?? claudeScope
         claudeBatches = s.claudeBatches ?? []
         if s.claudeSent == nil { for b in claudeBatches { claudeSent[b.model, default: []].formUnion(b.photos.values) } }
