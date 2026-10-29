@@ -23,11 +23,15 @@ final class ScorerTests: XCTestCase {
     }
 
     func testBlocklistCatchesLabelVariantsButNotDiapers() {
-        let list = Analyzer.blocklist(for: ["bathtub", "hot_tub", "swimming_pool", "water_park", "diaper", "dog", "child"])
+        // Real labels from Apple's taxonomy, plus made-up variants a future iOS might use.
+        let list = Analyzer.blocklist(for: ["bathroom_room", "snorkeling", "lake", "sprinkler", "bathtub", "hot_tub", "swimming_pool", "diaper", "dog", "child"])
+        XCTAssertEqual(list["bathroom_room"], "bath")
+        XCTAssertEqual(list["snorkeling"], "swimwear")
+        XCTAssertEqual(list["lake"], "swimwear")
         XCTAssertEqual(list["bathtub"], "bath")
         XCTAssertEqual(list["hot_tub"], "bath")
         XCTAssertEqual(list["swimming_pool"], "swimwear")
-        XCTAssertEqual(list["water_park"], "swimwear")
+        XCTAssertNil(list["sprinkler"])       // ceiling fire sprinklers at parties
         XCTAssertNil(list["diaper"])          // diapers are fine
         XCTAssertNil(list["dog"])
         XCTAssertNil(list["child"])
@@ -37,6 +41,12 @@ final class ScorerTests: XCTestCase {
     func testShirtlessIsLeftOut() {
         var s = kid(); s.bareTorso = 0.8
         XCTAssertEqual(Scorer.score(s).excluded, "Shirtless")
+        var diaperBaby = s; diaperBaby.babyConfidence = 0.9
+        XCTAssertNil(Scorer.score(diaperBaby).excluded)   // diapers are fine
+        let t = Date(timeIntervalSince1970: 1_700_000_000)
+        let burst = [PhotoScore(id: "a", date: t, raw: nil, excluded: "Shirtless", age: nil, caption: ""),
+                     PhotoScore(id: "b", date: t.addingTimeInterval(90), raw: 0.8, excluded: nil, age: .kid, caption: "")]
+        XCTAssertTrue(Scorer.moments(from: burst).isEmpty)
         let skin: [UInt8] = Array([UInt8]([224, 172, 150]).repeated(64))
         let shirt: [UInt8] = Array([UInt8]([40, 80, 200]).repeated(64))
         XCTAssertEqual(Scorer.skinMatch(face: skin, torso: skin), 1)
@@ -69,6 +79,22 @@ final class ScorerTests: XCTestCase {
         var held = asleep; held.faces.append(FaceSignal(area: 0.15, quality: 0.8, smile: false))
         var awakeHeld = crying; awakeHeld.faces.append(FaceSignal(area: 0.15, quality: 0.8, smile: false))
         XCTAssertGreaterThanOrEqual(Scorer.score(held).raw!, Scorer.score(awakeHeld).raw!)
+    }
+
+    func testParentBlinkIsNotASleepingBaby() {
+        var awake = kid(smile: false, area: 0.06); awake.babyConfidence = 0.9
+        awake.faces.append(FaceSignal(area: 0.15, quality: 0.8, smile: false))
+        var blink = awake; blink.faces[1].eyesClosed = true
+        XCTAssertLessThanOrEqual(Scorer.score(blink).raw!, Scorer.score(awake).raw!)
+        XCTAssertLessThan(Scorer.score(blink).raw!, Scorer.score(kid()).raw!)
+    }
+
+    func testOldVersionsStillQuarantineButAreNotShown() {
+        let t = Date(timeIntervalSince1970: 1_700_000_000)
+        let p = [PhotoScore(id: "old", date: t, raw: nil, excluded: "Bath", age: nil, caption: "", version: 1),
+                 PhotoScore(id: "new", date: t.addingTimeInterval(90), raw: 0.8, excluded: nil, age: .kid, caption: "", version: 4),
+                 PhotoScore(id: "stale", date: t.addingTimeInterval(9000), raw: 0.8, excluded: nil, age: .kid, caption: "", version: 1)]
+        XCTAssertTrue(Scorer.moments(from: p, version: 4).isEmpty)
     }
 
     func testIdenticalFacesBothCount() {

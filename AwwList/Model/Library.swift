@@ -43,8 +43,9 @@ final class Library: ObservableObject {
 
     func rebuild() {
         lastRebuild = Date()
-        // Results from an older scorer never went through today's filters, so they stay off the list until re-scored.
-        let groups = Scorer.moments(from: photos.values.filter { !hidden.contains($0.id) && $0.version == Scorer.version })
+        // Results from an older scorer never went through today's filters, so they stay off the list until re-scored,
+        // but their bath/swim exclusions still quarantine the shots around them.
+        let groups = Scorer.moments(from: Array(photos.values), hidden: hidden, version: Scorer.version)
         let cal = Calendar.current
         let scores = Scorer.calibrate(groups.map { $0.best.raw ?? 0 },
                                       years: groups.map { cal.component(.year, from: $0.best.date) })

@@ -19,6 +19,11 @@ final class Analyzer {
         "bath": "bath", "bathroom": "bath", "shower": "bath", "jacuzzi": "bath", "bathrobe": "bath",
         "swimsuit": "swimwear", "swimming": "swimwear", "pool": "swimwear", "beach": "swimwear",
         "underwater": "swimwear", "waterpolo": "swimwear", "sunbathing": "swimwear",
+        // Water and shore scenes: a swimsuit with a covered chest gets past the shirtless check, so the scene decides.
+        "lake": "swimwear", "ocean": "swimwear", "shore": "swimwear", "water_body": "swimwear", "watersport": "swimwear",
+        "surfing": "swimwear", "surfboard": "swimwear", "bodyboard": "swimwear", "wetsuit": "swimwear", "diving": "swimwear",
+        "sandcastle": "swimwear", "snorkeling": "swimwear", "scuba": "swimwear", "wakeboarding": "swimwear",
+        "kiteboarding": "swimwear", "windsurfing": "swimwear",
         "document": "document", "receipt": "document", "screenshot": "screenshot"
     ]
     /// Name fragments matched against whatever labels this iOS actually supports, so a renamed or new label
@@ -26,7 +31,7 @@ final class Analyzer {
     static let blockedFragments: [(String, String)] = [
         ("bath", "bath"), ("shower", "bath"), ("jacuzzi", "bath"), ("hot_tub", "bath"), ("hottub", "bath"),
         ("swim", "swimwear"), ("pool", "swimwear"), ("beach", "swimwear"), ("bikini", "swimwear"),
-        ("water_park", "swimwear"), ("waterpark", "swimwear"), ("sprinkler", "swimwear"), ("splash", "swimwear"),
+        ("water_park", "swimwear"), ("waterpark", "swimwear"), ("splash_pad", "swimwear"),
         ("underwater", "swimwear"), ("waterpolo", "swimwear"), ("snorkel", "swimwear"), ("scuba", "swimwear"),
         ("underwear", "undressed"), ("lingerie", "undressed"), ("nude", "undressed"), ("shirtless", "undressed")
     ]
@@ -96,7 +101,8 @@ final class Analyzer {
             s.faces.append(face)
         }
         s.sharpness = sharpness(ci, box: subjectBox)
-        s.bareTorso = bareTorso(ci, face: subjectBox)
+        // Every face is checked, so a shirtless child held by a clothed parent is still caught.
+        s.bareTorso = faceObs.map { bareTorso(ci, face: $0.boundingBox) }.max() ?? 0
         return s
     }
 
@@ -104,9 +110,9 @@ final class Analyzer {
     private func bareTorso(_ ci: CIImage, face b: CGRect) -> Double {
         let faceCore = CGRect(x: b.minX + b.width * 0.25, y: b.minY + b.height * 0.2, width: b.width * 0.5, height: b.height * 0.45)
         let chest = CGRect(x: b.minX - b.width * 0.25, y: b.minY - b.height * 1.6, width: b.width * 1.5, height: b.height * 1.3)
-        // Only judge when most of the chest area is inside the photo.
+        // Judge whatever part of the chest is in the photo, as long as there's enough of it (close-ups included).
         let inside = chest.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
-        guard !inside.isNull, inside.width * inside.height >= chest.width * chest.height * 0.6,
+        guard !inside.isNull, inside.width * inside.height >= chest.width * chest.height * 0.25, inside.height >= b.height * 0.3,
               let f = rgb(ci, faceCore, side: 16), let t = rgb(ci, inside, side: 32) else { return 0 }
         return Scorer.skinMatch(face: f, torso: t)
     }

@@ -25,12 +25,12 @@ struct Signals: Equatable {
 
 enum Scorer {
     /// Bump when scoring changes; photos scored by an older version are analyzed again.
-    static let version = 3
+    static let version = 4
 
     /// Minimum label confidence for a photo to count as having a child in it (unless the precise filter passed).
     static let childThreshold = 0.35
     /// Exclusion reasons that also hide every photo taken within 10 minutes of them.
-    static let sensitive: Set<String> = ["Bath", "Swimwear", "Undressed"]
+    static let sensitive: Set<String> = ["Bath", "Swimwear", "Undressed", "Shirtless"]
     static let quarantine: TimeInterval = 600
     /// Share of the chest area that has to match the face's skin tone for a photo to count as shirtless.
     static let bareTorsoLimit = 0.55
@@ -43,7 +43,8 @@ enum Scorer {
     static func score(_ s: Signals) -> (raw: Double?, excluded: String?) {
         if s.isScreenshot { return (nil, "Screenshot") }
         if let b = s.blockedLabel { return (nil, b.capitalized) }
-        if s.bareTorso >= bareTorsoLimit { return (nil, "Shirtless") }
+        // Babies in just a diaper are fine; shirtless older children are not.
+        if s.bareTorso >= bareTorsoLimit && s.babyConfidence <= 0.5 { return (nil, "Shirtless") }
         guard s.childPrecise || s.childConfidence >= childThreshold else { return (nil, "No child") }
         guard let si = s.subjectIndex else { return (nil, "No face") }
         let subj = s.faces[si]
@@ -54,7 +55,10 @@ enum Scorer {
         var emotion = (2 * (subj.smile ? 1.0 : 0) + Double(others.filter(\.smile).count)) / Double(2 + others.count)
         // A sleeping baby is a sweet moment, not a miss, whether alone or in someone's arms.
         let isBaby = s.babyConfidence > 0.5
-        let sleepingBaby = isBaby && s.faces.contains { $0.eyesClosed && !$0.smile && $0.area > 0.03 }
+        // Alone, the closed eyes must be the baby's; with others, only the smallest face counts as the baby's
+        // (so a parent's blink isn't mistaken for a sleeping baby).
+        let babyFace = s.faces.count == 1 ? s.faces.first : s.faces.min { $0.area < $1.area }
+        let sleepingBaby = isBaby && babyFace.map { $0.eyesClosed && !$0.smile && $0.area > 0.03 } == true
         if sleepingBaby { emotion = max(emotion, 0.6) }
 
         // Closeness: a second face of comparable size, not strangers in the background.
@@ -149,14 +153,16 @@ enum Scorer {
     /// Groups photos into moments: shots less than 60 s apart are one moment, but a moment never runs past 2 minutes.
     /// Everything within 10 minutes of a bath, swimwear or undressed photo is left out too, so one missed frame
     /// of a bath burst can't slip onto the list. The best shot wins; ties go to the earlier, then the smaller id.
-    static func moments(from photos: [PhotoScore]) -> [(best: PhotoScore, shots: Int, ids: [String])] {
+    /// Every stored photo feeds the quarantine (old versions and hidden ones too); only photos that are shown —
+    /// not hidden, and scored by `version` when given — can become moments.
+    static func moments(from photos: [PhotoScore], hidden: Set<String> = [], version: Int? = nil) -> [(best: PhotoScore, shots: Int, ids: [String])] {
         let hot = photos.filter { sensitive.contains($0.excluded ?? "") }.map(\.date).sorted()
         func quarantined(_ d: Date) -> Bool {
             var lo = 0, hi = hot.count
             while lo < hi { let m = (lo + hi) / 2; if hot[m] < d.addingTimeInterval(-quarantine) { lo = m + 1 } else { hi = m } }
             return lo < hot.count && hot[lo] <= d.addingTimeInterval(quarantine)
         }
-        let counted = photos.filter { $0.raw != nil && !quarantined($0.date) }
+        let counted = photos.filter { $0.raw != nil && !hidden.contains($0.id) && (version == nil || $0.version == version) && !quarantined($0.date) }
             .sorted { ($0.date, $0.id) < ($1.date, $1.id) }
         var result: [(best: PhotoScore, shots: Int, ids: [String])] = []
         var group: [PhotoScore] = []
