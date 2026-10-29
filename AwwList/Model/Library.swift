@@ -166,7 +166,6 @@ final class Library: ObservableObject {
             return m
         }
         moments.sort(by: Library.ranked)
-            .sorted(by: Library.ranked)
     }
 
     /// Higher score first; then higher raw score; then the earlier photo.
