@@ -16,7 +16,7 @@ platform :ios do
     )
     team = ENV.fetch("AWW_TEAM_ID")
     bundle = ENV.fetch("AWW_BUNDLE_ID")
-    profile = "AwwListAppStoreCI"
+    profile = "AwwListCI#{Time.now.to_i}"   # a new, uniquely named profile each run (old ones die with their certificate)
     cert_id = nil
 
     begin
@@ -30,6 +30,7 @@ platform :ios do
       # An App Store provisioning profile for that certificate (needs no registered devices).
       get_provisioning_profile(api_key: api_key, app_identifier: bundle, force: true,
                                cert_id: cert_id, provisioning_name: profile)
+      profile = lane_context[SharedValues::SIGH_NAME] || profile
 
       build_app(
         project: "AwwList.xcodeproj",
