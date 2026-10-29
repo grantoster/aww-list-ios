@@ -438,7 +438,7 @@ final class Library: ObservableObject {
         let pb = putBack
         let groups = Scorer.moments(from: Array(photos.values), hidden: hidden, version: Scorer.version, putBack: pb)
         let cal = Calendar.current
-        let scores = Scorer.calibrate(groups.map { Scorer.listedValue($0.best, putBack: pb) ?? 0 },
+        let scores = Scorer.calibrate(groups.map { Scorer.rankValue($0.best, putBack: pb) ?? 0 },
                                       years: groups.map { cal.component(.year, from: $0.best.date) })
         let named = people, t = threshold
         // Centroids only here (fast, on the main thread); the thorough matching comes from learnPeople.
@@ -472,7 +472,7 @@ final class Library: ObservableObject {
         // What can be sent to Claude: every listed moment except any that contains a photo that must never be sent
         // (possible bath/undressed and their sessions, even after a put back; swimwear/shirtless unless allowed).
         // Once the app has learned, it picks what to send Claude by its prediction of Claude's score.
-        func poolValue(_ m: Moment) -> Double { m.learnedScore ?? 10 * (Scorer.listedValue(m.best, putBack: pb, includePoolOnly: true) ?? 0) }
+        func poolValue(_ m: Moment) -> Double { m.learnedScore ?? 10 * (Scorer.rankValue(m.best, putBack: pb, includePoolOnly: true) ?? 0) }
         let forbidden = Scorer.neverSend(Array(photos.values), allowSwimShirtless: claudeSensitive, removed: claudeRemoved)
         neverSend = forbidden
         // Photos with faces but no child label: not listed, but offered to Claude too (Apple's labels miss kids).
@@ -536,7 +536,7 @@ final class Library: ObservableObject {
                 } else if let l = m.learnedScore {
                     v = l
                 }
-                let raw: Double = m.best.raw ?? 0
+                let raw: Double = Scorer.rankValue(m.best, putBack: pb) ?? 0
                 return v + raw * 0.001
             }
             let cal = Scorer.calibrate(vals.map { $0 / 10 }, years: moments.map(\.year))
@@ -589,7 +589,7 @@ final class Library: ObservableObject {
         let la = a.learnedScore ?? 0, lb = b.learnedScore ?? 0
         if la != lb { return la > lb }
         if a.apple != b.apple { return a.apple > b.apple }
-        let ra = a.best.raw ?? 0, rb = b.best.raw ?? 0
+        let ra = Scorer.rankValue(a.best) ?? 0, rb = Scorer.rankValue(b.best) ?? 0
         if ra != rb { return ra > rb }
         return a.best.date < b.best.date
     }

@@ -86,7 +86,7 @@ struct PhotoScore: Codable, Hashable, Identifiable {
     var appleFlag: String? { raw == nil && Scorer.softReasons.contains(excluded ?? "") ? excluded : nil }
 }
 
-/// Just kids (close-ups, or two kids together) or family and groups (a grown-up in the shot, or three or more faces).
+/// Solo (one child), kids together (two kids), or family and groups (a grown-up in the shot, or three or more faces).
 enum ShotKind: String, CaseIterable, Identifiable {
     case solo, kids, family
     var id: String { rawValue }

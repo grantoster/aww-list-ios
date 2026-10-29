@@ -442,6 +442,13 @@ final class LearnerTests: XCTestCase {
         XCTAssertEqual(ShotKind.of(faces: 3, adults: 0), .family)
         XCTAssertEqual(ShotKind.of(faces: 1, adults: 0), .solo)
         XCTAssertEqual(ShotKind.of(faces: nil, adults: nil), .solo)
+        // Pairs give back part of Apple's bonus when ranked; the burst's best shot still uses the plain value.
+        var pair = PhotoScore(id: "p", date: Date(), raw: 0.7, excluded: nil, age: .kid, caption: "", version: Scorer.version, faces: 2)
+        pair.mainFaces = 2
+        XCTAssertEqual(Scorer.listedValue(pair)!, 0.7, accuracy: 1e-9)
+        XCTAssertEqual(Scorer.rankValue(pair)!, 0.6, accuracy: 1e-9)
+        pair.mainFaces = 1
+        XCTAssertEqual(Scorer.rankValue(pair)!, 0.7, accuracy: 1e-9)
     }
 }
 

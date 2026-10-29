@@ -141,7 +141,7 @@ struct HomeView: View {
         }
     }
 
-    /// Just kids (close-ups and kids together) or family and groups (grown-ups in the shot, or a crowd).
+    /// Solo, kids together, or family and groups (grown-ups in the shot, or three or more faces).
     private var shotBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
