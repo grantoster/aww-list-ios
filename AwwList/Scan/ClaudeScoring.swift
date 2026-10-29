@@ -138,7 +138,7 @@ final class ClaudeService: ObservableObject {
     /// and generous timeouts for uploads on cellular.
     private let session: URLSession = {
         let c = URLSessionConfiguration.ephemeral
-        c.waitsForConnectivity = true
+        c.waitsForConnectivity = false   // offline fails right away with a clear message instead of waiting
         c.timeoutIntervalForRequest = 120
         c.timeoutIntervalForResource = 600
         return URLSession(configuration: c)
@@ -147,7 +147,7 @@ final class ClaudeService: ObservableObject {
     /// Network hiccups worth another try ("The network connection was lost" is usually a stale connection).
     private static func transient(_ e: Error) -> Bool {
         guard let u = e as? URLError else { return false }
-        return [.networkConnectionLost, .timedOut, .cannotConnectToHost, .notConnectedToInternet,
+        return [.networkConnectionLost, .timedOut, .cannotConnectToHost,
                 .dnsLookupFailed, .cannotFindHost].contains(u.code)
     }
 
@@ -196,10 +196,11 @@ final class ClaudeService: ObservableObject {
     private func checkKey() async throws {
         let (_, code) = try await fetch(request(URL(string: "https://api.anthropic.com/v1/models?limit=1")!))
         if code == 401 || code == 403 { throw ClaudeError.http(401, "") }
+        if code != 200 { throw ClaudeError.http(code, code == 429 || code >= 500 ? "Claude is busy; try again in a few minutes." : "") }
     }
 
     /// After a dropped upload: did Anthropic create the batch anyway? (Avoids sending and paying twice.)
-    private func recentBatch(count: Int, since: Date) async -> String? {
+    private func recentBatch(count: Int, since: Date, known: Set<String>) async -> String? {
         guard let r = try? request(URL(string: "https://api.anthropic.com/v1/messages/batches?limit=10")!),
               let (data, code) = try? await fetch(r), code == 200,
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -208,7 +209,8 @@ final class ClaudeService: ObservableObject {
         let iso2 = ISO8601DateFormatter()
         for b in list {
             guard let id = b["id"] as? String, let created = b["created_at"] as? String,
-                  let when = iso.date(from: created) ?? iso2.date(from: created), when >= since.addingTimeInterval(-5),
+                  !known.contains(id),   // never one of the batches already recorded
+                  let when = iso.date(from: created) ?? iso2.date(from: created), when >= since.addingTimeInterval(-120),
                   let counts = b["request_counts"] as? [String: Int] else { continue }
             if counts.values.reduce(0, +) == count { return id }
         }
@@ -244,7 +246,11 @@ final class ClaudeService: ObservableObject {
         let pending = Set(library.claudeBatches.flatMap { $0.photos.values })
         var byYear: [Int: [Moment]] = [:]
         for m in library.claudePool { byYear[m.year, default: []].append(m) }   // cached at each rebuild
-        return byYear.values.flatMap { n > 0 ? Array($0.prefix(n)) : $0 }
+        // Apple's own picks fill each year's N; photos Apple set aside get an extra fifth of N on top.
+        return byYear.values.flatMap { list -> [Moment] in
+            let listed = list.filter { $0.best.raw != nil }, aside = list.filter { $0.best.raw == nil }
+            return n > 0 ? Array(listed.prefix(n)) + Array(aside.prefix(max(1, n / 5))) : list
+        }
             .filter { m in
                 guard !pending.contains(m.best.id), (library.claudeFailures[m.best.id] ?? 0) < 2 else { return false }
                 if let c = m.best.claude { return c.model != model || c.rubric != Claude.rubric }
@@ -315,7 +321,7 @@ final class ClaudeService: ObservableObject {
                         }
                     } catch where Self.transient(error) {
                         status = "Connection dropped; checking and retrying…"
-                        if let existing = await recentBatch(count: reqs.count, since: started) { id = existing; break }
+                        if let existing = await recentBatch(count: reqs.count, since: started, known: Set(library.claudeBatches.map(\.id))) { id = existing; break }
                         if attempt == 3 { throw error }
                         try await Task.sleep(nanoseconds: UInt64(attempt * 3) * 1_000_000_000)
                     }

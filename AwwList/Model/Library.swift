@@ -18,6 +18,9 @@ final class Library: ObservableObject {
     @Published private(set) var claudeBatches: [ClaudeBatch] = []
     /// Which score orders the lists once Claude has scored something: "claude" or "apple".
     @Published private(set) var rankBy = "claude"
+    /// Off unless the user turns it on: also offer Claude photos Apple flagged as possible swimwear or shirtless.
+    @Published private(set) var claudeSensitive = false
+    func setClaudeSensitive(_ v: Bool) { claudeSensitive = v; rebuild(); save() }
 
     private static let saveQueue = DispatchQueue(label: "aww.save", qos: .utility)
     private var lastRebuild = Date.distantPast
@@ -32,7 +35,7 @@ final class Library: ObservableObject {
         var photos: [PhotoScore]; var hidden: [String]; var birthdays: [Date]?
         var people: [Person]?; var strictness: Int?
         var claudeModel: String?; var claudeScope: Int?; var claudeBatches: [ClaudeBatch]?; var rankBy: String?
-        var claudeFailures: [String: Int]?
+        var claudeFailures: [String: Int]?; var claudeSensitive: Bool?
     }
 
     init() { load() }
@@ -80,7 +83,6 @@ final class Library: ObservableObject {
     var claudeScored: Int { moments.filter { $0.claudeScore != nil }.count }
     /// The moments in Apple's on-device order (used to choose what to send to Claude).
     /// (Sorted once per rebuild, so Settings can show counts without re-sorting the library on every redraw.)
-    private(set) var appleRanked: [Moment] = []
     /// What can be offered to Claude: Apple's list plus the photos Apple set aside for a soft reason, ranked
     /// each year by on-device score (cached at each rebuild).
     private(set) var claudePool: [Moment] = []
@@ -172,7 +174,7 @@ final class Library: ObservableObject {
         // (bath, swimwear, shirtless, AI or edited, no child) take a photo off the list in both rankings.
         // Ranking by Claude: Claude's score leads, and moments it hasn't seen are capped at 6 so they can't
         // outrank the ones it looked at (the same rule as the Aww List website).
-        let anyClaude = moments.contains { $0.best.claude != nil && $0.best.claude?.exclude == nil }
+        let anyClaude = photos.values.contains { $0.claude != nil && $0.claude?.exclude == nil && $0.version == Scorer.version }
         let useClaude = anyClaude && rankBy == "claude"
         moments = moments.compactMap { m in
             var m = m
@@ -187,7 +189,8 @@ final class Library: ObservableObject {
         // The wider pool for Claude: Apple's moments plus set-aside ones (no child seen, water, etc.).
         let listed = Set(moments.flatMap(\.memberIDs))
         let softGroups = Scorer.moments(from: Array(photos.values), hidden: hidden, version: Scorer.version, soft: true)
-            .filter { $0.best.raw == nil && listed.isDisjoint(with: $0.ids) }
+            .filter { $0.best.raw == nil && listed.isDisjoint(with: $0.ids)
+                && (claudeSensitive || !Scorer.sensitiveSoft.contains($0.best.excluded ?? "")) }
         let softMoments = softGroups.map { g -> Moment in var m = makeMoment(g, 0); m.claudeScore = g.best.claude?.score; return m }
         claudePool = (moments + softMoments).sorted { a, b in
             let va = a.best.raw ?? a.best.soft ?? 0, vb = b.best.raw ?? b.best.soft ?? 0
@@ -203,11 +206,6 @@ final class Library: ObservableObject {
             }
         }
         moments.sort(by: Library.ranked)
-        appleRanked = moments.sorted { a, b in
-            if a.apple != b.apple { return a.apple > b.apple }
-            if (a.best.raw ?? 0) != (b.best.raw ?? 0) { return (a.best.raw ?? 0) > (b.best.raw ?? 0) }
-            return a.best.date < b.best.date
-        }
     }
 
     /// Higher score first; then higher raw score; then the earlier photo.
@@ -234,7 +232,7 @@ final class Library: ObservableObject {
         unsaved = 0
         let s = Saved(photos: Array(photos.values), hidden: Array(hidden), birthdays: birthdays,
                       people: people, strictness: strictness,
-                      claudeModel: claudeModel, claudeScope: claudeScope, claudeBatches: claudeBatches, rankBy: rankBy, claudeFailures: claudeFailures)
+                      claudeModel: claudeModel, claudeScope: claudeScope, claudeBatches: claudeBatches, rankBy: rankBy, claudeFailures: claudeFailures, claudeSensitive: claudeSensitive)
         let u = url
         // One save at a time, in order, so an older snapshot can never land after a newer one.
         Library.saveQueue.async {
@@ -257,7 +255,10 @@ final class Library: ObservableObject {
         strictness = s.strictness ?? 1
         claudeModel = s.claudeModel ?? claudeModel
         // Haiku is the default; switch earlier saves that were on the old default and never sent anything.
-        if claudeModel == "claude-sonnet-5-5" && !s.photos.contains(where: { $0.claude != nil }) { claudeModel = "claude-haiku-5-5" }
+        if claudeModel == "claude-sonnet-5-5" && !s.photos.contains(where: { $0.claude != nil }) && (s.claudeBatches ?? []).isEmpty {
+            claudeModel = "claude-haiku-5-5"
+        }
+        claudeSensitive = s.claudeSensitive ?? false
         claudeScope = s.claudeScope ?? claudeScope
         claudeBatches = s.claudeBatches ?? []
         rankBy = s.rankBy ?? "claude"

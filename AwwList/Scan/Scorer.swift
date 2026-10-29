@@ -180,14 +180,17 @@ enum Scorer {
     /// not hidden, and scored by `version` when given — can become moments.
     /// Reasons Apple's check sets a photo aside that Claude may overrule: Apple's labels miss children seen from
     /// behind or far away, and its bath/swim/water/shirtless checks lean hard toward leaving photos out.
-    static let softReasons: Set<String> = ["No child", "No face", "Water", "Bath", "Swimwear", "Undressed", "Shirtless"]
+    /// (Bath and undressed photos are never sent anywhere.)
+    static let softReasons: Set<String> = ["No child", "No face", "Water", "Swimwear", "Shirtless"]
+    /// Soft reasons that are only offered to Claude when the user opts in to sending possible swimwear/shirtless photos.
+    static let sensitiveSoft: Set<String> = ["Swimwear", "Shirtless"]
 
     /// A score for a photo Apple set aside for a soft reason, as if that check hadn't fired, so it can still be
     /// offered to Claude. Nil when there's nothing to go on (no face and no hint of a child) or it's a screenshot
     /// or document.
     static func softScore(_ s: Signals) -> Double? {
         if s.isScreenshot || s.blockedLabel == "document" || s.blockedLabel == "screenshot" { return nil }
-        guard s.childConfidence >= 0.10 || !s.faces.isEmpty else { return nil }
+        guard s.childConfidence >= 0.10 else { return nil }   // some hint of a child, so grown-up photos don't flood the pool
         var t = s
         t.blockedLabel = nil; t.waterScene = false; t.childPrecise = true
         for i in t.faces.indices { t.faces[i].bareTorso = 0 }

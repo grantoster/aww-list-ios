@@ -55,10 +55,12 @@ final class PhotoScanner: ObservableObject {
                 && ($0.raw == nil || ($0.faceRecords.map { $0.allSatisfy { $0.vec.count == People.dim } } ?? false))
                 // set-aside photos from before Claude could overrule Apple get one more look
                 && !(Scorer.softReasons.contains($0.excluded ?? "") && $0.softChecked != true
-                     && ($0.excluded != "No child" || ($0.faces ?? 0) > 0))
+                     && ($0.faces ?? 0) > 0)
         }.map(\.id))
         // Photos already on the list keep their score if they can't be re-read this time.
-        let ranked = Set(library.photos.values.filter { $0.raw != nil }.map(\.id))
+        // Photos that already have a record keep it if they can't be re-read this time (a scored photo keeps its
+        // score; a bath photo keeps its exclusion and the quarantine around it).
+        let ranked = Set(library.photos.keys)
         let flag = cancelFlag
         let changes = self.changes
         let me = self
@@ -85,7 +87,7 @@ final class PhotoScanner: ObservableObject {
             func post(_ r: PhotoScore?) {
                 if let ready = collector.add(r) {
                     let (out, n) = ready
-                    Task { @MainActor in library.add(out); me.done = n }
+                    Task { @MainActor in library.add(out); me.done = max(me.done, n) }
                 }
             }
             func runPass(_ list: [PHAsset], network: Bool, lanes: Int) -> [PHAsset] {
@@ -302,7 +304,7 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
                 manager.cancelImageRequest(rid)
                 return .done(nil)                  // slow, not broken: tried again on the next scan
             }
-            if got.image == nil && got.inCloud && !network { return .inCloud }
+            if got.image == nil && !network { return .inCloud }   // not on the phone: try again with iCloud
             // No image even from iCloud: remember that, so it isn't retried on every launch
             // (it's retried about once a day, and from Settings).
             guard let img = got.image, let cg = img.cgImage else {
