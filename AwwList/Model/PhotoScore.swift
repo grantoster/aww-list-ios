@@ -76,8 +76,11 @@ struct PhotoScore: Codable, Hashable, Identifiable {
     /// A faint bath/undressed sign (or a bath flag from an older, stricter check): the photo is listed as usual,
     /// but it and every shot within 10 minutes of it are never sent to Claude.
     var privacyHold: Bool? = nil
-    /// Grown-up faces found among the faces checked for being a child (nil when no face was checked).
+    /// Grown-up faces found among the faces checked for being a child (0 when none were; nil: not measured yet).
     var adults: Int? = nil
+    /// Faces big enough to be part of the shot (at least 4% of the photo's height, or a quarter of the largest face),
+    /// so strangers far in the background don't make a close-up a "group". Nil: not measured yet.
+    var mainFaces: Int? = nil
     /// Why Apple flagged a photo that's still listed (water, swimwear, AI image, ...); nil when it wasn't flagged.
     var appleFlag: String? { raw == nil && Scorer.softReasons.contains(excluded ?? "") ? excluded : nil }
 }
@@ -117,5 +120,5 @@ struct Moment: Identifiable, Hashable {
         return best.caption
     }
     var year: Int { Calendar.current.component(.year, from: best.date) }
-    var shot: ShotKind { ShotKind.of(faces: best.faces, adults: best.adults) }
+    var shot: ShotKind { ShotKind.of(faces: best.mainFaces ?? best.faces, adults: best.adults) }
 }

@@ -69,6 +69,8 @@ final class PhotoScanner: ObservableObject {
                 // photos with faces but no child label get a score so Claude can be offered them
                 && !($0.excluded == "No child" && $0.soft == nil && ($0.faces ?? 0) > 0 && ($0.flagVersion ?? 0) < 3)
                 && !Scorer.needsShirtlessRecheck($0) && !Scorer.needsLabelRecheck($0)
+                // listed photos from before the Shots filter get the face counts it needs
+                && !(($0.raw != nil || $0.soft != nil) && ($0.faces ?? 0) >= 2 && $0.mainFaces == nil)
         }.map(\.id))
         // Photos that already have a record keep it if they can't be re-read this time (a scored photo keeps its
         // score; a bath photo keeps its exclusion and the quarantine around it).
@@ -394,8 +396,9 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
         }
         p.softChecked = true
         p.flagVersion = 5
-        let checked = signals.faces.filter { $0.child != nil }
-        if !checked.isEmpty { p.adults = checked.filter { ($0.child ?? 1) < 0.3 }.count }
+        p.adults = signals.faces.filter { $0.child != nil && ($0.child ?? 1) < 0.3 }.count
+        let largest = signals.faces.map(\.area).max() ?? 0
+        p.mainFaces = signals.faces.filter { f in (f.box.count == 4 && f.box[3] >= 0.04) || f.area >= largest * 0.25 }.count
         if signals.privacyHint { p.privacyHold = true }
         // Flagged as a possible bath photo by an older check: the hold stays, even if the stricter check clears it.
         if let old = restamp[asset.localIdentifier], Scorer.heldBack.contains(old.excluded ?? "") || old.privacyHold == true {
