@@ -57,11 +57,20 @@ enum Claude {
         return Double(photos) * (1_200 * m.inPerM + 300 * m.outPerM) / 1_000_000
     }
 
-    /// Dollars to cents, halves rounding up, for display.
-    static func dollars(_ v: Double) -> String {
-        let cents = Int((v * 100).rounded(.toNearestOrAwayFromZero))
-        return "$\(cents / 100).\(String(format: "%02d", cents % 100))"
+    /// Exact cost in micro-dollars (whole numbers, so no floating-point rounding), for display.
+    static func costMicros(photos: Int, model: String) -> Int {
+        guard let m = models.first(where: { $0.id == model }) else { return 0 }
+        // price per million tokens × tokens = micro-dollars; prices are whole cents per million
+        let inMicro = Int((m.inPerM * 100).rounded()) * 1_200 / 100, outMicro = Int((m.outPerM * 100).rounded()) * 300 / 100
+        return photos * (inMicro + outMicro)
     }
+
+    /// Micro-dollars to "$x.yy", halves rounding up.
+    static func dollars(micros: Int) -> String {
+        let cents = (micros + 5_000) / 10_000
+        return "$\(cents / 100)." + (cents % 100 < 10 ? "0" : "") + "\(cents % 100)"
+    }
+    static func dollars(_ v: Double) -> String { dollars(micros: Int((v * 1_000_000).rounded())) }
 
     // MARK: Key (Keychain)
 
@@ -153,16 +162,16 @@ final class ClaudeService: ObservableObject {
         let model = library.claudeModel, n = library.claudeScope
         let pending = Set(library.claudeBatches.flatMap { $0.photos.values })
         var byYear: [Int: [Moment]] = [:]
-        for m in library.appleRanked { byYear[m.year, default: []].append(m) }
+        for m in library.appleRanked { byYear[m.year, default: []].append(m) }   // cached at each rebuild
         return byYear.values.flatMap { n > 0 ? Array($0.prefix(n)) : $0 }
             .filter { m in
-                guard !pending.contains(m.best.id) else { return false }
+                guard !pending.contains(m.best.id), (library.claudeFailures[m.best.id] ?? 0) < 2 else { return false }
                 if let c = m.best.claude { return c.model != model || c.rubric != Claude.rubric }
                 return true
             }
     }
 
-    /// Sends the next photos in batches of 200, then checks for results.
+    /// Sends the next photos in batches of 50 (small enough to finish uploading if the app is closed), then checks for results.
     func send(_ library: Library) async {
         guard !busy else { return }
         busy = true; defer { busy = false }
@@ -171,7 +180,7 @@ final class ClaudeService: ObservableObject {
         if list.isEmpty { status = "Everything chosen is already scored by Claude."; await collect(library); return }
         let model = library.claudeModel
         do {
-            for chunk in stride(from: 0, to: list.count, by: 200).map({ Array(list[$0..<min($0 + 200, list.count)]) }) {
+            for chunk in stride(from: 0, to: list.count, by: 50).map({ Array(list[$0..<min($0 + 50, list.count)]) }) {
                 var reqs: [[String: Any]] = [], map: [String: String] = [:]
                 for (i, m) in chunk.enumerated() {
                     status = "Preparing photo \((sent + i + 1).formatted()) of \(toSend.formatted())…"
@@ -192,8 +201,12 @@ final class ClaudeService: ObservableObject {
                 status = "Sending \(reqs.count) photos to Claude…"
                 let body = try JSONSerialization.data(withJSONObject: ["requests": reqs], options: [.withoutEscapingSlashes])
                 // Finish the upload (and record the batch) even if the app is closed mid-send.
-                let bg = UIApplication.shared.beginBackgroundTask(withName: "Send to Claude")
-                defer { UIApplication.shared.endBackgroundTask(bg) }
+                let ended = Once()
+                var bg = UIBackgroundTaskIdentifier.invalid
+                bg = UIApplication.shared.beginBackgroundTask(withName: "Send to Claude") {
+                    if ended.claim() { UIApplication.shared.endBackgroundTask(bg) }
+                }
+                defer { if ended.claim() { UIApplication.shared.endBackgroundTask(bg) } }
                 let (data, resp) = try await URLSession.shared.data(for: request(endpoint, method: "POST", body: body))
                 let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
                 guard code == 200, let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -203,8 +216,11 @@ final class ClaudeService: ObservableObject {
                 library.addClaudeBatch(ClaudeBatch(id: id, model: model, photos: map, sent: Date()))
                 sent += reqs.count
             }
+            let before = status
             await collect(library)
-            status = "Sent \(sent.formatted()) photos. Claude's scores usually arrive within an hour; they're picked up when you open the app."
+            if sent > 0 && status == before {
+                status = "Sent \(sent.formatted()) photos. Claude's scores usually arrive within an hour; they're picked up when you open the app."
+            }
         } catch {
             status = error.localizedDescription
         }
@@ -233,14 +249,24 @@ final class ClaudeService: ObservableObject {
                 let rcode = (rresp as? HTTPURLResponse)?.statusCode ?? 0
                 guard rcode == 200 else { throw ClaudeError.http(rcode, "Couldn't download the results yet; they'll be retried.") }
                 var verdicts: [String: ClaudeVerdict] = [:]
+                var failed: [String] = [], firstError = ""
                 for line in String(decoding: results, as: UTF8.self).split(separator: "\n") {
-                    guard let r = Claude.parseResultLine(String(line)), let photo = b.photos[r.id],
-                          let v = Claude.parse(r.text, model: b.model) else { continue }
-                    verdicts[photo] = v
+                    let text = String(line)
+                    if let r = Claude.parseResultLine(text), let photo = b.photos[r.id], let v = Claude.parse(r.text, model: b.model) {
+                        verdicts[photo] = v
+                    } else if let obj = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
+                              let cid = obj["custom_id"] as? String, let photo = b.photos[cid] {
+                        failed.append(photo)
+                        if firstError.isEmpty, let err = ((obj["result"] as? [String: Any])?["error"] as? [String: Any])?["error"] as? [String: Any] {
+                            firstError = err["message"] as? String ?? ""
+                        }
+                    }
                 }
                 library.applyClaude(verdicts)
+                library.noteClaudeFailures(failed)
                 library.removeClaudeBatch(b.id)
-                status = "Claude scored \(verdicts.count.formatted()) photos."
+                status = "Claude scored \(verdicts.count.formatted()) photos." +
+                    (failed.isEmpty ? "" : " \(failed.count.formatted()) couldn't be scored" + (firstError.isEmpty ? "." : ": \(firstError)"))
             } catch {
                 status = error.localizedDescription
                 return

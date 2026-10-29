@@ -32,6 +32,7 @@ final class Library: ObservableObject {
         var photos: [PhotoScore]; var hidden: [String]; var birthdays: [Date]?
         var people: [Person]?; var strictness: Int?
         var claudeModel: String?; var claudeScope: Int?; var claudeBatches: [ClaudeBatch]?; var rankBy: String?
+        var claudeFailures: [String: Int]?
     }
 
     init() { load() }
@@ -78,12 +79,14 @@ final class Library: ObservableObject {
     }
     var claudeScored: Int { moments.filter { $0.claudeScore != nil }.count }
     /// The moments in Apple's on-device order (used to choose what to send to Claude).
-    var appleRanked: [Moment] {
-        moments.sorted { a, b in
-            if a.apple != b.apple { return a.apple > b.apple }
-            if (a.best.raw ?? 0) != (b.best.raw ?? 0) { return (a.best.raw ?? 0) > (b.best.raw ?? 0) }
-            return a.best.date < b.best.date
-        }
+    /// (Sorted once per rebuild, so Settings can show counts without re-sorting the library on every redraw.)
+    private(set) var appleRanked: [Moment] = []
+    /// Photos Claude couldn't score, and how many times; after two tries they aren't re-sent (or re-billed).
+    @Published private(set) var claudeFailures: [String: Int] = [:]
+    func noteClaudeFailures(_ ids: [String]) {
+        guard !ids.isEmpty else { return }
+        for id in ids { claudeFailures[id, default: 0] += 1 }
+        save()
     }
 
     // MARK: Who's Who
@@ -95,6 +98,8 @@ final class Library: ObservableObject {
     func name(_ faces: [(photo: String, face: FaceRecord)], as rawName: String, birthday: Date?) {
         let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, let first = faces.first else { return }
+        let faces = faces.filter { $0.face.vec.count == People.dim }
+        guard !faces.isEmpty else { return }
         let vecs = faces.map { People.floats($0.face.vec) }
         if let i = people.firstIndex(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
             people[i].centroid = People.merged(people[i].centroid, count: people[i].count, adding: vecs)
@@ -119,7 +124,7 @@ final class Library: ObservableObject {
         var out: [(photo: String, face: FaceRecord)] = []
         let t = threshold
         for m in moments {
-            for f in m.best.faceRecords ?? [] where People.match(People.floats(f.vec), people: people, threshold: t) == nil {
+            for f in m.best.faceRecords ?? [] where f.vec.count == People.dim && People.match(People.floats(f.vec), people: people, threshold: t) == nil {
                 out.append((m.best.id, f))
                 if out.count >= limit { return out }
             }
@@ -176,6 +181,11 @@ final class Library: ObservableObject {
             return m
         }
         moments.sort(by: Library.ranked)
+        appleRanked = moments.sorted { a, b in
+            if a.apple != b.apple { return a.apple > b.apple }
+            if (a.best.raw ?? 0) != (b.best.raw ?? 0) { return (a.best.raw ?? 0) > (b.best.raw ?? 0) }
+            return a.best.date < b.best.date
+        }
     }
 
     /// Higher score first; then higher raw score; then the earlier photo.
@@ -198,15 +208,16 @@ final class Library: ObservableObject {
     }
 
     /// Writes to disk off the main thread.
-    func save() {
+    func save(then done: (@Sendable () -> Void)? = nil) {
         unsaved = 0
         let s = Saved(photos: Array(photos.values), hidden: Array(hidden), birthdays: birthdays,
                       people: people, strictness: strictness,
-                      claudeModel: claudeModel, claudeScope: claudeScope, claudeBatches: claudeBatches, rankBy: rankBy)
+                      claudeModel: claudeModel, claudeScope: claudeScope, claudeBatches: claudeBatches, rankBy: rankBy, claudeFailures: claudeFailures)
         let u = url
         // One save at a time, in order, so an older snapshot can never land after a newer one.
         Library.saveQueue.async {
             if let data = try? JSONEncoder().encode(s) { try? data.write(to: u, options: .atomic) }
+            if let done { DispatchQueue.main.async(execute: done) }
         }
     }
 
@@ -226,6 +237,7 @@ final class Library: ObservableObject {
         claudeScope = s.claudeScope ?? claudeScope
         claudeBatches = s.claudeBatches ?? []
         rankBy = s.rankBy ?? "claude"
+        claudeFailures = s.claudeFailures ?? [:]
         rebuild()
     }
 }

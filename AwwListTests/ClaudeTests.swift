@@ -33,6 +33,8 @@ final class ClaudeTests: XCTestCase {
         // Sonnet batch: 1,200 tokens × $1/M + 300 × $5/M = $0.0027 a photo
         XCTAssertEqual(Claude.estimatedCost(photos: 1000, model: "claude-sonnet-5-5"), 2.7, accuracy: 0.0001)
         XCTAssertEqual(Claude.dollars(0.125), "$0.13")
+        XCTAssertEqual(Claude.dollars(micros: Claude.costMicros(photos: 775, model: "claude-opus-5-5")), "$4.19")   // $4.185 rounds up
+        XCTAssertEqual(Claude.dollars(micros: Claude.costMicros(photos: 1550, model: "claude-sonnet-5-5")), "$4.19")
         XCTAssertEqual(Claude.dollars(2.7), "$2.70")
     }
 
