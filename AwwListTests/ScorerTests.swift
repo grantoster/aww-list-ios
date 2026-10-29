@@ -132,7 +132,8 @@ final class ScorerTests: XCTestCase {
         XCTAssertGreaterThan(Scorer.balanced(x(smiling)), Scorer.balanced(x(serious)))
         XCTAssertGreaterThan(Scorer.balanced(x(smiling)), Scorer.balanced(x(blurry)))
         XCTAssertEqual(Scorer.balanced(x(pair)), Scorer.balanced(x(smiling)), accuracy: 0.02)   // no bonus for a second face
-        XCTAssertGreaterThan(Scorer.balanced(x(serious, labels: [("birthday_cake", 0.9)])), Scorer.balanced(x(serious)))
+        XCTAssertGreaterThan(Scorer.balanced(x(serious), special: 1), Scorer.balanced(x(serious), special: 0))
+        XCTAssertEqual(Scorer.balanced(x(serious), special: nil), Scorer.balanced(x(serious), special: 0) / 0.9, accuracy: 1e-9)
         // A serious face at a special moment with a sharp, well-made photo isn't buried by smiles alone.
         let smileShare = Scorer.balanced(x(smiling)) - Scorer.balanced(x(serious))
         XCTAssertLessThanOrEqual(smileShare, 0.26)

@@ -239,7 +239,7 @@ enum Scorer {
     /// Each full year carries equal weight, so one huge year can't push every other year up or down;
     /// a year with under 200 moments counts in proportion to its size.
     /// Tied raw scores get the same score. A weak photo can't earn a high score just by being the best of a weak bunch.
-    static func calibrate(_ raws: [Double], years: [Int]? = nil) -> [Int] {
+    static func calibrate(_ raws: [Double], years: [Int]? = nil, ceiling cap: (Double) -> Int = ceiling) -> [Int] {
         guard !raws.isEmpty else { return [] }
         let yrs = years ?? Array(repeating: 0, count: raws.count)
         let perYear = Dictionary(grouping: yrs, by: { $0 }).mapValues { 1.0 / max(Double($0.count), fullYear) }
@@ -257,7 +257,7 @@ enum Scorer {
             i = j
         }
         let libraryCap = raws.count < 50 ? 9 : 10
-        return zip(out, raws).map { v, r in min(v, libraryCap, ceiling(r)) }
+        return zip(out, raws).map { v, r in min(v, libraryCap, cap(r)) }
     }
 
     /// The highest score a raw value can earn, whatever the rest of the library looks like.
@@ -292,48 +292,54 @@ enum Scorer {
     /// Apple's value for ranking moments against each other: the listed value with part of the pair bonus taken
     /// back (see pairAdjustment). The best shot of a burst is still picked by the plain listed value, so a burst
     /// keeps the shot Claude scored.
+    /// The old on-device value for ranking, for photos without a current set of saved measurements: the listed value
+    /// with the old pair bonus taken off. Ranked only against other such photos (see Library.rebuild).
     static func rankValue(_ p: PhotoScore, putBack: Set<String> = [], includePoolOnly: Bool = false) -> Double? {
         guard let v = listedValue(p, putBack: putBack, includePoolOnly: includePoolOnly) else { return nil }
-        if let f = p.feat, let x = Learner.decode(f) { return balanced(x) }
         return max(0, v - pairAdjustment(p))
     }
 
+    /// The balanced on-device score for a listed photo that has a current set of saved measurements (nil otherwise).
+    static func balancedValue(_ p: PhotoScore, putBack: Set<String> = [], includePoolOnly: Bool = false) -> Double? {
+        guard listedValue(p, putBack: putBack, includePoolOnly: includePoolOnly) != nil,
+              let f = p.feat, let x = Learner.decode(f) else { return nil }
+        return balanced(x, special: p.special)
+    }
+
     /// Labels that mark a special moment or outing (Describe's moments, activities and outings; everyday things like
-    /// books, pizza and rooms don't count).
-    static let specialLabels: [String] = {
+    /// books, pizza and rooms don't count). Matched against the confident scene labels at scan time (PhotoScore.special).
+    static let specialLabels: Set<String> = {
         let everyday: Set<String> = ["book", "pizza", "pancake", "waffle", "stuffed_animals", "restaurant", "kitchen",
                                      "kitchen_room", "bedroom", "sofa", "living_room", "airplane", "garden", "park"]
-        return Describe.scenes.filter { $0.kind != .container }.flatMap(\.labels).filter { !everyday.contains($0) }
+        return Set(Describe.scenes.filter { $0.kind != .container }.flatMap(\.labels).filter { !everyday.contains($0) })
     }()
 
-    /// The balanced on-device score (0...1), computed when ranking from the measurements saved for each listed photo
-    /// (Learner.encode), so changing it needs no re-scan:
+    /// The balanced on-device score (0...1), from a photo's saved measurements (Learner.encode):
     /// expression 25%, eyes open and looking at the camera 10%, photo quality (Apple's quality score and sharpness)
     /// 30%, how big the child is in the frame 10%, a special moment or outing 10%, action and play 5%, and how
     /// clearly a child is the subject 10%. Crowds of more than 5 faces count a little less. No bonus for extra faces.
-    static func balanced(_ x: [Double]) -> Double {
+    /// `special` is nil for photos scanned before it was recorded: then the other parts are scaled up to fill it.
+    static func balanced(_ x: [Double], special: Double? = nil) -> Double {
         func at(_ i: Int) -> Double { i < x.count ? x[i] : 0 }
         let smile = at(0), sleeping = at(2), presence = at(4), child = at(5), sharp = at(7)
         let faces = at(8) * 6, eyesClosed = at(9), quality = at(12), hasQuality = at(13)
         let smileCurve = at(15), mouthOpen = at(17), headTurn = at(19), armsUp = at(22), reach = at(25)
+        let hasShape = (15...20).contains { at($0) > 0 }
         // A laugh (open-mouthed smile) beats a smile; a sleeping baby is a sweet moment, not a miss.
         let expression = max(sleeping > 0.5 ? 0.8 : 0, smile > 0.5 ? 0.75 + 0.25 * mouthOpen : 0.3 * smileCurve)
-        let eyes = sleeping > 0.5 ? 1 : min(1, (eyesClosed > 0.5 ? 0 : 0.6) + 0.4 * (1 - headTurn))
+        // Eye contact only counts when the face was measured; a laugh with squeezed-shut eyes isn't a blink.
+        let open: Double = eyesClosed > 0.5 && smile < 0.5 ? 0 : 0.6
+        let eyes = sleeping > 0.5 ? 1 : hasShape ? min(1, open + 0.4 * (1 - headTurn)) : open
         let photo = hasQuality > 0.5 ? 0.5 * quality + 0.5 * sharp : sharp
-        let base = Learner.signalCount + Learner.sceneDims + Learner.faceDims
-        var special = 0.0
-        for label in specialLabels {
-            let h = Learner.stableHash([label])
-            let sign: Double = (h >> 32) & 1 == 0 ? 1 : -1
-            special = max(special, sign * at(base + Int(h % UInt64(Learner.contentDims))))
-        }
-        special = min(1, max(0, special / 0.8))
         let action = max(armsUp, reach)
-        var raw = 0.25 * expression + 0.10 * eyes + 0.30 * photo + 0.10 * presence + 0.10 * special
-            + 0.05 * action + 0.10 * child
+        var raw = 0.25 * expression + 0.10 * eyes + 0.30 * photo + 0.10 * presence + 0.05 * action + 0.10 * child
+        if let special { raw += 0.10 * min(1, max(0, special)) } else { raw /= 0.90 }
         if faces > 5.5 { raw *= 0.85 }
         return max(0, min(1, raw))
     }
+
+    /// Caps for the balanced score, so a weak photo can't earn a high score just by being the best of a weak bunch.
+    static func balancedCeiling(_ r: Double) -> Int { r < 0.40 ? 4 : r < 0.50 ? 6 : r < 0.58 ? 8 : 10 }
 
     /// Apple's formula used to give any second face of similar size a 0.20 bonus. It no longer does; photos scored
     /// before that change have it taken off here until they're re-read (they're re-read on the next scan).

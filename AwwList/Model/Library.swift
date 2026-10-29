@@ -438,8 +438,17 @@ final class Library: ObservableObject {
         let pb = putBack
         let groups = Scorer.moments(from: Array(photos.values), hidden: hidden, version: Scorer.version, putBack: pb)
         let cal = Calendar.current
-        let scores = Scorer.calibrate(groups.map { Scorer.rankValue($0.best, putBack: pb) ?? 0 },
-                                      years: groups.map { cal.component(.year, from: $0.best.date) })
+        // Photos with a current set of saved measurements are ranked by the balanced score; the rest (until they're
+        // re-read) by the old one, against each other only, since the two scales don't line up.
+        let balancedVals = groups.map { Scorer.balancedValue($0.best, putBack: pb) }
+        let fallbackVals = groups.map { Scorer.rankValue($0.best, putBack: pb) ?? 0 }
+        let years = groups.map { cal.component(.year, from: $0.best.date) }
+        var scores = Array(repeating: 1, count: groups.count)
+        let bIdx = groups.indices.filter { balancedVals[$0] != nil }, fIdx = groups.indices.filter { balancedVals[$0] == nil }
+        for (k, v) in zip(bIdx, Scorer.calibrate(bIdx.map { balancedVals[$0]! }, years: bIdx.map { years[$0] },
+                                                ceiling: Scorer.balancedCeiling)) { scores[k] = v }
+        for (k, v) in zip(fIdx, Scorer.calibrate(fIdx.map { fallbackVals[$0] }, years: fIdx.map { years[$0] })) { scores[k] = v }
+        let rankRaws = groups.indices.map { balancedVals[$0] ?? fallbackVals[$0] }
         let named = people, t = threshold
         // Centroids only here (fast, on the main thread); the thorough matching comes from learnPeople.
         let matcher = People.Matcher(named.map { p -> Person in var p = p; p.examples = nil; return p })
@@ -448,7 +457,7 @@ final class Library: ObservableObject {
         func childAt(_ birth: Date, _ date: Date) -> Bool {
             birth <= date && (gregorian.dateComponents([.year], from: birth, to: date).year ?? 0) < 13
         }
-        func makeMoment(_ g: (best: PhotoScore, shots: Int, ids: [String]), _ s: Int) -> Moment {
+        func makeMoment(_ g: (best: PhotoScore, shots: Int, ids: [String]), _ s: Int, _ rr: Double = 0) -> Moment {
             let who: Set<UUID>
             if let cached = whoCache[g.best.id] { who = cached } else {
                 who = Set((g.best.faceRecords ?? []).compactMap { matcher.match(People.floats($0.vec), threshold: t) })
@@ -466,13 +475,14 @@ final class Library: ObservableObject {
             m.apple = s
             m.claudeScore = g.best.claude.flatMap { $0.exclude == nil ? $0.score : nil }
             m.learnedScore = learnedScore(for: g.best)
+            m.rankRaw = rr
             return m
         }
-        let all = zip(groups, scores).map { makeMoment($0, $1) }
+        let all = groups.indices.map { makeMoment(groups[$0], scores[$0], rankRaws[$0]) }
         // What can be sent to Claude: every listed moment except any that contains a photo that must never be sent
         // (possible bath/undressed and their sessions, even after a put back; swimwear/shirtless unless allowed).
         // Once the app has learned, it picks what to send Claude by its prediction of Claude's score.
-        func poolValue(_ m: Moment) -> Double { m.learnedScore ?? 10 * (Scorer.rankValue(m.best, putBack: pb, includePoolOnly: true) ?? 0) }
+        func poolValue(_ m: Moment) -> Double { m.learnedScore ?? 10 * m.rankRaw }   // worked out once per moment
         let forbidden = Scorer.neverSend(Array(photos.values), allowSwimShirtless: claudeSensitive, removed: claudeRemoved)
         neverSend = forbidden
         // Photos with faces but no child label: not listed, but offered to Claude too (Apple's labels miss kids).
@@ -480,7 +490,7 @@ final class Library: ObservableObject {
         let poolOnly = Scorer.moments(from: Array(photos.values), hidden: hidden, version: Scorer.version,
                                       putBack: pb, includePoolOnly: true)
             .filter { g in Scorer.poolOnly.contains(g.best.excluded ?? "") && !g.ids.contains(where: listedIDs.contains) }
-            .map { makeMoment($0, 0) }
+            .map { makeMoment($0, 0, Scorer.balancedValue($0.best, putBack: pb, includePoolOnly: true) ?? Scorer.rankValue($0.best, putBack: pb, includePoolOnly: true) ?? 0) }
         claudePool = (all + poolOnly).filter { !$0.memberIDs.contains(where: forbidden.contains) }.sorted { a, b in
             let va = poolValue(a), vb = poolValue(b)
             return va != vb ? va > vb : a.best.date < b.best.date
@@ -536,8 +546,7 @@ final class Library: ObservableObject {
                 } else if let l = m.learnedScore {
                     v = l
                 }
-                let raw: Double = Scorer.rankValue(m.best, putBack: pb) ?? 0
-                return v + raw * 0.001
+                return v + m.rankRaw * 0.001
             }
             let cal = Scorer.calibrate(vals.map { $0 / 10 }, years: moments.map(\.year))
             for i in moments.indices {
@@ -589,7 +598,7 @@ final class Library: ObservableObject {
         let la = a.learnedScore ?? 0, lb = b.learnedScore ?? 0
         if la != lb { return la > lb }
         if a.apple != b.apple { return a.apple > b.apple }
-        let ra = Scorer.rankValue(a.best) ?? 0, rb = Scorer.rankValue(b.best) ?? 0
+        let ra = a.rankRaw, rb = b.rankRaw
         if ra != rb { return ra > rb }
         return a.best.date < b.best.date
     }

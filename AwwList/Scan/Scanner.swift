@@ -73,8 +73,6 @@ final class PhotoScanner: ObservableObject {
                 && !Scorer.needsShirtlessRecheck($0) && !Scorer.needsLabelRecheck($0)
                 // listed photos from before the Shots filter get the face counts it needs
                 && !(($0.raw != nil || $0.soft != nil) && ($0.faces ?? 0) >= 2 && ($0.flagVersion ?? 0) < 7)
-                // listed photos with two or more faces are scored again without the old pair bonus
-                && !(($0.raw != nil || $0.soft != nil) && ($0.faces ?? 0) >= 2 && $0.noPairBonus == nil)
         }.map(\.id))
         // Photos that already have a record keep it if they can't be re-read this time (a scored photo keeps its
         // score; a bath photo keeps its exclusion and the quarantine around it).
@@ -405,6 +403,7 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
         p.softChecked = true
         p.flagVersion = 7
         p.noPairBonus = true
+        p.special = signals.labels.contains(where: Scorer.specialLabels.contains) ? 1 : 0
         let main = signals.mainFaceIndices
         p.mainFaces = main.count
         p.adults = main.filter { signals.isAdult($0) == true }.count

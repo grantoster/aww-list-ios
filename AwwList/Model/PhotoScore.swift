@@ -85,6 +85,9 @@ struct PhotoScore: Codable, Hashable, Identifiable {
     /// True: scored without the old bonus for a second face. False: couldn't be re-scored, so the bonus is taken off
     /// when ranking. Nil: not checked yet (see Scorer.pairAdjustment).
     var noPairBonus: Bool? = nil
+    /// 1 when Apple saw a special moment or outing (birthday cake, costume, snow, zoo...), 0 when not; nil for photos
+    /// scanned before this was recorded.
+    var special: Double? = nil
     /// Why Apple flagged a photo that's still listed (water, swimwear, AI image, ...); nil when it wasn't flagged.
     var appleFlag: String? { raw == nil && Scorer.softReasons.contains(excluded ?? "") ? excluded : nil }
 }
@@ -123,6 +126,8 @@ struct Moment: Identifiable, Hashable {
     var claudeScore: Double? = nil
     /// The app's own prediction of Claude's score, once it has learned from Claude (1–10, one decimal).
     var learnedScore: Double? = nil
+    /// The on-device value the moment was ranked by (balanced or old scale), for breaking ties.
+    var rankRaw: Double = 0
     /// Claude's description when it has one, otherwise the on-device one.
     var caption: String {
         if let c = best.claude?.caption, !c.isEmpty { return c.prefix(1).uppercased() + c.dropFirst() }
