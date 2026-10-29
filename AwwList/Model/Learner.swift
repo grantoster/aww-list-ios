@@ -18,6 +18,27 @@ struct LearnedModel: Codable, Equatable {
     /// The same check for simply guessing the average Claude score every time (to show what the model adds).
     var baselineWithin1: Double? = nil
     var baselineGap: Double? = nil
+    /// A small neural net learned alongside the straight-line formula, and how much of it to use (0...1, picked on
+    /// days held out from training). Nil when the formula alone did as well.
+    var mlp: MLP? = nil
+    var blend: Double? = nil
+    /// The same check for the straight-line formula alone (to show what the net adds).
+    var linearGap: Double? = nil
+    /// Of Claude's top fifth in the held-back check, the share the learning also put in its top fifth.
+    var topOverlap: Double? = nil
+    /// How many of the scores it learned from were averaged from two Claude passes.
+    var averaged: Int? = nil
+}
+
+/// A one-hidden-layer neural net (ReLU), with its output in score points. Its inputs are Apple's measurements
+/// (standardized) plus the straight-line formula's own guess, so it learns the combinations the formula misses
+/// (a big smile only counts if the face is sharp, ...) without having to sift the long scene and face prints.
+struct MLP: Codable, Equatable {
+    var h: Int
+    var w1: [Double]   // h × Learner.netInputs
+    var b1: [Double]   // h
+    var w2: [Double]   // h
+    var b2: Double
 }
 
 /// What the app learned from Claude's removals: the chance Claude would take a photo off the list
@@ -46,11 +67,16 @@ struct LearnedFilter: Codable, Equatable {
 
 /// Turns photos into fingerprints and learns Claude's scoring from them. Pure math, so it's unit tested.
 enum Learner {
-    /// Apple's measurements (each 0...1).
-    static let signalCount = 12
+    /// Apple's measurements (each 0...1): the 12 original ones, then Apple's photo-quality score (and whether
+    /// there is one), the "utility photo" flag, and six measurements of the main face's shape.
+    static let signalCount = 21
     /// Compact picture of the whole photo (Vision's image feature print, projected).
-    static let sceneDims = 128
-    static var featureCount: Int { signalCount + sceneDims }
+    static let sceneDims = 256
+    /// Compact picture of the main face (its own feature print, projected): expression, gaze, who.
+    static let faceDims = 64
+    static var featureCount: Int { signalCount + sceneDims + faceDims }
+    /// The net's inputs: Apple's measurements plus the formula's guess.
+    static var netInputs: Int { signalCount + 1 }
     /// Fewest Claude scores before the app trains (plus some held back to check it).
     static let minimumExamples = 60
 
@@ -65,26 +91,38 @@ enum Learner {
             .map { $0.eyesClosed && !$0.smile && $0.area > 0.03 } == true
         let close = others.contains { $0.area >= (subj?.area ?? 0) * 0.25 }
         func b(_ v: Bool) -> Float { v ? 1 : 0 }
-        return [
+        var out: [Float] = [
             b(subj?.smile == true),
             others.isEmpty ? 0 : Float(others.filter(\.smile).count) / Float(others.count),
             b(sleepingBaby),
-            b(close),
-            Float(min(1, (subj?.area ?? 0) / 0.12)),
-            Float(min(1, s.childConfidence)),
-            Float(min(1, s.babyConfidence)),
-            Float(min(1, max(0, s.sharpness))),
-            Float(min(6, s.faces.count)) / 6,
-            b(subj?.eyesClosed == true),
-            Float(min(1, max(0, apple))),
-            b(!s.labels.isEmpty)
+            b(close)
         ]
+        out.append(Float(min(1, (subj?.area ?? 0) / 0.12)))
+        out.append(Float(min(1, s.childConfidence)))
+        out.append(Float(min(1, s.babyConfidence)))
+        out.append(Float(min(1, max(0, s.sharpness))))
+        out.append(Float(min(6, s.faces.count)) / 6)
+        out.append(b(subj?.eyesClosed == true))
+        out.append(Float(min(1, max(0, apple))))
+        out.append(b(!s.labels.isEmpty))
+        let quality: Double = ((s.aesthetic ?? 0) + 1) / 2
+        out.append(Float(min(1, max(0, quality))))
+        out.append(b(s.aesthetic != nil))
+        out.append(b(s.isUtility))
+        for i in 0..<6 {
+            let v: Double = i < s.faceShape.count ? s.faceShape[i] : 0
+            out.append(Float(min(1, max(0, v))))
+        }
+        return out
     }
 
-    /// Packs a fingerprint into bytes: Apple's measurements as 0–255, the scene picture as signed bytes.
-    static func encode(signals: [Float], scene: Data) -> Data {
+    /// Packs a fingerprint into bytes: Apple's measurements as 0–255, the scene and face pictures as signed bytes.
+    static func encode(signals: [Float], scene: Data, face: Data = Data()) -> Data {
         var d = Data(signals.prefix(signalCount).map { UInt8(max(0, min(255, ($0 * 255).rounded()))) })
+        if d.count < signalCount { d.append(Data(count: signalCount - d.count)) }
         d.append(scene.prefix(sceneDims))
+        if d.count < signalCount + sceneDims { d.append(Data(count: signalCount + sceneDims - d.count)) }
+        d.append(face.prefix(faceDims))
         if d.count < featureCount { d.append(Data(count: featureCount - d.count)) }
         return d
     }
@@ -93,8 +131,8 @@ enum Learner {
         guard d.count == featureCount else { return nil }
         let bytes = [UInt8](d)
         let sig = bytes[0..<signalCount].map { Double($0) / 255 }
-        let scene = bytes[signalCount...].map { Double(Int8(bitPattern: $0)) / 127 }
-        return sig + scene
+        let pics = bytes[signalCount...].map { Double(Int8(bitPattern: $0)) / 127 }
+        return sig + pics
     }
 
     // MARK: Learning
@@ -184,7 +222,122 @@ enum Learner {
     }
 
     static func predict(_ m: LearnedModel, _ x: [Double]) -> Double {
-        predict(Fit(mean: m.mean, std: m.std, w: m.weights, bias: m.bias), x)
+        let f = Fit(mean: m.mean, std: m.std, w: m.weights, bias: m.bias)
+        let linear = predict(f, x)
+        guard let net = m.mlp, let a = m.blend, a > 0 else { return linear }
+        return max(1, min(10, (1 - a) * linear + a * mlpOut(net, netInput(x, f))))
+    }
+
+    /// Apple's measurements, standardized, plus the formula's guess (centered on a middling score).
+    static func netInput(_ x: [Double], _ f: Fit) -> [Double] {
+        var z = (0..<min(signalCount, x.count, f.mean.count)).map { (x[$0] - f.mean[$0]) / f.std[$0] }
+        z.append((predict(f, x) - 5.5) / 2)
+        return z
+    }
+
+    // MARK: Neural net
+
+    static func standardize(_ x: [Double], _ mean: [Double], _ std: [Double]) -> [Double] {
+        (0..<min(x.count, mean.count)).map { (x[$0] - mean[$0]) / std[$0] }
+    }
+
+    static func mlpOut(_ m: MLP, _ z: [Double]) -> Double {
+        let d = z.count
+        var out = m.b2
+        for j in 0..<m.h {
+            var a = m.b1[j]
+            let base = j * d
+            for k in 0..<d { a += m.w1[base + k] * z[k] }
+            if a > 0 { out += m.w2[j] * a }
+        }
+        return out
+    }
+
+    /// Trains the net (Adam, mini-batches of 32, light weight decay) on standardized inputs. With `val`, keeps the
+    /// weights from the epoch that did best on it and returns that epoch; otherwise trains exactly `epochs` epochs.
+    static func trainMLP(_ X: [[Double]], _ Y: [Double], epochs: Int, hidden h: Int = 32, seed: UInt64 = 7,
+                         val: (x: [[Double]], y: [Double])? = nil) -> (net: MLP, epoch: Int)? {
+        guard let d = X.first?.count, X.count >= 8, Y.count == X.count else { return nil }
+        let n = X.count
+        let ybar = Y.reduce(0, +) / Double(n)
+        let ysd = max((Y.map { ($0 - ybar) * ($0 - ybar) }.reduce(0, +) / Double(n)).squareRoot(), 1e-6)
+        let T = Y.map { ($0 - ybar) / ysd }
+        var state = seed &+ 0x9E37_79B9
+        func rnd() -> Double { state = state &* 6364136223846793005 &+ 1442695040888963407; return Double(state >> 11) / Double(UInt64(1) << 53) }
+        func gauss() -> Double { (-2 * log(max(rnd(), 1e-12))).squareRoot() * cos(2 * Double.pi * rnd()) }
+        var w1 = (0..<(h * d)).map { _ in gauss() * (2.0 / Double(d)).squareRoot() }
+        var b1 = [Double](repeating: 0, count: h)
+        var w2 = (0..<h).map { _ in gauss() * (1.0 / Double(h)).squareRoot() }
+        var b2 = 0.0
+        var m1 = [Double](repeating: 0, count: h * d), v1 = m1
+        var mb1 = [Double](repeating: 0, count: h), vb1 = mb1, m2 = mb1, v2 = mb1
+        var mb2 = 0.0, vb2 = 0.0
+        let lr = 0.003, beta1 = 0.9, beta2 = 0.999, eps = 1e-8, decay = 1e-3, batch = 32
+        var step = 0
+        func net() -> MLP { MLP(h: h, w1: w1, b1: b1, w2: w2.map { $0 * ysd }, b2: b2 * ysd + ybar) }
+        func valLoss() -> Double {
+            guard let val, !val.x.isEmpty else { return 0 }
+            let m = net()
+            return zip(val.x, val.y).map { abs(mlpOut(m, $0.0) - $0.1) }.reduce(0, +) / Double(val.x.count)
+        }
+        var best = (net: net(), epoch: 0, loss: Double.infinity)
+        var order = Array(0..<n)
+        var gw1 = [Double](repeating: 0, count: h * d), gb1 = [Double](repeating: 0, count: h), gw2 = gb1
+        var act = [Double](repeating: 0, count: h)
+        for epoch in 1...max(1, epochs) {
+            for i in stride(from: n - 1, to: 0, by: -1) { order.swapAt(i, Int(rnd() * Double(i + 1)) % (i + 1)) }
+            var start = 0
+            while start < n {
+                let idx = order[start..<min(start + batch, n)]
+                for i in gw1.indices { gw1[i] = 0 }
+                for j in 0..<h { gb1[j] = 0; gw2[j] = 0 }
+                var gb2 = 0.0
+                for r in idx {
+                    let z = X[r]
+                    var out = b2
+                    for j in 0..<h {
+                        var a = b1[j]
+                        let base = j * d
+                        for k in 0..<d { a += w1[base + k] * z[k] }
+                        act[j] = max(0, a)
+                        out += w2[j] * act[j]
+                    }
+                    let g = (out - T[r]) / Double(idx.count)   // squared-error gradient
+                    gb2 += g
+                    for j in 0..<h where act[j] > 0 {
+                        gw2[j] += g * act[j]
+                        let gj = g * w2[j]
+                        gb1[j] += gj
+                        let base = j * d
+                        for k in 0..<d { gw1[base + k] += gj * z[k] }
+                    }
+                }
+                step += 1
+                let c1 = 1 - pow(beta1, Double(step)), c2 = 1 - pow(beta2, Double(step))
+                for i in 0..<(h * d) {
+                    let g = gw1[i] + decay * w1[i]
+                    m1[i] = beta1 * m1[i] + (1 - beta1) * g; v1[i] = beta2 * v1[i] + (1 - beta2) * g * g
+                    w1[i] -= lr * (m1[i] / c1) / ((v1[i] / c2).squareRoot() + eps)
+                }
+                for j in 0..<h {
+                    let g2 = gw2[j] + decay * w2[j]
+                    m2[j] = beta1 * m2[j] + (1 - beta1) * g2; v2[j] = beta2 * v2[j] + (1 - beta2) * g2 * g2
+                    w2[j] -= lr * (m2[j] / c1) / ((v2[j] / c2).squareRoot() + eps)
+                    let g1 = gb1[j]
+                    mb1[j] = beta1 * mb1[j] + (1 - beta1) * g1; vb1[j] = beta2 * vb1[j] + (1 - beta2) * g1 * g1
+                    b1[j] -= lr * (mb1[j] / c1) / ((vb1[j] / c2).squareRoot() + eps)
+                }
+                mb2 = beta1 * mb2 + (1 - beta1) * gb2; vb2 = beta2 * vb2 + (1 - beta2) * gb2 * gb2
+                b2 -= lr * (mb2 / c1) / ((vb2 / c2).squareRoot() + eps)
+                start += batch
+            }
+            if val != nil {
+                let l = valLoss()
+                if l < best.loss { best = (net(), epoch, l) }
+                else if epoch - best.epoch >= 12 { break }   // stopped improving
+            }
+        }
+        return val != nil ? (best.net, best.epoch) : (net(), epochs)
     }
 
     /// The filter's chance (0...1) that Claude would remove a photo; it removes at 0.5 or more.
@@ -240,7 +393,8 @@ enum Learner {
     /// 2. picks the regularization by 4-fold cross-validation on the rest (also grouped by day);
     /// 3. reports how close that model gets on the held-back days, next to just guessing the average;
     /// 4. refits on everything. Nil until there are enough scores.
-    static func train(_ examples: [(date: Date, x: [Double], y: Double)]) -> LearnedModel? {
+    static func train(_ examples: [(date: Date, x: [Double], y: Double)], averaged: Int = 0,
+                      useNet: Bool = true) -> LearnedModel? {
         let test = examples.filter { heldBack($0.date) }, train = examples.filter { !heldBack($0.date) }
         guard train.count >= minimumExamples, test.count >= 10 else { return nil }
         func fold(_ d: Date) -> UInt64 { (group(d) / 5) % 4 }
@@ -256,14 +410,54 @@ enum Learner {
         }
         guard let f = fit(train.map(\.x), train.map(\.y), lambda: bestLambda),
               let all = fit(examples.map(\.x), examples.map(\.y), lambda: bestLambda) else { return nil }
-        let gaps = test.map { abs(predict(f, $0.x) - $0.y) }
+
+        // The neural net: trained on three folds of the training days, stopped when the fourth stops improving,
+        // and blended with the formula by whatever mix does best on that fourth fold.
+        var blend = 0.0, epochs = 0
+        if useNet {
+            let fitPart = train.filter { fold($0.date) != 0 }, valPart = train.filter { fold($0.date) == 0 }
+            if fitPart.count >= minimumExamples, valPart.count >= 10,
+               let rf = fit(fitPart.map(\.x), fitPart.map(\.y), lambda: bestLambda) {
+                let zf = fitPart.map { netInput($0.x, rf) }, zv = valPart.map { netInput($0.x, rf) }
+                if let (net, e) = trainMLP(zf, fitPart.map(\.y), epochs: 150, val: (zv, valPart.map(\.y))), e > 0 {
+                    epochs = e
+                    var bestErr = Double.infinity
+                    for a in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                        let err = zip(valPart, zv).map { abs(max(1, min(10, (1 - a) * predict(rf, $0.0.x) + a * mlpOut(net, $0.1))) - $0.0.y) }
+                            .reduce(0, +) / Double(valPart.count)
+                        if err < bestErr - 1e-9 { bestErr = err; blend = a }
+                    }
+                }
+            }
+        }
+        // The honest check on held-back days, with the formula and net trained on the training days only.
+        var testNet: MLP? = nil
+        if blend > 0 { testNet = trainMLP(train.map { netInput($0.x, f) }, train.map(\.y), epochs: epochs)?.net }
+        func testPredict(_ x: [Double]) -> Double {
+            let linear = predict(f, x)
+            guard let n = testNet else { return linear }
+            return max(1, min(10, (1 - blend) * linear + blend * mlpOut(n, netInput(x, f))))
+        }
+        let preds = test.map { testPredict($0.x) }
+        let gaps = zip(preds, test).map { abs($0 - $1.y) }
+        let linearGaps = test.map { abs(predict(f, $0.x) - $0.y) }
         let avg = train.map(\.y).reduce(0, +) / Double(train.count)
         let baseGaps = test.map { abs(avg - $0.y) }
         func within(_ g: [Double]) -> Double { Double(g.filter { $0 <= 1 }.count) / Double(g.count) }
         func mean(_ g: [Double]) -> Double { g.reduce(0, +) / Double(g.count) }
+        // Top picks: Claude's top fifth of the held-back photos, and how many of them the learning also ranks there.
+        let k = max(1, Int((Double(test.count) * 0.2).rounded(.up)))
+        let claudeTop = Set(test.indices.sorted { test[$0].y > test[$1].y }.prefix(k))
+        let learnedTop = Set(test.indices.sorted { preds[$0] > preds[$1] }.prefix(k))
+        let overlap = Double(claudeTop.intersection(learnedTop).count) / Double(k)
+        // The final net, on everything (same number of epochs).
+        var finalNet: MLP? = nil
+        if blend > 0 { finalNet = trainMLP(examples.map { netInput($0.x, all) }, examples.map(\.y), epochs: epochs)?.net }
         return LearnedModel(mean: all.mean, std: all.std, weights: all.w, bias: all.bias, lambda: bestLambda,
                             trainedOn: examples.count, tested: test.count, within1: within(gaps), meanGap: mean(gaps),
-                            date: Date(), baselineWithin1: within(baseGaps), baselineGap: mean(baseGaps))
+                            date: Date(), baselineWithin1: within(baseGaps), baselineGap: mean(baseGaps),
+                            mlp: finalNet, blend: finalNet == nil ? 0 : blend, linearGap: mean(linearGaps),
+                            topOverlap: overlap, averaged: averaged)
     }
 }
 
@@ -277,6 +471,7 @@ struct LearningPack: Codable {
     // The long arrays, as base64 little-endian Float32 (the fields above carry them empty).
     var modelArrays: [String]?
     var filterArrays: [String]?
+    var mlpArrays: [String]?   // the net's w1, b1, w2 (when the score has one)
 
     static func pack(_ a: [Double]) -> String {
         var d = Data(capacity: a.count * 4)
@@ -302,6 +497,11 @@ struct LearningPack: Codable {
         if var m = model {
             modelArrays = [m.mean, m.std, m.weights].map(Self.pack)
             m.mean = []; m.std = []; m.weights = []
+            if var net = m.mlp {
+                mlpArrays = [net.w1, net.b1, net.w2].map(Self.pack)
+                net.w1 = []; net.b1 = []; net.w2 = []
+                m.mlp = net
+            }
             self.model = m
         }
         if var f = filter {
@@ -327,7 +527,16 @@ struct LearningPack: Codable {
             return a.count == 3 && a.allSatisfy({ $0.count == Learner.featureCount }) ? a : nil
         }
         var model: LearnedModel?, filter: LearnedFilter?
-        if var m = p.model, let a = arrays(p.modelArrays) { m.mean = a[0]; m.std = a[1]; m.weights = a[2]; model = m }
+        if var m = p.model, let a = arrays(p.modelArrays) {
+            m.mean = a[0]; m.std = a[1]; m.weights = a[2]
+            if var net = m.mlp {
+                let n = (p.mlpArrays ?? []).compactMap(unpack)
+                if n.count == 3, n[0].count == net.h * Learner.netInputs, n[1].count == net.h, n[2].count == net.h {
+                    net.w1 = n[0]; net.b1 = n[1]; net.w2 = n[2]; m.mlp = net
+                } else { m.mlp = nil; m.blend = 0 }   // a net that doesn't fit: use the formula alone
+            }
+            model = m
+        }
         if var f = p.filter, let a = arrays(p.filterArrays) { f.mean = a[0]; f.std = a[1]; f.weights = a[2]; filter = f }
         return (model, filter)
     }

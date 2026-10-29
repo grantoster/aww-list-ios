@@ -8,6 +8,7 @@ struct FaceSignal: Equatable {
     var eyesClosed: Bool = false
     var bareTorso: Double = 0     // 0...1, share of the chest below this face that matches its skin tone
     var baby: Double? = nil       // "baby" label confidence on this person's own face-and-chest crop, when measured
+    var child: Double? = nil      // child/baby label confidence on this person's own head-and-shoulders, when measured
     var box: [Double] = []        // normalized x, y, width, height on the upright photo (bottom-left origin)
 }
 
@@ -23,15 +24,25 @@ struct Signals: Equatable {
     var isScreenshot: Bool = false
     var blockedLabel: String? = nil      // "bath", "swimwear", "undressed", "document", "screenshot"
     var scenePrint: [Float] = []         // Vision's feature print of the whole photo (for the learned score)
+    var aesthetic: Double? = nil         // Apple's photo-quality score, -1...1 (iOS 18 and later)
+    var isUtility = false                // Apple thinks it's a "utility" photo (receipt, note, screenshot-like)
+    var faceShape: [Double] = []         // main face, each 0...1: smile curve, mouth width, mouth open, eyes open, head turn, head tilt
+    var facePrint: [Float] = []          // Vision's feature print of the main face crop
     var privacyHint = false              // even a faint bath/undressed sign: listed, but never sent to Claude
 
-    var subjectIndex: Int? { faces.indices.max { faces[$0].area < faces[$1].area } }
+    /// The main subject: the largest face that reads as a child (so in a selfie with a parent it's the kid, not the
+    /// grown-up's bigger face), or simply the largest face when no face was checked or none reads as a child.
+    var subjectIndex: Int? {
+        let kids = faces.indices.filter { (faces[$0].child ?? 0) >= 0.3 }
+        let pool = kids.isEmpty ? Array(faces.indices) : kids
+        return pool.max { faces[$0].area < faces[$1].area }
+    }
     var subject: FaceSignal? { subjectIndex.map { faces[$0] } }
 }
 
 enum Scorer {
     /// Bump when scoring changes; photos scored by an older version are analyzed again.
-    static let version = 10   // 10: bath check rebuilt (real confidence, faint-sign never-send holds); everything re-read once
+    static let version = 11   // 11: richer fingerprint for the learned score (photo quality, face shape and crop); 10: bath check rebuilt
     /// Exclusion reason for a photo whose image couldn't be loaded (offline iCloud photo).
     static let unavailable = "Unavailable"
 

@@ -126,7 +126,7 @@ final class Analyzer {
                 ciFaces.append((b, f.hasSmile, f.leftEyeClosed && f.rightEyeClosed))
             }
         }
-        var subjectBox = CGRect.zero, subjectArea: CGFloat = -1
+        var subjectBox = CGRect.zero
         let largest = faceObs.map { $0.boundingBox.width * $0.boundingBox.height }.max() ?? 0
         let boxes = faceObs.map(\.boundingBox)
         for o in faceObs {
@@ -137,7 +137,10 @@ final class Analyzer {
                 face.smile = m.smile
                 face.eyesClosed = m.closed
             }
-            if box.width * box.height > subjectArea { subjectBox = box; subjectArea = box.width * box.height }
+            // Is this person a child? (Checked for the four largest faces big enough to read.)
+            if box.height >= 0.04 && boxes.filter({ $0.width * $0.height > box.width * box.height }).count < 4 {
+                face.child = childConfidence(handler, face: box)
+            }
             // Shirtless check on every face big enough to measure: about 30 px tall, or the main face(s) of the photo.
             if box.height >= 0.04 || box.width * box.height >= largest * 0.25 {
                 face.bareTorso = bareTorso(ci, face: box)
@@ -147,6 +150,10 @@ final class Analyzer {
                 }
             }
             s.faces.append(face)
+        }
+        // Sharpness of the main subject (the child's face when one reads as a child).
+        if let sf = s.subject, sf.box.count == 4 {
+            subjectBox = CGRect(x: sf.box[0], y: sf.box[1], width: sf.box[2], height: sf.box[3])
         }
         s.sharpness = sharpness(ci, box: subjectBox)
         // A bathroom scene or a faint tub/shower label plus any bare chest (babies included: this is about baths,
@@ -170,24 +177,93 @@ final class Analyzer {
     /// Face fingerprints for Who's Who: Vision's image feature print of each of the (up to 4) largest faces.
     func facePrints(_ image: CGImage, orientation: CGImagePropertyOrientation, faces: [FaceSignal]) -> [FaceRecord] {
         let ci = CIImage(cgImage: image).oriented(orientation)
-        let e = ci.extent
-        let unit = CGRect(x: 0, y: 0, width: 1, height: 1)
         var out: [FaceRecord] = []
         for f in faces.filter({ $0.box.count == 4 && $0.area >= 0.006 }).sorted(by: { $0.area > $1.area }).prefix(4) {
-            let b = CGRect(x: f.box[0], y: f.box[1], width: f.box[2], height: f.box[3])
-                .insetBy(dx: -f.box[2] * 0.1, dy: -f.box[3] * 0.1).intersection(unit)
-            let r = CGRect(x: e.minX + b.minX * e.width, y: e.minY + b.minY * e.height,
-                           width: b.width * e.width, height: b.height * e.height).integral.intersection(e)
-            guard !r.isNull, r.width >= 24, r.height >= 24,
-                  let crop = ciContext.createCGImage(ci, from: r) else { continue }
-            let req = VNGenerateImageFeaturePrintRequest()
-            req.imageCropAndScaleOption = .scaleFill
-            guard (try? VNImageRequestHandler(cgImage: crop, options: [:]).perform([req])) != nil,
-                  let fp = req.results?.first, fp.elementType == .float else { continue }
-            let floats: [Float] = fp.data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
-            out.append(FaceRecord(box: f.box.map { Float($0) }, vec: People.embed(floats)))
+            let floats = cropPrint(ci, f)
+            if !floats.isEmpty { out.append(FaceRecord(box: f.box.map { Float($0) }, vec: People.embed(floats))) }
         }
         return out
+    }
+
+    /// Vision's feature print of one face crop (empty if the face is too small or it fails).
+    private func cropPrint(_ ci: CIImage, _ f: FaceSignal) -> [Float] {
+        guard f.box.count == 4 else { return [] }
+        let e = ci.extent
+        let unit = CGRect(x: 0, y: 0, width: 1, height: 1)
+        let b = CGRect(x: f.box[0], y: f.box[1], width: f.box[2], height: f.box[3])
+            .insetBy(dx: -f.box[2] * 0.1, dy: -f.box[3] * 0.1).intersection(unit)
+        let r = CGRect(x: e.minX + b.minX * e.width, y: e.minY + b.minY * e.height,
+                       width: b.width * e.width, height: b.height * e.height).integral.intersection(e)
+        guard !r.isNull, r.width >= 24, r.height >= 24, let crop = ciContext.createCGImage(ci, from: r) else { return [] }
+        let req = VNGenerateImageFeaturePrintRequest()
+        req.imageCropAndScaleOption = .scaleFill
+        guard (try? VNImageRequestHandler(cgImage: crop, options: [:]).perform([req])) != nil,
+              let fp = req.results?.first, fp.elementType == .float else { return [] }
+        return fp.data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+    }
+
+    /// Extra measurements for the learned score, for photos on the list or offered to Claude: Apple's photo-quality
+    /// score (iOS 18 and later), the "utility photo" flag, the main face's shape, and a print of the main face.
+    func learningExtras(_ image: CGImage, orientation: CGImagePropertyOrientation, subject: FaceSignal?)
+        -> (aesthetic: Double?, utility: Bool, shape: [Double], facePrint: [Float]) {
+        let handler = VNImageRequestHandler(cgImage: image, orientation: orientation, options: [:])
+        var aesthetic: Double? = nil, utility = false
+        if #available(iOS 18.0, *) {
+            let req = VNCalculateImageAestheticsScoresRequest()
+            if (try? handler.perform([req])) != nil, let o = req.results?.first {
+                aesthetic = Double(o.overallScore); utility = o.isUtility
+            }
+        }
+        var shape: [Double] = [], print: [Float] = []
+        if let f = subject, f.box.count == 4 {
+            let box = CGRect(x: f.box[0], y: f.box[1], width: f.box[2], height: f.box[3])
+            let lm = VNDetectFaceLandmarksRequest()
+            lm.inputFaceObservations = [VNFaceObservation(boundingBox: box)]
+            if (try? handler.perform([lm])) != nil, let l = lm.results?.first?.landmarks { shape = Self.faceShape(l) }
+            print = cropPrint(CIImage(cgImage: image).oriented(orientation), f)
+        }
+        return (aesthetic, utility, shape, print)
+    }
+
+    /// Six 0...1 measurements of a face from its landmarks: smile curve (mouth corners above the middle of the lips),
+    /// mouth width, mouth open, eyes open, head turned (nose off the middle of the eyes), head tilted (eye line).
+    static func faceShape(_ l: VNFaceLandmarks2D) -> [Double] {
+        func pts(_ r: VNFaceLandmarkRegion2D?) -> [CGPoint] { r?.normalizedPoints ?? [] }
+        let outer = pts(l.outerLips), inner = pts(l.innerLips), le = pts(l.leftEye), re = pts(l.rightEye), nose = pts(l.nose)
+        guard outer.count >= 4, le.count >= 3, re.count >= 3 else { return [] }
+        func clamp(_ v: Double) -> Double { min(1, max(0, v)) }
+        let minX = outer.map(\.x).min()!, maxX = outer.map(\.x).max()!
+        let width = Double(maxX - minX)
+        let left = outer.min { $0.x < $1.x }!, right = outer.max { $0.x < $1.x }!
+        let midY = Double(outer.map(\.y).reduce(0, +)) / Double(outer.count)
+        let curve = width > 0 ? (Double(left.y + right.y) / 2 - midY) / width : 0
+        let openH = inner.isEmpty ? 0 : Double((inner.map(\.y).max() ?? 0) - (inner.map(\.y).min() ?? 0))
+        func openness(_ e: [CGPoint]) -> Double {
+            let w = Double((e.map(\.x).max() ?? 0) - (e.map(\.x).min() ?? 0))
+            let h = Double((e.map(\.y).max() ?? 0) - (e.map(\.y).min() ?? 0))
+            return w > 0 ? h / w : 0
+        }
+        func center(_ e: [CGPoint]) -> CGPoint {
+            CGPoint(x: e.map(\.x).reduce(0, +) / CGFloat(e.count), y: e.map(\.y).reduce(0, +) / CGFloat(e.count))
+        }
+        let lc = center(le), rc = center(re)
+        let eyeDist = Double(hypot(rc.x - lc.x, rc.y - lc.y))
+        let noseX = nose.isEmpty ? (lc.x + rc.x) / 2 : center(nose).x
+        let turn = eyeDist > 0 ? abs(Double(noseX - (lc.x + rc.x) / 2)) / eyeDist : 0
+        let tilt = abs(atan2(Double(rc.y - lc.y), Double(abs(rc.x - lc.x)) + 1e-6)) / (Double.pi / 4)
+        return [clamp(0.5 + curve * 3), clamp(width * 1.5), clamp(width > 0 ? openH / width * 2 : 0),
+                clamp((openness(le) + openness(re)) / 2 * 3), clamp(turn * 2), clamp(tilt)]
+    }
+
+    /// Child/baby label confidence for one person: the classifier run on their head and shoulders only.
+    private func childConfidence(_ handler: VNImageRequestHandler, face b: CGRect) -> Double? {
+        let roi = CGRect(x: b.minX - b.width * 0.3, y: b.minY - b.height * 0.5, width: b.width * 1.6, height: b.height * 1.7)
+            .intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+        guard !roi.isNull, roi.width > 0.02, roi.height > 0.02 else { return nil }
+        let req = VNClassifyImageRequest()
+        req.regionOfInterest = roi
+        guard (try? handler.perform([req])) != nil else { return nil }
+        return Double((req.results ?? []).filter { Self.childLabels.contains($0.identifier) }.map(\.confidence).max() ?? 0)
     }
 
     /// "baby" label confidence for one person: the classifier run on their face and chest only.

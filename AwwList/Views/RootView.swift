@@ -233,6 +233,23 @@ struct ClaudeSection: View {
             Toggle("Send these photos to Claude", isOn: $agreed)
             Button(claude.busy ? "Working…" : scanner.isScanning ? "Score with Claude (after the scan)" : "Score with Claude") { Task { await claude.send(library) } }
                 .disabled(!hasKey || !agreed || claude.busy || n == 0 || scanner.isScanning)
+            let rc = claude.recheckCandidates(library).count
+            if library.claudeScored > 0 {
+                Button("Check Claude's consistency (re-score \(rc.formatted()) photos, about \(Claude.dollars(micros: Claude.costMicros(photos: rc, model: library.claudeModel))))") {
+                    Task { await claude.send(library, recheck: true) }
+                }
+                .disabled(!hasKey || !agreed || claude.busy || rc == 0 || scanner.isScanning)
+                if let c = library.consistency {
+                    let pts = String(format: "%.1f", (c.gap * 10).rounded(.toNearestOrAwayFromZero) / 10)
+                    let pct = Int((c.withinHalf * 100 + 1e-9).rounded(.toNearestOrAwayFromZero))
+                    LabeledContent("Claude vs. itself", value: "\(pts) points apart · \(pct)% within half a point")
+                    Text("On \(c.n.formatted()) photos Claude scored twice. No learned score can match Claude more closely than Claude matches itself. The learning uses the average of the two scores. The cost is an estimate; your Anthropic bill shows the actual.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                } else {
+                    Text("Re-sends photos Claude already scored (spread across the years) to see how much its scores vary, and to give the learning steadier targets. Same privacy rules as scoring.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+            }
             if !library.claudeBatches.isEmpty {
                 Button("Check for Claude's scores") { Task { await claude.collect(library) } }.disabled(claude.busy)
             }
@@ -262,6 +279,15 @@ struct LearnedSection: View {
                 let pts = { (v: Double) in String(format: "%.1f", (v * 10).rounded(.toNearestOrAwayFromZero) / 10) + " points" }
                 LabeledContent("Within 1 point of Claude", value: pct(m.within1))
                 LabeledContent("Average gap", value: pts(m.meanGap))
+                if let o = m.topOverlap {
+                    LabeledContent("Also picks Claude's top fifth", value: pct(o))
+                }
+                if let lg = m.linearGap, (m.blend ?? 0) > 0 {
+                    LabeledContent("Without the neural net", value: pts(lg))
+                }
+                if let a = m.averaged, a > 0 {
+                    LabeledContent("Scores averaged from two Claude passes", value: a.formatted())
+                }
                 if let bw = m.baselineWithin1, let bg = m.baselineGap {
                     LabeledContent("Just guessing the average", value: "\(pct(bw)) · \(pts(bg))")
                 }

@@ -10,6 +10,9 @@ struct ClaudeVerdict: Codable, Hashable {
     var exclude: String?       // "swimwear", "bath", "undressed", "no_child", "screenshot", "ai_or_edited"
     var model: String
     var rubric: Int
+    /// A second score from re-sending the same photo (the consistency check); the learning uses the average.
+    var score2: Double? = nil
+    var rechecked: Bool? = nil
 }
 
 /// A batch sent to Claude that hasn't come back yet.
@@ -18,6 +21,8 @@ struct ClaudeBatch: Codable, Hashable {
     var model: String
     var photos: [String: String]   // custom_id -> photo id
     var sent: Date
+    /// A consistency-check batch: photos Claude already scored, sent again for a second score.
+    var recheck: Bool? = nil
 }
 
 /// Optional final scoring by Claude, with your own Anthropic API key (stored in the iPhone's Keychain).
@@ -337,7 +342,23 @@ final class ClaudeService: ObservableObject {
     }
 
     /// Sends the next photos in batches of 50 (small enough to finish uploading if the app is closed), then checks for results.
-    func send(_ library: Library) async {
+    /// How many photos the consistency check re-sends.
+    static let recheckCount = 100
+
+    /// Photos Claude already scored (kept, with this model) and not yet re-checked, spread across the years.
+    func recheckCandidates(_ library: Library) -> [Moment] {
+        let model = library.claudeModel
+        let pending = Set(library.claudeBatches.flatMap { $0.photos.values })
+        let pool = library.claudePool.filter { m in
+            guard let c = m.best.claude, c.exclude == nil, c.model == model, c.rechecked != true else { return false }
+            return !pending.contains(m.best.id) && !m.memberIDs.contains(where: library.neverSend.contains)
+        }.sorted { $0.best.date < $1.best.date }
+        guard pool.count > Self.recheckCount else { return pool }
+        let step = Double(pool.count) / Double(Self.recheckCount)
+        return (0..<Self.recheckCount).map { pool[min(pool.count - 1, Int(Double($0) * step))] }
+    }
+
+    func send(_ library: Library, recheck: Bool = false) async {
         guard !busy else { return }
         // Only once the scan is finished: until then a bath photo near a candidate may not be checked yet.
         guard !Shared.scanner.isScanning else { status = "Wait for the scan to finish, then send."; return }
@@ -349,9 +370,12 @@ final class ClaudeService: ObservableObject {
         busy = true; defer { busy = false }
         var paused = false, unloadedIDs = Set<String>()
         library.rebuild()   // fresh never-send set and pool, including photos added since the list last redrew
-        let list = candidates(library)
+        let list = recheck ? recheckCandidates(library) : candidates(library)
         toSend = list.count; sent = 0
-        if list.isEmpty { status = "Everything chosen is already scored by Claude."; await collect(library); return }
+        if list.isEmpty {
+            status = recheck ? "No photos left to re-check with this model." : "Everything chosen is already scored by Claude."
+            await collect(library); return
+        }
         let model = library.claudeModel
         do {
             status = "Checking your API key…"
@@ -441,10 +465,10 @@ final class ClaudeService: ObservableObject {
                 }
                 if aborted { paused = true; break }
                 guard let id else { throw URLError(.networkConnectionLost) }
-                library.addClaudeBatch(ClaudeBatch(id: id, model: model, photos: map, sent: Date()))
+                library.addClaudeBatch(ClaudeBatch(id: id, model: model, photos: map, sent: Date(), recheck: recheck ? true : nil))
                 sent += reqs.count
             }
-            queue = held.isEmpty ? [] : candidates(library, skipping: held, refill: true)
+            queue = held.isEmpty || recheck ? [] : candidates(library, skipping: held, refill: true)
             }
             let before = status
             await collect(library)
@@ -501,9 +525,13 @@ final class ClaudeService: ObservableObject {
                         }
                     }
                 }
-                library.applyClaude(verdicts)
-                library.noteClaudeFailures(failed)
-                library.unsend(model: b.model, failed)   // can be tried again (up to twice in all)
+                if b.recheck == true {
+                    library.applyRecheck(verdicts)        // second scores; failures just aren't re-checked
+                } else {
+                    library.applyClaude(verdicts)
+                    library.noteClaudeFailures(failed)
+                    library.unsend(model: b.model, failed)   // can be tried again (up to twice in all)
+                }
                 library.removeClaudeBatch(b.id)
                 status = "Claude scored \(verdicts.count.formatted()) photos." +
                     (failed.isEmpty ? "" : " \(failed.count.formatted()) couldn't be scored" + (firstError.isEmpty ? "." : ": \(firstError)"))

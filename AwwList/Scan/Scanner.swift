@@ -361,6 +361,9 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
             signals = measured
             if Scorer.score(measured).raw != nil || Scorer.softScore(measured) != nil || Scorer.poolScore(measured) != nil {
                 signals.scenePrint = analyzer.scenePrint(cg, orientation: CGImagePropertyOrientation(img.imageOrientation))
+                let ex = analyzer.learningExtras(cg, orientation: CGImagePropertyOrientation(img.imageOrientation), subject: measured.subject)
+                signals.aesthetic = ex.aesthetic; signals.isUtility = ex.utility
+                signals.faceShape = ex.shape; signals.facePrint = ex.facePrint
             }
             if Scorer.score(measured).raw != nil {
                 records = analyzer.facePrints(cg, orientation: CGImagePropertyOrientation(img.imageOrientation),
@@ -399,7 +402,8 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
         p.featChecked = true
         if let base = raw ?? p.soft, !signals.scenePrint.isEmpty {
             p.feat = Learner.encode(signals: Learner.signals(signals, apple: base),
-                                    scene: People.embed(signals.scenePrint, dims: Learner.sceneDims))
+                                    scene: People.embed(signals.scenePrint, dims: Learner.sceneDims),
+                                    face: signals.facePrint.isEmpty ? Data() : People.embed(signals.facePrint, dims: Learner.faceDims))
         }
         return .done(p)
     }

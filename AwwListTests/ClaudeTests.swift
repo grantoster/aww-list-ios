@@ -139,7 +139,7 @@ final class LearningPackTests: XCTestCase {
                               removals: 40, tested: 60, accuracy: 0.9, baselineAccuracy: 0.85, caught: 0.5, wronglyRemoved: 0.02,
                               date: Date(timeIntervalSince1970: 1_800_000_000))
         let text = LearningPack(model: m, filter: f).text()
-        XCTAssertLessThan(text.utf8.count, 8000)
+        XCTAssertLessThan(text.utf8.count, 16000)
         let back = LearningPack.read(text)
         XCTAssertEqual(back.model?.weights.count, n)
         XCTAssertEqual(back.model?.weights.first ?? 0, m.weights.first!, accuracy: 1e-5)
@@ -148,6 +148,28 @@ final class LearningPackTests: XCTestCase {
         XCTAssertEqual(back.filter?.std.last ?? 0, f.std.last!, accuracy: 1e-5)
         XCTAssertNil(LearningPack.read("not a pack").model)
         XCTAssertNil(LearningPack.read(LearningPack(model: nil, filter: f).text()).model)
+    }
+
+    func testNetLearnsWhatTheFormulaCantAndPacks() {
+        // Claude's score depends on smile AND sharpness together (an interaction a straight line can't capture).
+        var seed: UInt64 = 11
+        func rnd() -> Double { seed = seed &* 6364136223846793005 &+ 1442695040888963407; return Double(seed >> 11) / Double(UInt64(1) << 53) }
+        var ex: [(date: Date, x: [Double], y: Double)] = []
+        for i in 0..<900 {
+            var x = (0..<Learner.featureCount).map { _ in rnd() * 0.2 }
+            x[0] = rnd(); x[7] = rnd()
+            let y = 3 + 6 * (x[0] > 0.5 && x[7] > 0.5 ? 1 : 0) + (rnd() - 0.5) * 0.4
+            ex.append((Date(timeIntervalSince1970: 1_600_000_000 + Double(i / 3) * 86_400), x, y))
+        }
+        guard let m = Learner.train(ex) else { XCTAssertNotNil(nil as Int?); return }
+        XCTAssertNotNil(m.mlp)
+        XCTAssertGreaterThan(m.blend ?? 0, 0)
+        XCTAssertLessThan(m.meanGap, m.linearGap ?? 0)            // the net beats the formula here
+        XCTAssertGreaterThan(m.topOverlap ?? 0, 0.4)                // chance would be about 0.2
+        let back = LearningPack.read(LearningPack(model: m, filter: nil).text()).model
+        XCTAssertEqual(back?.mlp?.h, m.mlp?.h)
+        let x = ex[5].x
+        XCTAssertEqual(Learner.predict(back!, x), Learner.predict(m, x), accuracy: 0.05)
     }
 }
 

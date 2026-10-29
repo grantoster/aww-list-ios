@@ -125,6 +125,28 @@ final class Library: ObservableObject {
         flush()
     }
     func removeClaudeBatch(_ id: String) { claudeBatches.removeAll { $0.id == id }; save() }
+    /// Second scores from the consistency check: stored next to the first (a removal on the second pass is
+    /// recorded as no second score), and the learning then uses the average.
+    func applyRecheck(_ verdicts: [String: ClaudeVerdict]) {
+        guard !verdicts.isEmpty else { return }
+        for (id, v) in verdicts where photos[id]?.claude != nil {
+            photos[id]?.claude?.score2 = v.exclude == nil ? v.score : nil
+            photos[id]?.claude?.rechecked = true
+        }
+        rebuild(); flush()
+        retrain()
+    }
+    /// How consistent Claude is with itself: photos scored twice, average distance, share within half a point.
+    var consistency: (n: Int, gap: Double, withinHalf: Double)? {
+        let pairs = photos.values.compactMap { p -> Double? in
+            guard let c = p.claude, let s2 = c.score2 else { return nil }
+            return abs(c.score - s2)
+        }
+        guard !pairs.isEmpty else { return nil }
+        return (pairs.count, pairs.reduce(0, +) / Double(pairs.count),
+                Double(pairs.filter { $0 <= 0.5 + 1e-9 }.count) / Double(pairs.count))
+    }
+
     func applyClaude(_ verdicts: [String: ClaudeVerdict]) {
         guard !verdicts.isEmpty else { return }
         for (id, v) in verdicts {
@@ -212,18 +234,22 @@ final class Library: ObservableObject {
         var parts: [String] = []
         var examples: [(date: Date, x: [Double], y: Double)] = []
         var verdicts: [(date: Date, x: [Double], removed: Bool)] = []
+        var averagedCount = 0
         for p in photos.values.sorted(by: { $0.id < $1.id }) {
             guard let c = p.claude, let f = p.feat, let x = Learner.decode(f) else { continue }
-            parts.append("\(p.id)|\(c.score)|\(c.exclude ?? "")")
+            parts.append("\(p.id)|\(c.score)|\(c.score2 ?? -1)|\(c.exclude ?? "")")
             verdicts.append((p.date, x, c.exclude != nil))
-            if c.exclude == nil { examples.append((p.date, x, c.score)) }
+            // Where Claude scored a photo twice, learn from the average (closer to its real opinion).
+            if c.exclude == nil { examples.append((p.date, x, c.score2.map { (c.score + $0) / 2 } ?? c.score)) }
+            if c.exclude == nil && c.score2 != nil { averagedCount += 1 }
         }
         let signature = Learner.stableHash(parts)
         guard signature != trainedSignature else { return }      // nothing new to learn from (also across launches)
         training = true
         let gen = generation
+        let averaged = averagedCount
         Task.detached(priority: .utility) {
-            let model = Learner.train(examples)
+            let model = Learner.train(examples, averaged: averaged)
             let filter = Learner.trainFilter(verdicts)
             await MainActor.run {
                 self.training = false
