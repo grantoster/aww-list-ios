@@ -170,10 +170,7 @@ final class PoolTests: XCTestCase {
         var bp = PhotoScore(id: "band", date: t, raw: nil, excluded: "Shirtless", age: .kid, caption: "", version: Scorer.version)
         bp.soft = Scorer.softScore(band)
         XCTAssertTrue(Scorer.neverSend([bp], allowSwimShirtless: false).contains("band"))
-        // Photos in the iOS Hidden album are never listed.
-        var h = PhotoScore(id: "h", date: t, raw: 0.8, excluded: nil, age: .kid, caption: "", version: Scorer.version)
-        h.hiddenAlbum = true
-        XCTAssertTrue(Scorer.moments(from: [h]).isEmpty)
+
     }
 }
 

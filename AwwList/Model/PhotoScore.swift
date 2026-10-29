@@ -73,8 +73,6 @@ struct PhotoScore: Codable, Hashable, Identifiable {
     /// 2 once this photo was analyzed under "Apple flags, Claude decides" (provenance-flagged photos are fully
     /// analyzed, and held-back ones get a `soft` score for Put back). Older records of those kinds are re-read.
     var flagVersion: Int? = nil
-    /// In the iOS Hidden album: never listed or sent, but checked, so a hidden bath photo still guards its neighbors.
-    var hiddenAlbum: Bool? = nil
     /// Why Apple flagged a photo that's still listed (water, swimwear, AI image, ...); nil when it wasn't flagged.
     var appleFlag: String? { raw == nil && Scorer.softReasons.contains(excluded ?? "") ? excluded : nil }
 }

@@ -302,17 +302,14 @@ final class ClaudeService: ObservableObject {
     /// no photo within 2 minutes may be one Claude removed (the same burst, however it's grouped now).
     /// Photos outside a Limited Access selection can't be seen, so they can't be checked.
     static func sendable(_ m: Moment, _ library: Library) -> Bool {
-        let opts = PHFetchOptions(); opts.includeHiddenAssets = true
+        // The Hidden album is never looked at: a photo moved there drops out of this fetch, so its moment isn't sent.
+        let opts = PHFetchOptions(); opts.includeHiddenAssets = false
         let live = PHAsset.fetchAssets(withLocalIdentifiers: m.memberIDs, options: opts)
-        var dates: [Date] = [], anyHidden = false
-        live.enumerateObjects { a, _, _ in
-            if let d = a.creationDate { dates.append(d) }
-            if a.isHidden { anyHidden = true }   // never send anything in the Hidden album
-        }
-        if anyHidden { return false }
+        var dates: [Date] = []
+        live.enumerateObjects { a, _, _ in if let d = a.creationDate { dates.append(d) } }
         guard dates.count == m.memberIDs.count, let lo = dates.min(), let hi = dates.max() else { return false }
         let o = PHFetchOptions()
-        o.includeHiddenAssets = true
+        o.includeHiddenAssets = false   // never look in the Hidden album
         o.predicate = NSPredicate(format: "mediaType == %d AND creationDate >= %@ AND creationDate <= %@",
                                   PHAssetMediaType.image.rawValue, lo.addingTimeInterval(-600) as NSDate,
                                   hi.addingTimeInterval(600) as NSDate)

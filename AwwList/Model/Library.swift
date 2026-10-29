@@ -43,8 +43,7 @@ final class Library: ObservableObject {
     }
     /// Photos Apple held back as possible bath or undressed (newest first), for review in Settings.
     var heldBackPhotos: [PhotoScore] {
-        photos.values.filter { $0.raw == nil && Scorer.heldBack.contains($0.excluded ?? "") && $0.version == Scorer.version
-            && $0.hiddenAlbum != true }   // never show Hidden-album photos outside that album
+        photos.values.filter { $0.raw == nil && Scorer.heldBack.contains($0.excluded ?? "") && $0.version == Scorer.version }
             .sorted { $0.date > $1.date }
     }
 
@@ -277,13 +276,6 @@ final class Library: ObservableObject {
         return out
     }
 
-    /// Photos moved into or out of the iOS Hidden album since they were scanned.
-    func setHiddenAlbum(_ flips: [String: Bool]) {
-        guard !flips.isEmpty else { return }
-        for (id, h) in flips { photos[id]?.hiddenAlbum = h ? true : nil }
-        rebuild(); save()
-    }
-
     /// Drops scores for photos that were deleted from the library (ids found by the scanner).
     func remove(_ ids: Set<String>) {
         guard !ids.isEmpty else { return }
@@ -382,7 +374,6 @@ final class Library: ObservableObject {
         for p in photos.values where !shown.contains(p.id) {
             let why: String
             if hidden.contains(p.id) { why = "Removed by you" }
-            else if p.hiddenAlbum == true { why = "In your Hidden album" }
             else if p.version != Scorer.version
                         || (p.excluded == "No child" && p.soft == nil && (p.faces ?? 0) > 0 && (p.flagVersion ?? 0) < 3) {
                 why = "Waiting to be checked again"

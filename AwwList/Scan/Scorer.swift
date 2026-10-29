@@ -215,7 +215,6 @@ enum Scorer {
     /// The value a photo is listed with: its score, or for a flagged photo the score it would have had.
     /// Held-back photos count only once the user puts them back.
     static func listedValue(_ p: PhotoScore, putBack: Set<String> = [], includePoolOnly: Bool = false) -> Double? {
-        if p.hiddenAlbum == true { return nil }
         if let r = p.raw { return r }
         guard let e = p.excluded else { return nil }
         if includePoolOnly && poolOnly.contains(e) { return p.soft }

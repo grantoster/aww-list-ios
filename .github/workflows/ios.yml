@@ -21,7 +21,9 @@ jobs:
           PAT='performChanges|PHAssetChangeRequest|PHAssetCreationRequest|PHAssetCollectionChangeRequest|PHCollectionListChangeRequest|deleteAssets|UIImageWriteToSavedPhotosAlbum|UISaveVideoAtPathToSavedPhotosAlbum|PHContentEditingOutput|ShareLink|NSPhotoLibraryAddUsageDescription'
           if grep -rnE "$PAT" AwwList project.yml; then echo "::error::Photo-library write API found. Aww List must stay read-only."; exit 1; fi
           grep -qE '^[[:space:]]*vc\.excludedActivityTypes = \[\.saveToCameraRoll, .*StreamShareService' AwwList/Views/ViewerView.swift || { echo "::error::The share sheet must keep excluding Save Image and Shared Album."; exit 1; }
-          echo "No photo-library write APIs found."
+          # Never look in the Hidden album.
+          if grep -rnE "includeHiddenAssets *= *true|\.isHidden|hiddenAlbum|smartAlbumAllHidden" AwwList; then echo "::error::The app must never look in the Hidden album."; exit 1; fi
+          echo "No photo-library write APIs or Hidden-album access found."
       - name: Select newest Xcode 26 (App Store uploads need the iOS 26 SDK)
         run: |
           X=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
