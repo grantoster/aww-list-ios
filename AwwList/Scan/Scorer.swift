@@ -31,7 +31,7 @@ struct Signals: Equatable {
 
 enum Scorer {
     /// Bump when scoring changes; photos scored by an older version are analyzed again.
-    static let version = 9   // (soft scores are filled in for set-aside photos without a full rescan)
+    static let version = 10   // 10: bath check rebuilt (real confidence, faint-sign never-send holds); everything re-read once
     /// Exclusion reason for a photo whose image couldn't be loaded (offline iCloud photo).
     static let unavailable = "Unavailable"
 

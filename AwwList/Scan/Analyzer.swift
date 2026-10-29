@@ -79,7 +79,7 @@ final class Analyzer {
         let handler = VNImageRequestHandler(cgImage: image, orientation: orientation, options: [:])
         do { try handler.perform([classify, faces]) } catch { return nil }
 
-        var bathroomRoom = false, tubFaint = false, hint = false
+        var bathroomRoom = false, roomFaint = false, tubFaint = false, hint = false
         for obs in classify.results ?? [] {
             let id = obs.identifier
             // The most serious match wins (bath or undressed over swimwear over document or screenshot),
@@ -90,6 +90,7 @@ final class Analyzer {
                 if (reason == "bath" || reason == "undressed") && obs.confidence > 0.1 {
                     if !(reason == "bath" && !Self.isActualBath(id)) { hint = true }
                     if reason == "bath" && Self.isActualBath(id) { tubFaint = true }
+                    if reason == "bath" && !Self.isActualBath(id) { roomFaint = true }
                 }
                 let need: Float
                 if reason == "bath" && !Self.isActualBath(id) {
@@ -152,7 +153,8 @@ final class Analyzer {
         // not the diaper rule) counts as a possible bath photo.
         let anyBare = s.faces.contains { $0.bareTorso >= Scorer.bareTorsoLimit }
         if (bathroomRoom || tubFaint) && anyBare && Self.severity("bath") > Self.severity(s.blockedLabel) { s.blockedLabel = "bath" }
-        if anyBare && (bathroomRoom || tubFaint || hint) { s.privacyHint = true }
+        // Even a faint bathroom label with any bare chest (a baby bathed in a sink) keeps the session from Claude.
+        if anyBare && (bathroomRoom || roomFaint || tubFaint || hint) { s.privacyHint = true }
         return s
     }
 

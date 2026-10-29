@@ -361,7 +361,7 @@ final class Library: ObservableObject {
             // Claude's removal sticks to the whole burst, even if a different shot becomes its best later.
             if m.memberIDs.contains(where: { photos[$0]?.claude?.exclude != nil }) { return nil }
             if (useClaude || useLearned) && m.best.claude == nil
-                && !m.memberIDs.contains(where: { Scorer.heldBack.contains(photos[$0]?.excluded ?? "") })
+                && !m.memberIDs.contains(where: { Scorer.heldBack.contains(photos[$0]?.excluded ?? "") || photos[$0]?.privacyHold == true })
                 && learnedRemoves(m.best) {   // you chose to keep possible bath photos
                 filtered += 1; filteredIDs.formUnion(m.memberIDs); return nil
             }
@@ -383,6 +383,21 @@ final class Library: ObservableObject {
                 moments.append(m)
             }
         }
+        // Same 1–10 spread in every view (about 1 in 20 moments a 9 or 10): when ranking by Claude or by the learned
+        // score, the list's score is that score's rank, bucketed like Apple's. The viewer still shows the actual
+        // Claude and learned numbers. Moments Claude hasn't seen still top out at 8 (learned) or 6 (Apple only).
+        if useClaude || useLearned {
+            let vals = moments.map { m -> Double in
+                useClaude ? (m.claudeScore ?? m.learnedScore.map { min($0, 8) } ?? Double(min(m.apple, 6)))
+                          : (m.learnedScore ?? Double(m.apple))
+            }
+            let cal = Scorer.calibrate(vals.map { $0 / 10 }, years: moments.map(\.year))
+            for i in moments.indices {
+                let m = moments[i]
+                let cap = !useClaude || m.claudeScore != nil ? 10 : m.learnedScore != nil ? 8 : 6
+                moments[i].score = min(cal[i], cap)
+            }
+        }
         // What's left off and why (current photos only; hidden ones are counted separately).
         var counts: [String: Int] = [:]
         let shown = Set(moments.flatMap(\.memberIDs))
@@ -396,7 +411,6 @@ final class Library: ObservableObject {
             }
             else if filteredIDs.contains(p.id) { why = "Hidden by the learned filter" }
             else if p.claude?.exclude != nil || claudeRemoved[p.id] != nil || listedIDs.contains(p.id) { why = "Removed by Claude" }
-            else if Scorer.listedValue(p, putBack: pb) != nil { why = "Within 10 minutes of a possible bath photo" }
             else if let e = p.excluded {
                 switch e {
                 case "No child seen":
