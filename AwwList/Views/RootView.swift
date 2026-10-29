@@ -292,15 +292,16 @@ struct LearnedSection: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             if library.learnedIsBuiltIn || library.filterIsBuiltIn {
-                Text("Using the learning built into the app (from \(library.builtInScores.formatted()) Claude scores). This phone's own learning takes over once it has learned from at least as many, or right away if you turn off the built-in learning below.")
+                Text("Using the learning built into the app (from \(library.builtInScores.formatted()) Claude scores). This phone's own learning takes over once it has learned from at least as many, or right away if you turn off the built-in learning below (with no learning of its own yet, that means no learned score).")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             if library.hasBuiltIn {
                 Toggle("Use the built-in learning", isOn: Binding(get: { library.useBuiltInLearning },
                                                                    set: { library.setUseBuiltInLearning($0) }))
             }
-            if let own = library.ownModel {
-                LabeledContent("This phone's own learning", value: "\(own.trainedOn.formatted()) Claude scores")
+            if library.ownModel != nil || library.ownFilter != nil {
+                let n = max(library.ownModel?.trainedOn ?? 0, library.ownFilter?.trainedOn ?? 0)
+                LabeledContent("This phone's own learning", value: "\(n.formatted()) Claude verdicts")
             }
             Button("Start learning over") { library.relearn(); copied = false }
                 .disabled(library.training)

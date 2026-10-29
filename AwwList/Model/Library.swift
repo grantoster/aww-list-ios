@@ -75,7 +75,7 @@ final class Library: ObservableObject {
 
     init() {
         load()
-        applyLearning(); rebuild()
+        if !loaded { applyLearning(); rebuild() }   // a fresh install (load already did this otherwise)
     }
 
     /// New results from the scanner. The list is rebuilt at most every 2 seconds while scanning.
@@ -420,7 +420,9 @@ final class Library: ObservableObject {
             let cal = Scorer.calibrate(vals.map { $0 / 10 }, years: moments.map(\.year))
             for i in moments.indices {
                 let m = moments[i]
-                let cap = !useClaude || m.claudeScore != nil ? 10 : m.learnedScore != nil ? 8 : 6
+                let cap: Int
+                if useClaude { cap = m.claudeScore != nil ? 10 : (m.learnedScore != nil ? 8 : 6) }
+                else { cap = m.learnedScore != nil ? 10 : 6 }
                 moments[i].score = min(cal[i], cap)
             }
         }
@@ -496,8 +498,10 @@ final class Library: ObservableObject {
         }
     }
 
+    private var loaded = false
     private func load() {
         guard let data = try? Data(contentsOf: url), let s = try? JSONDecoder().decode(Saved.self, from: data) else { return }
+        loaded = true
         photos = Dictionary(s.photos.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         hidden = Set(s.hidden)
         birthdays = s.birthdays ?? []
@@ -517,6 +521,9 @@ final class Library: ObservableObject {
         claudeSensitive = s.claudeSensitive ?? false
         ownFilter = s.learnedFilter.flatMap { $0.weights.count == Learner.featureCount ? $0 : nil }
         useBuiltInLearning = s.useBuiltInLearning ?? true
+        // Saves from before this phone's own learning was kept alongside the built-in one: learn once more at
+        // launch, so it comes back (and can be copied) without waiting for new Claude scores.
+        if s.useBuiltInLearning == nil { trainedSignature = nil }
         trainedSignature = s.trainedSignature
         claudeRemoved = s.claudeRemoved ?? [:]
         claudeSent = (s.claudeSent ?? [:]).mapValues(Set.init)
