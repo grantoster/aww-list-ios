@@ -29,6 +29,8 @@ struct Signals: Equatable {
     var isUtility = false                // Apple thinks it's a "utility" photo (receipt, note, screenshot-like)
     var faceShape: [Double] = []         // main face, each 0...1: smile curve, mouth width, mouth open, eyes open, head turn, head tilt
     var facePrint: [Float] = []          // Vision's feature print of the main face crop
+    var content: [Float] = []            // what's in the photo: every classifier label, hashed into Learner.contentDims
+    var poseAndFocus: [Double] = []      // 0...1 each: bodies, arms up, body size, whole body, reach; focus found, size, off-center, count
     var privacyHint = false              // even a faint bath/undressed sign: listed, but never sent to Claude
 
     /// The main subject: among the faces that are part of the shot, the largest with a clear kid reading (0.3 or

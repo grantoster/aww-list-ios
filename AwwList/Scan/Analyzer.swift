@@ -80,6 +80,7 @@ final class Analyzer {
         do { try handler.perform([classify, faces]) } catch { return nil }
 
         var bathroomRoom = false, roomFaint = false, tubFaint = false, hint = false
+        s.content = Learner.content(labels: (classify.results ?? []).map { ($0.identifier, $0.confidence) })
         for obs in classify.results ?? [] {
             let id = obs.identifier
             // The most serious match wins (bath or undressed over swimwear over document or screenshot),
@@ -209,7 +210,7 @@ final class Analyzer {
     /// Extra measurements for the learned score, for photos on the list or offered to Claude: Apple's photo-quality
     /// score (iOS 18 and later), the "utility photo" flag, the main face's shape, and a print of the main face.
     func learningExtras(_ image: CGImage, orientation: CGImagePropertyOrientation, subject: FaceSignal?)
-        -> (aesthetic: Double?, utility: Bool, shape: [Double], facePrint: [Float]) {
+        -> (aesthetic: Double?, utility: Bool, shape: [Double], facePrint: [Float], poseAndFocus: [Double]) {
         let handler = VNImageRequestHandler(cgImage: image, orientation: orientation, options: [:])
         var aesthetic: Double? = nil, utility = false
         if #available(iOS 18.0, *) {
@@ -226,7 +227,45 @@ final class Analyzer {
             if (try? handler.perform([lm])) != nil, let l = lm.results?.first?.landmarks { shape = Self.faceShape(l) }
             print = cropPrint(CIImage(cgImage: image).oriented(orientation), f)
         }
-        return (aesthetic, utility, shape, print)
+        return (aesthetic, utility, shape, print, Self.poseAndFocus(handler))
+    }
+
+    /// Nine 0...1 measurements of what's happening and where the eye goes: how many bodies, share with arms up
+    /// (cheering, jumping), the biggest body's height, whether a whole body (feet included) is in the shot, how far
+    /// arms reach out; then whether Vision found a point of interest, its size, how far off-center it is, and how many.
+    static func poseAndFocus(_ handler: VNImageRequestHandler) -> [Double] {
+        let pose = VNDetectHumanBodyPoseRequest()
+        let focus = VNGenerateAttentionBasedSaliencyImageRequest()
+        try? handler.perform([pose, focus])
+        func clamp(_ v: Double) -> Double { min(1, max(0, v)) }
+        let bodies = (pose.results ?? []).compactMap { try? $0.recognizedPoints(.all) }
+        func pt(_ b: [VNHumanBodyPoseObservation.JointName: VNRecognizedPoint], _ j: VNHumanBodyPoseObservation.JointName) -> CGPoint? {
+            guard let p = b[j], p.confidence > 0.3 else { return nil }
+            return p.location
+        }
+        var armsUp = 0, whole = false, tallest = 0.0, reach = 0.0
+        for b in bodies {
+            let up = [(VNHumanBodyPoseObservation.JointName.leftWrist, VNHumanBodyPoseObservation.JointName.leftShoulder),
+                      (.rightWrist, .rightShoulder)].contains { w, s in
+                guard let w = pt(b, w), let s = pt(b, s) else { return false }
+                return w.y > s.y
+            }
+            if up { armsUp += 1 }
+            if pt(b, .leftAnkle) != nil || pt(b, .rightAnkle) != nil { whole = true }
+            let ys = b.values.filter { $0.confidence > 0.3 }.map { Double($0.location.y) }
+            if let lo = ys.min(), let hi = ys.max() { tallest = max(tallest, hi - lo) }
+            if let lw = pt(b, .leftWrist), let rw = pt(b, .rightWrist), let ls = pt(b, .leftShoulder), let rs = pt(b, .rightShoulder) {
+                let shoulders = Double(hypot(ls.x - rs.x, ls.y - rs.y))
+                if shoulders > 0.01 { reach = max(reach, Double(hypot(lw.x - rw.x, lw.y - rw.y)) / shoulders / 4) }
+            }
+        }
+        let n = bodies.count
+        let spots = (focus.results?.first?.salientObjects ?? []).map(\.boundingBox)
+        let biggest = spots.max { $0.width * $0.height < $1.width * $1.height }
+        let off = biggest.map { Double(hypot($0.midX - 0.5, $0.midY - 0.5)) / 0.7071 } ?? 0
+        return [clamp(Double(n) / 6), n == 0 ? 0 : Double(armsUp) / Double(n), clamp(tallest), whole ? 1 : 0, clamp(reach),
+                spots.isEmpty ? 0 : 1, clamp(Double((biggest?.width ?? 0) * (biggest?.height ?? 0))), clamp(off),
+                clamp(Double(spots.count) / 4)]
     }
 
     /// Six 0...1 measurements of a face from its landmarks: smile curve (mouth corners above the middle of the lips),

@@ -62,7 +62,9 @@ final class PhotoScanner: ObservableObject {
                 && !(Scorer.softReasons.contains($0.excluded ?? "") && $0.softChecked != true
                      && ($0.faces ?? 0) > 0)
                 // photos on the list (or offered to Claude) get the fingerprint the learned score needs
-                && !(($0.raw != nil || $0.soft != nil) && $0.featChecked != true && $0.feat?.count != Learner.featureCount)
+                // (and again whenever the fingerprint grows, e.g. when what's in the photo was added)
+                && !(($0.raw != nil || $0.soft != nil) && $0.feat?.count != Learner.featureCount
+                     && ($0.featChecked != true || $0.feat != nil))
                 // file-flagged photos used to be skipped unanalyzed, and held-back ones had no score for Put back
                 && !((Scorer.provenanceReasons.contains($0.excluded ?? "") || Scorer.heldBack.contains($0.excluded ?? ""))
                      && ($0.flagVersion ?? 0) < 2)
@@ -368,7 +370,7 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
                 signals.scenePrint = analyzer.scenePrint(cg, orientation: CGImagePropertyOrientation(img.imageOrientation))
                 let ex = analyzer.learningExtras(cg, orientation: CGImagePropertyOrientation(img.imageOrientation), subject: measured.subject)
                 signals.aesthetic = ex.aesthetic; signals.isUtility = ex.utility
-                signals.faceShape = ex.shape; signals.facePrint = ex.facePrint
+                signals.faceShape = ex.shape; signals.facePrint = ex.facePrint; signals.poseAndFocus = ex.poseAndFocus
             }
             if Scorer.score(measured).raw != nil {
                 records = analyzer.facePrints(cg, orientation: CGImagePropertyOrientation(img.imageOrientation),
@@ -411,7 +413,8 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
         if let base = raw ?? p.soft, !signals.scenePrint.isEmpty {
             p.feat = Learner.encode(signals: Learner.signals(signals, apple: base),
                                     scene: People.embed(signals.scenePrint, dims: Learner.sceneDims),
-                                    face: signals.facePrint.isEmpty ? Data() : People.embed(signals.facePrint, dims: Learner.faceDims))
+                                    face: signals.facePrint.isEmpty ? Data() : People.embed(signals.facePrint, dims: Learner.faceDims),
+                                    content: Learner.contentBytes(signals.content))
         }
         return .done(p)
     }

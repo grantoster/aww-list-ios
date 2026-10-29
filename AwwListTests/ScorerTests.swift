@@ -349,6 +349,16 @@ final class LearnerTests: XCTestCase {
         XCTAssertEqual(x[0], 1, accuracy: 0.01)
         XCTAssertEqual(x[1], 0.5, accuracy: 0.01)
         XCTAssertEqual(x[Learner.signalCount + 1], -49.0 / 127, accuracy: 0.001)
+        // What's in the photo: same labels, same numbers; it lands after the scene and face prints.
+        let a = Learner.content(labels: [("child", 0.9), ("birthday_cake", 0.6), ("faint", 0.01)])
+        XCTAssertEqual(a, Learner.content(labels: [("birthday_cake", 0.6), ("child", 0.9)]))
+        XCTAssertEqual(Double(a.map { abs($0) }.reduce(0, +)), 1.5, accuracy: 0.001)
+        let d2 = Learner.encode(signals: sig, scene: scene, content: Learner.contentBytes(a))
+        XCTAssertEqual(d2.count, Learner.featureCount)
+        let x2 = Learner.decode(d2)!
+        let tail = Array(x2.suffix(Learner.contentDims))
+        XCTAssertEqual(tail.map { abs($0) }.reduce(0, +), 1.5, accuracy: 0.02)
+        XCTAssertEqual(Array(x2.prefix(Learner.featureCount - Learner.contentDims)), Array(x.prefix(Learner.featureCount - Learner.contentDims)))
     }
 
     func testLearnsAPatternAndBeatsGuessingTheAverage() {

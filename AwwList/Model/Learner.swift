@@ -68,13 +68,17 @@ struct LearnedFilter: Codable, Equatable {
 /// Turns photos into fingerprints and learns Claude's scoring from them. Pure math, so it's unit tested.
 enum Learner {
     /// Apple's measurements (each 0...1): the 12 original ones, then Apple's photo-quality score (and whether
-    /// there is one), the "utility photo" flag, and six measurements of the main face's shape.
-    static let signalCount = 21
+    /// there is one), the "utility photo" flag, six measurements of the main face's shape, and nine of the bodies
+    /// in the shot and where the eye goes (Analyzer.poseAndFocus).
+    static let signalCount = 30
     /// Compact picture of the whole photo (Vision's image feature print, projected).
     static let sceneDims = 256
     /// Compact picture of the main face (its own feature print, projected): expression, gaze, who.
     static let faceDims = 64
-    static var featureCount: Int { signalCount + sceneDims + faceDims }
+    /// What's in the photo: the confidence of every one of Vision's ~1,300 scene and object labels, folded into
+    /// 128 numbers (each label always lands in the same place, on every iPhone and iOS version).
+    static let contentDims = 128
+    static var featureCount: Int { signalCount + sceneDims + faceDims + contentDims }
     /// The net's inputs: Apple's measurements plus the formula's guess.
     static var netInputs: Int { signalCount + 1 }
     /// Fewest Claude scores before the app trains (plus some held back to check it).
@@ -113,16 +117,37 @@ enum Learner {
             let v: Double = i < s.faceShape.count ? s.faceShape[i] : 0
             out.append(Float(min(1, max(0, v))))
         }
+        for i in 0..<9 {
+            let v: Double = i < s.poseAndFocus.count ? s.poseAndFocus[i] : 0
+            out.append(Float(min(1, max(0, v))))
+        }
         return out
     }
 
+    /// Folds classifier labels into `contentDims` numbers ("feature hashing"): each label adds its confidence,
+    /// with a fixed sign, at a fixed place picked from its name. Faint labels (under 5%) are skipped.
+    static func content(labels: [(String, Float)]) -> [Float] {
+        var out = [Float](repeating: 0, count: contentDims)
+        for (id, c) in labels where c >= 0.05 {
+            let h = stableHash([id])
+            out[Int(h % UInt64(contentDims))] += ((h >> 32) & 1 == 0 ? 1 : -1) * c
+        }
+        return out
+    }
+
+    static func contentBytes(_ v: [Float]) -> Data {
+        Data(v.prefix(contentDims).map { UInt8(bitPattern: Int8(max(-127, min(127, ($0 * 127).rounded())))) })
+    }
+
     /// Packs a fingerprint into bytes: Apple's measurements as 0–255, the scene and face pictures as signed bytes.
-    static func encode(signals: [Float], scene: Data, face: Data = Data()) -> Data {
+    static func encode(signals: [Float], scene: Data, face: Data = Data(), content: Data = Data()) -> Data {
         var d = Data(signals.prefix(signalCount).map { UInt8(max(0, min(255, ($0 * 255).rounded()))) })
         if d.count < signalCount { d.append(Data(count: signalCount - d.count)) }
         d.append(scene.prefix(sceneDims))
         if d.count < signalCount + sceneDims { d.append(Data(count: signalCount + sceneDims - d.count)) }
         d.append(face.prefix(faceDims))
+        if d.count < signalCount + sceneDims + faceDims { d.append(Data(count: signalCount + sceneDims + faceDims - d.count)) }
+        d.append(content.prefix(contentDims))
         if d.count < featureCount { d.append(Data(count: featureCount - d.count)) }
         return d
     }
