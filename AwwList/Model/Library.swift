@@ -37,11 +37,16 @@ final class Library: ObservableObject {
     @Published private(set) var leftOut: [LeftOut] = []
     @Published private(set) var listedPhotos = 0
 
-    /// Possible bath or undressed photos the user put back on the list. They're listed, but never sent to Claude.
-    @Published private(set) var putBack: Set<String> = []
+    /// Possible bath or undressed photos are listed and scored on the phone, unless the user keeps one out.
+    /// They (and every shot within 10 minutes of one) are never sent to Claude either way.
+    @Published private(set) var keptOut: Set<String> = []
     func setPutBack(_ id: String, _ on: Bool) {
-        if on { putBack.insert(id) } else { putBack.remove(id) }
+        if on { keptOut.remove(id) } else { keptOut.insert(id) }
         rebuild(); save()
+    }
+    /// The possible bath or undressed photos currently on the list (all of them except those kept out).
+    var putBack: Set<String> {
+        Set(photos.values.filter { Scorer.heldBack.contains($0.excluded ?? "") && $0.raw == nil }.map(\.id)).subtracting(keptOut)
     }
     /// Photos Apple held back as possible bath or undressed (newest first), for review in Settings.
     var heldBackPhotos: [PhotoScore] {
@@ -63,7 +68,7 @@ final class Library: ObservableObject {
         var people: [Person]?; var strictness: Int?
         var claudeModel: String?; var claudeScope: Int?; var claudeBatches: [ClaudeBatch]?; var rankBy: String?
         var claudeFailures: [String: Int]?; var learned: LearnedModel?; var claudeSensitive: Bool?
-        var putBack: [String]?; var learnedFilter: LearnedFilter?; var trainedSignature: UInt64?
+        var putBack: [String]?; var keptOut: [String]?; var learnedFilter: LearnedFilter?; var trainedSignature: UInt64?
         var claudeRemoved: [String: String]?; var claudeSent: [String: [String]]?; var claudeSentYear: [String: Int]?
     }
 
@@ -295,9 +300,9 @@ final class Library: ObservableObject {
         // Apple's flags (no child spotted, water, swimwear, shirtless, AI or edited file) no longer take a photo
         // off the list: it's listed with the score it would have had, and Claude decides. Only possible bath or
         // undressed photos (and the shots around them) are held back, unless the user puts them back.
-        let groups = Scorer.moments(from: Array(photos.values), hidden: hidden, version: Scorer.version, putBack: putBack)
-        let cal = Calendar.current
         let pb = putBack
+        let groups = Scorer.moments(from: Array(photos.values), hidden: hidden, version: Scorer.version, putBack: pb)
+        let cal = Calendar.current
         let scores = Scorer.calibrate(groups.map { Scorer.listedValue($0.best, putBack: pb) ?? 0 },
                                       years: groups.map { cal.component(.year, from: $0.best.date) })
         let named = people, t = threshold
@@ -352,7 +357,8 @@ final class Library: ObservableObject {
             var m = m
             // Claude's removal sticks to the whole burst, even if a different shot becomes its best later.
             if m.memberIDs.contains(where: { photos[$0]?.claude?.exclude != nil }) { return nil }
-            if (useClaude || useLearned) && m.best.claude == nil && learnedRemoves(m.best) {
+            if (useClaude || useLearned) && m.best.claude == nil
+                && !Scorer.heldBack.contains(m.best.excluded ?? "") && learnedRemoves(m.best) {   // you chose to keep these
                 filtered += 1; filteredIDs.formUnion(m.memberIDs); return nil
             }
             if useClaude {
@@ -394,7 +400,7 @@ final class Library: ObservableObject {
                         : p.claude != nil ? "Faces but no child label (Claude checked)"
                         : "Faces but no child label (Claude can still check these)"
                 case "No child": why = (p.faces ?? 0) > 0 ? "No sign of a child" : "No child and no face"
-                case "Bath", "Undressed": why = "Possible bath or undressed"
+                case "Bath", "Undressed": why = keptOut.contains(p.id) ? "Possible bath or undressed (kept out by you)" : "Possible bath or undressed, can't be scored"
                 case Scorer.unavailable: why = "Couldn't be loaded (iCloud)"
                 default: why = Scorer.softReasons.contains(e) ? "\(e), and no sign of a child" : e
                 }
@@ -434,7 +440,7 @@ final class Library: ObservableObject {
         let s = Saved(photos: Array(photos.values), hidden: Array(hidden), birthdays: birthdays,
                       people: people, strictness: strictness,
                       claudeModel: claudeModel, claudeScope: claudeScope, claudeBatches: claudeBatches, rankBy: rankBy, claudeFailures: claudeFailures, learned: learnedIsBuiltIn ? nil : learned, claudeSensitive: claudeSensitive,
-                      putBack: Array(putBack), learnedFilter: filterIsBuiltIn ? nil : learnedFilter,
+                      putBack: nil, keptOut: Array(keptOut), learnedFilter: filterIsBuiltIn ? nil : learnedFilter,
                       trainedSignature: trainedSignature,
                       claudeRemoved: claudeRemoved, claudeSent: claudeSent.mapValues { Array($0) },
                       claudeSentYear: claudeSentYear)
@@ -463,7 +469,7 @@ final class Library: ObservableObject {
         if claudeModel == "claude-sonnet-5-5" && !s.photos.contains(where: { $0.claude != nil }) && (s.claudeBatches ?? []).isEmpty {
             claudeModel = "claude-haiku-5-5"
         }
-        putBack = Set(s.putBack ?? [])
+        keptOut = Set(s.keptOut ?? [])
         claudeSensitive = s.claudeSensitive ?? false
         learnedFilter = s.learnedFilter.flatMap { $0.weights.count == Learner.featureCount ? $0 : nil }
         if let f = learnedFilter, let b = builtIn.filter, f.trainedOn < b.trainedOn { learnedFilter = nil }

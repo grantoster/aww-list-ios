@@ -122,7 +122,7 @@ struct SettingsView: View {
                     }
                     Text("Counts are photos, not moments; a moment's other shots in a burst count as on the list.")
                         .font(.footnote).foregroundStyle(.secondary)
-                    Text("On the phone: screenshots, documents, photos with no face and no sign of a child, and possible bath or undressed photos plus every shot within 10 minutes of one. You can put a held-back photo itself back above; the shots around it then come back too, but none of them is ever sent to Claude. Photos with faces but no child label stay off the list but are offered to Claude, which can put them on it.")
+                    Text("On the phone: screenshots, documents, photos with no face and no sign of a child, Possible bath or undressed photos are listed and scored on the phone (you can keep any out above), but they and every shot within 10 minutes of one are never sent to Claude. Photos with faces but no child label stay off the list but are offered to Claude, which can put them on it.")
                         .font(.footnote)
                     Text("Everything else Apple isn't sure about stays on the list with a flag: no child spotted, water scenes, swimwear, shirtless, and files that look AI-generated, face-retouched or not from a camera. Claude makes the call on those, and once the app has learned from Claude's calls, it hides the ones it expects Claude would remove when ranking by Claude or by the learned score. Ranking by Apple shows them all.")
                         .font(.footnote)
@@ -325,9 +325,9 @@ struct HeldBackSection: View {
                     LabeledContent("Review", value: "\(held.count.formatted()) photos")
                 }
             } header: {
-                Text("Held back for privacy")
+                Text("Possible bath photos")
             } footer: {
-                Text("Apple's check thinks these may be bath or undressed photos. They stay off the list unless you put them back, and they're never sent to Claude either way.")
+                Text("Apple's check thinks these may be bath or undressed photos. They're on your list with on-device scores (Apple and learned) unless you keep one out. They, and every shot within 10 minutes of them, are never sent to Claude.")
             }
         }
     }
@@ -340,7 +340,7 @@ struct HeldBackView: View {
         ScrollView {
             LazyVGrid(columns: columns, spacing: 12) {
                 ForEach(library.heldBackPhotos) { p in
-                    let back = library.putBack.contains(p.id)
+                    let back = !library.keptOut.contains(p.id)
                     VStack(spacing: 6) {
                         AssetImage(id: p.id, targetSide: 120)
                             .aspectRatio(1, contentMode: .fit)
@@ -357,6 +357,6 @@ struct HeldBackView: View {
             }
             .padding(16)
         }
-        .navigationTitle("Held back")
+        .navigationTitle("Possible bath photos")
     }
 }
