@@ -63,7 +63,11 @@ final class Analyzer {
         let classify = VNClassifyImageRequest()
         let faces = VNDetectFaceCaptureQualityRequest()
         let handler = VNImageRequestHandler(cgImage: image, orientation: orientation, options: [:])
-        do { try handler.perform([classify, faces]) } catch { return nil }
+        let scene = VNGenerateImageFeaturePrintRequest()
+        do { try handler.perform([classify, faces, scene]) } catch { return nil }
+        if let fp = scene.results?.first, fp.elementType == .float {
+            s.scenePrint = fp.data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+        }
 
         for obs in classify.results ?? [] {
             let id = obs.identifier

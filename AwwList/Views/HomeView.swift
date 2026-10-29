@@ -103,11 +103,15 @@ struct HomeView: View {
 
     /// Once Claude has scored photos: order the lists by Claude's score or by Apple's on-device score.
     private var rankBar: some View {
-        HStack(spacing: 8) {
+        ScrollView(.horizontal, showsIndicators: false) { HStack(spacing: 8) {
             Text("Rank by").font(.subheadline).foregroundStyle(.secondary)
             Pill(title: "Claude", on: library.rankBy == "claude", small: true) { library.setRankBy("claude") }
-            Pill(title: "Apple", on: library.rankBy != "claude", small: true) { library.setRankBy("apple") }
-        }
+            if library.learned != nil {
+                Pill(title: "Learned", on: library.rankBy == "learned", small: true) { library.setRankBy("learned") }
+            }
+            Pill(title: "Apple", on: library.rankBy == "apple" || (library.rankBy == "learned" && library.learned == nil),
+                 small: true) { library.setRankBy("apple") }
+        } }
     }
 
     /// Filter by someone named in Who's Who; until someone is named, a button to start.

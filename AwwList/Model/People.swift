@@ -51,6 +51,21 @@ enum People {
     }
 
     /// Turns a Vision feature print (any length) into a 256-byte fingerprint.
+    /// The first `dims` numbers of the same projection (used for the whole-photo fingerprint).
+    static func embed(_ x: [Float], dims: Int) -> Data {
+        guard !x.isEmpty else { return Data(count: dims) }
+        let p = projection(for: x.count)
+        var y = [Float](repeating: 0, count: dims)
+        for r in 0..<min(dims, dim) {
+            var s: Float = 0
+            let base = r * x.count
+            for c in 0..<x.count { s += p[base + c] * x[c] }
+            y[r] = s
+        }
+        let n = max(y.reduce(Float(0)) { $0 + $1 * $1 }.squareRoot(), 1e-9)
+        return Data(y.map { UInt8(bitPattern: Int8(max(-127, min(127, ($0 / n * 127).rounded())))) })
+    }
+
     static func embed(_ x: [Float]) -> Data {
         guard !x.isEmpty else { return Data(count: dim) }
         let p = projection(for: x.count)

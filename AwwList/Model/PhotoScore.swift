@@ -66,6 +66,8 @@ struct PhotoScore: Codable, Hashable, Identifiable {
     var soft: Double? = nil
     /// True once `soft` has been worked out (it may still be nil when there was nothing to go on).
     var softChecked: Bool? = nil
+    /// On-device fingerprint for the learned score (Learner.encode), for photos on the list or offered to Claude.
+    var feat: Data? = nil
 }
 
 /// One moment: photos taken less than 60 seconds apart (2 minutes at most), represented by its best shot.
@@ -85,6 +87,8 @@ struct Moment: Identifiable, Hashable {
     var apple: Int = 0
     /// Claude's score (1–10, one decimal), when this moment was sent to Claude.
     var claudeScore: Double? = nil
+    /// The app's own prediction of Claude's score, once it has learned from Claude (1–10, one decimal).
+    var learnedScore: Double? = nil
     /// Claude's description when it has one, otherwise the on-device one.
     var caption: String {
         if let c = best.claude?.caption, !c.isEmpty { return c.prefix(1).uppercased() + c.dropFirst() }

@@ -72,7 +72,9 @@ struct ViewerView: View {
     /// "Apple 7 · Claude 8.5" (or just Apple's when Claude hasn't seen it).
     private func bothScores(_ m: Moment) -> String {
         var s = m.apple > 0 ? "Apple \(m.apple)" : "Apple: set aside"
-        if let c = m.claudeScore { s += " · Claude " + (c == c.rounded() ? String(Int(c)) : String(format: "%.1f", c)) }
+        func one(_ v: Double) -> String { v == v.rounded() ? String(Int(v)) : String(format: "%.1f", v) }
+        if let l = m.learnedScore { s += " · Learned " + one(l) }
+        if let c = m.claudeScore { s += " · Claude " + one(c) }
         return s
     }
 }

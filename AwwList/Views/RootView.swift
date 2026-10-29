@@ -91,6 +91,7 @@ struct SettingsView: View {
         NavigationStack {
             List {
                 ClaudeSection()
+                LearnedSection()
                 BirthdaysSection()
                 Section("Library") {
                     LabeledContent("Photos checked", value: library.photos.count.formatted())
@@ -220,6 +221,31 @@ struct ClaudeSection: View {
             Text("Score with Claude")
         } footer: {
             Text("Optional. Your phone still checks every photo first; the photos you choose are then sent to Anthropic's Claude for the final 1–10 score, a description, and a second check for bath, swimwear, shirtless and AI or edited photos. Each year's top photos are chosen by Apple's score, plus up to a fifth more that Apple's check set aside (no child spotted, water scenes, and, only if you turn it on above, possible swimwear or shirtless), so Claude can decide; any Claude clears join the list when ranking by Claude. Photos Apple flags as possible bath or undressed are never sent. Photos are sent at 768 px without location or file details. Photos the phone's own check missed are sent too, so Claude can catch them. It uses your own API key from console.anthropic.com; charges go to your Anthropic account. When ranking by Claude, photos Claude hasn't seen are held at 6 or below.")
+        }
+    }
+}
+
+/// The app's learned score: what it picked up from Claude's scores, and how close it gets.
+struct LearnedSection: View {
+    @EnvironmentObject var library: Library
+    var body: some View {
+        Section {
+            if let m = library.learned {
+                LabeledContent("Learned from", value: "\(m.trainedOn.formatted()) Claude scores")
+                LabeledContent("Within 1 point of Claude", value: "\(Int((m.within1 * 100).rounded(.toNearestOrAwayFromZero)))% of \(m.tested.formatted()) test photos")
+                LabeledContent("Average gap", value: String(format: "%.1f", (m.meanGap * 10).rounded(.toNearestOrAwayFromZero) / 10) + " points")
+                LabeledContent("Last trained", value: m.date.formatted(date: .abbreviated, time: .shortened))
+            } else {
+                let n = library.learnableCount
+                Text(n == 0 ? "Once Claude has scored some of your photos, the app learns from those scores and uses them to score every photo on this iPhone."
+                            : "Learning starts at about \(Learner.minimumExamples + Learner.minimumExamples / 4) Claude scores with fingerprints. You have \(n.formatted()) so far.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            if library.training { HStack { ProgressView(); Text("Learning…").foregroundStyle(.secondary) } }
+        } header: {
+            Text("Learned score")
+        } footer: {
+            Text("The app studies Claude's scores alongside what it measures on the phone (smiles, closeness, face size, sharpness and the scene), then predicts a Claude-style score for every photo, privately and for free. Its accuracy is checked on a fifth of Claude's scores it didn't learn from. Claude's own score always wins where it exists; with Rank by Claude, photos Claude hasn't seen use the learned score.")
         }
     }
 }

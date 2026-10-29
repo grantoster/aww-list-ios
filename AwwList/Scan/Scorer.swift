@@ -22,6 +22,7 @@ struct Signals: Equatable {
     var waterScene: Bool = false         // confident water-scene label (Analyzer.waterScenes)
     var isScreenshot: Bool = false
     var blockedLabel: String? = nil      // "bath", "swimwear", "undressed", "document", "screenshot"
+    var scenePrint: [Float] = []         // Vision's feature print of the whole photo (for the learned score)
 
     var subjectIndex: Int? { faces.indices.max { faces[$0].area < faces[$1].area } }
     var subject: FaceSignal? { subjectIndex.map { faces[$0] } }

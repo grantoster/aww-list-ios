@@ -313,6 +313,43 @@ final class PeopleTests: XCTestCase {
     }
 }
 
+final class LearnerTests: XCTestCase {
+    func testFingerprintRoundTrip() {
+        let sig: [Float] = [1, 0.5, 0, 1, 0.25, 0.9, 0.1, 0.8, 0.33, 0, 0.7, 1]
+        let scene = Data((0..<Learner.sceneDims).map { UInt8(bitPattern: Int8($0 % 100 - 50)) })
+        let d = Learner.encode(signals: sig, scene: scene)
+        XCTAssertEqual(d.count, Learner.featureCount)
+        let x = Learner.decode(d)!
+        XCTAssertEqual(x[0], 1, accuracy: 0.01)
+        XCTAssertEqual(x[1], 0.5, accuracy: 0.01)
+        XCTAssertEqual(x[Learner.signalCount + 1], -49.0 / 127, accuracy: 0.001)
+    }
+
+    func testLearnsAPatternAndReportsHonestAccuracy() {
+        // Claude's score depends on smile (feature 0) and sharpness (feature 7), plus a little noise.
+        var examples: [(id: String, x: [Double], y: Double)] = []
+        for i in 0..<400 {
+            var x = [Double](repeating: 0, count: Learner.featureCount)
+            for j in 0..<x.count { x[j] = Double((i * 31 + j * 17) % 97) / 97 }
+            let y = 2 + 5 * x[0] + 2.5 * x[7] + Double((i * 13) % 7 - 3) / 10
+            examples.append(("photo-\(i)", x, y))
+        }
+        let m = Learner.train(examples)
+        XCTAssertNotNil(m)
+        XCTAssertGreaterThan(m!.within1, 0.9)
+        XCTAssertLessThan(m!.meanGap, 0.6)
+        XCTAssertEqual(m!.trainedOn, 400)
+        XCTAssertNil(Learner.train(Array(examples.prefix(30))))   // too few to learn from
+    }
+
+    func testHeldBackSplitIsStable() {
+        let ids = (0..<1000).map { "id\($0)" }
+        let share = Double(ids.filter(Learner.heldBack).count) / 1000
+        XCTAssertEqual(share, 0.2, accuracy: 0.05)
+        XCTAssertEqual(ids.filter(Learner.heldBack), ids.filter(Learner.heldBack))
+    }
+}
+
 private extension Array {
     func repeated(_ n: Int) -> [Element] { (0..<n).flatMap { _ in self } }
 }

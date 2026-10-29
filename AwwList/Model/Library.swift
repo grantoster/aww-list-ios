@@ -35,7 +35,7 @@ final class Library: ObservableObject {
         var photos: [PhotoScore]; var hidden: [String]; var birthdays: [Date]?
         var people: [Person]?; var strictness: Int?
         var claudeModel: String?; var claudeScope: Int?; var claudeBatches: [ClaudeBatch]?; var rankBy: String?
-        var claudeFailures: [String: Int]?; var claudeSensitive: Bool?
+        var claudeFailures: [String: Int]?; var claudeSensitive: Bool?; var learned: LearnedModel?
     }
 
     init() { load() }
@@ -52,7 +52,7 @@ final class Library: ObservableObject {
         if unsaved >= 200 { save() }
     }
 
-    func finishScan() { rebuild(); save() }
+    func finishScan() { rebuild(); save(); retrain() }
 
     /// Removes a whole moment (every shot in its burst) from the list.
     func hide(_ m: Moment) { hidden.formUnion(m.memberIDs); rebuild(); save() }
@@ -74,6 +74,42 @@ final class Library: ObservableObject {
         guard !verdicts.isEmpty else { return }
         for (id, v) in verdicts { photos[id]?.claude = v }
         rebuild(); flush()
+        retrain()
+    }
+
+    // MARK: Learned score
+
+    /// The app's model of Claude's scoring, learned from the photos Claude has scored.
+    @Published private(set) var learned: LearnedModel?
+    @Published private(set) var training = false
+
+    /// Claude scores that have a fingerprint to learn from.
+    var learnableCount: Int {
+        photos.values.filter { $0.claude != nil && $0.claude?.exclude == nil && $0.feat?.count == Learner.featureCount }.count
+    }
+
+    func learnedScore(for p: PhotoScore) -> Double? {
+        guard let m = learned, let f = p.feat, let x = Learner.decode(f) else { return nil }
+        return (Learner.predict(m, x) * 10).rounded(.toNearestOrAwayFromZero) / 10
+    }
+
+    /// Re-learns from every Claude score (off the main thread; a few seconds at most). Runs after new scores
+    /// arrive, after a scan adds fingerprints, and at launch when the model is out of date.
+    func retrain() {
+        guard !training else { return }
+        let examples = photos.values.compactMap { p -> (id: String, x: [Double], y: Double)? in
+            guard let c = p.claude, c.exclude == nil, let f = p.feat, let x = Learner.decode(f) else { return nil }
+            return (p.id, x, c.score)
+        }
+        guard examples.count != learned?.trainedOn else { return }
+        training = true
+        Task.detached(priority: .utility) {
+            let model = Learner.train(examples)
+            await MainActor.run {
+                self.training = false
+                if let model { self.learned = model; self.rebuild(); self.save() }
+            }
+        }
     }
     func clearClaude() {
         for id in photos.keys where photos[id]?.claude != nil { photos[id]?.claude = nil }
@@ -174,8 +210,10 @@ final class Library: ObservableObject {
         // (bath, swimwear, shirtless, AI or edited, no child) take a photo off the list in both rankings.
         // Ranking by Claude: Claude's score leads, and moments it hasn't seen are capped at 6 so they can't
         // outrank the ones it looked at (the same rule as the Aww List website).
+        // With a learned model, moments Claude hasn't seen use the app's prediction of Claude's score instead.
         let anyClaude = photos.values.contains { $0.claude != nil && $0.claude?.exclude == nil && $0.version == Scorer.version }
         let useClaude = anyClaude && rankBy == "claude"
+        let useLearned = learned != nil && rankBy == "learned"
         moments = moments.compactMap { m in
             var m = m
             m.apple = m.score
@@ -183,7 +221,12 @@ final class Library: ObservableObject {
                 if c.exclude != nil { return nil }
                 m.claudeScore = c.score
             }
-            if useClaude { m.score = m.claudeScore.map(Claude.displayScore) ?? min(m.apple, 6) }
+            m.learnedScore = learnedScore(for: m.best)
+            if useClaude {
+                m.score = m.claudeScore.map(Claude.displayScore) ?? m.learnedScore.map(Claude.displayScore) ?? min(m.apple, 6)
+            } else if useLearned {
+                m.score = m.learnedScore.map(Claude.displayScore) ?? m.apple
+            }
             return m
         }
         // The wider pool for Claude: Apple's moments plus set-aside ones (no child seen, water, etc.).
@@ -191,9 +234,13 @@ final class Library: ObservableObject {
         let softGroups = Scorer.moments(from: Array(photos.values), hidden: hidden, version: Scorer.version, soft: true)
             .filter { $0.best.raw == nil && listed.isDisjoint(with: $0.ids)
                 && (claudeSensitive || !Scorer.sensitiveSoft.contains($0.best.excluded ?? "")) }
-        let softMoments = softGroups.map { g -> Moment in var m = makeMoment(g, 0); m.claudeScore = g.best.claude?.score; return m }
+        let softMoments = softGroups.map { g -> Moment in
+            var m = makeMoment(g, 0); m.claudeScore = g.best.claude?.score; m.learnedScore = learnedScore(for: g.best); return m
+        }
+        // Once the app has learned, it picks what to send Claude by its prediction of Claude's score.
+        func poolValue(_ m: Moment) -> Double { m.learnedScore ?? 10 * (m.best.raw ?? m.best.soft ?? 0) }
         claudePool = (moments + softMoments).sorted { a, b in
-            let va = a.best.raw ?? a.best.soft ?? 0, vb = b.best.raw ?? b.best.soft ?? 0
+            let va = poolValue(a), vb = poolValue(b)
             return va != vb ? va > vb : a.best.date < b.best.date
         }
         // Set-aside photos Claude looked at and cleared join the list when ranking by Claude.
@@ -213,6 +260,8 @@ final class Library: ObservableObject {
         if a.score != b.score { return a.score > b.score }
         let ca = a.claudeScore ?? 0, cb = b.claudeScore ?? 0
         if ca != cb { return ca > cb }
+        let la = a.learnedScore ?? 0, lb = b.learnedScore ?? 0
+        if la != lb { return la > lb }
         if a.apple != b.apple { return a.apple > b.apple }
         let ra = a.best.raw ?? 0, rb = b.best.raw ?? 0
         if ra != rb { return ra > rb }
@@ -232,7 +281,7 @@ final class Library: ObservableObject {
         unsaved = 0
         let s = Saved(photos: Array(photos.values), hidden: Array(hidden), birthdays: birthdays,
                       people: people, strictness: strictness,
-                      claudeModel: claudeModel, claudeScope: claudeScope, claudeBatches: claudeBatches, rankBy: rankBy, claudeFailures: claudeFailures, claudeSensitive: claudeSensitive)
+                      claudeModel: claudeModel, claudeScope: claudeScope, claudeBatches: claudeBatches, rankBy: rankBy, claudeFailures: claudeFailures, claudeSensitive: claudeSensitive, learned: learned)
         let u = url
         // One save at a time, in order, so an older snapshot can never land after a newer one.
         Library.saveQueue.async {
@@ -259,10 +308,12 @@ final class Library: ObservableObject {
             claudeModel = "claude-haiku-5-5"
         }
         claudeSensitive = s.claudeSensitive ?? false
+        learned = s.learned.flatMap { $0.weights.count == Learner.featureCount ? $0 : nil }
         claudeScope = s.claudeScope ?? claudeScope
         claudeBatches = s.claudeBatches ?? []
         rankBy = s.rankBy ?? "claude"
         claudeFailures = s.claudeFailures ?? [:]
         rebuild()
+        retrain()
     }
 }
