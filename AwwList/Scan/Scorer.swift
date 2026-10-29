@@ -42,6 +42,11 @@ enum Scorer {
     /// The only checks Apple still decides on its own: possible bath or undressed photos stay off the list (and are
     /// never sent to Claude) unless the user puts them back in Settings.
     static let heldBack: Set<String> = ["Bath", "Undressed"]
+    /// Records of these kinds from before the any-bare-chest-is-Shirtless rule (flagVersion < 4) are re-read once,
+    /// and count as not yet checked when deciding what may be sent.
+    static func needsShirtlessRecheck(_ p: PhotoScore) -> Bool {
+        (p.excluded == "No child" || p.excluded == "No child seen") && (p.faces ?? 0) > 0 && (p.flagVersion ?? 0) < 4
+    }
     /// Flags from the file's details (Provenance.verdict). The photo stays listed; Claude makes the call.
     static let provenanceReasons: Set<String> = ["AI image", "Edited", "Not a camera photo"]
     static var sensitive: Set<String> { Set(quarantineWindow.keys) }
@@ -229,7 +234,6 @@ enum Scorer {
         guard s.childConfidence >= 0.10 else { return nil }   // some hint of a child, so grown-up photos don't flood the pool
         // A bare chest the shirtless check skipped only because the child label was weak: keep it off the list
         // (it would otherwise be listed, and sent, as plain "No child" without the shirtless safeguards).
-        if score(s).excluded == "No child" && hasBareChest(s) { return nil }
         var t = s
         t.blockedLabel = nil; t.waterScene = false; t.childPrecise = true
         for i in t.faces.indices { t.faces[i].bareTorso = 0 }

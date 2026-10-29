@@ -256,7 +256,13 @@ final class ClaudeService: ObservableObject {
         // no longer a burst's best included, so nothing can free up a slot that was already paid for.
         let cal = Calendar.current
         var spent: [Int: Int] = [:]
-        for p in library.photos.values where used(p) { spent[cal.component(.year, from: p.date), default: 0] += 1 }
+        // Counted by photo id, with the year fixed when it was sent, so deleted or re-dated photos still count.
+        var spentIDs = sentToModel.union(pending)
+        for p in library.photos.values where used(p) { spentIDs.insert(p.id) }
+        for id in spentIDs {
+            guard let y = library.claudeSentYear[id] ?? library.photos[id].map({ cal.component(.year, from: $0.date) }) else { continue }
+            spent[y, default: 0] += 1
+        }
         let forbidden = library.neverSend
         // A burst Claude removed (with any model) is never sent again, so switching models can't re-send it.
         func open(_ m: Moment) -> Bool {
@@ -316,7 +322,8 @@ final class ClaudeService: ObservableObject {
         var near: [PhotoScore] = [], allChecked = true
         PHAsset.fetchAssets(with: o).enumerateObjects { a, _, stop in
             guard var p = library.photos[a.localIdentifier], p.version == Scorer.version,
-                  p.excluded != Scorer.unavailable else { allChecked = false; stop.pointee = true; return }
+                  p.excluded != Scorer.unavailable, !Scorer.needsShirtlessRecheck(p)
+            else { allChecked = false; stop.pointee = true; return }
             if let d = a.creationDate { p.date = d }   // the photo's date now (it may have been changed in Photos)
             near.append(p)
         }
@@ -341,7 +348,7 @@ final class ClaudeService: ObservableObject {
             return
         }
         busy = true; defer { busy = false }
-        var paused = false, unloaded = 0
+        var paused = false, unloadedIDs = Set<String>()
         library.rebuild()   // fresh never-send set and pool, including photos added since the list last redrew
         let list = candidates(library)
         toSend = list.count; sent = 0
@@ -379,7 +386,7 @@ final class ClaudeService: ObservableObject {
                 held.formUnion(chunk.map(\.best.id).filter { !cleared.contains($0) })
                 for (i, m) in chunk.enumerated() {
                     guard cleared.contains(m.best.id) else { continue }
-                    guard let jpeg = jpegs[i] else { unloaded += 1; continue }
+                    guard let jpeg = jpegs[i] else { unloadedIDs.insert(m.best.id); held.insert(m.best.id); continue }
                     let cid = "p\(sent + i)_\(Int(Date().timeIntervalSince1970))"
                     map[cid] = m.best.id
                     reqs.append(["custom_id": cid, "params": [
@@ -442,8 +449,8 @@ final class ClaudeService: ObservableObject {
                 let why = "your photo library changed while sending (new, changed or still-unchecked photos). Send again; the app checks them first."
                 status = sent == 0 ? "Paused before sending: " + why : "Sent \(sent.formatted()) photos, then paused: " + why
             } else if sent == 0 {
-                status = unloaded > 0
-                    ? "Nothing could be sent: \(unloaded.formatted()) photos couldn't be loaded (check your connection if they're in iCloud), and the rest are held back."
+                status = !unloadedIDs.isEmpty
+                    ? "Nothing could be sent: \(unloadedIDs.count.formatted()) photos couldn't be loaded (check your connection if they're in iCloud)" + (unloadedIDs.count < toSend ? ", and the rest are held back." : ".")
                     : "Nothing could be sent yet: photos taken near the chosen ones aren't all checked yet, or are near possible bath photos or ones Claude removed."
             } else if sent > 0 && status == before {
                 status = "Sent \(sent.formatted()) photos. Claude's scores usually arrive within an hour; they're picked up when you open the app."

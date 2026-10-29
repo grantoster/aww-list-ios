@@ -30,6 +30,8 @@ final class Library: ObservableObject {
     /// Every photo sent to each model (model id → photo ids), so switching models back and forth can't
     /// spend a year's budget twice.
     private(set) var claudeSent: [String: Set<String>] = [:]
+    /// The year each sent photo counted against (fixed when sent, so deleting or re-dating it doesn't free a slot).
+    private(set) var claudeSentYear: [String: Int] = [:]
     /// What's left off the list and why, with counts (worked out at each rebuild), for Settings.
     struct LeftOut: Hashable { let reason: String; let count: Int }
     @Published private(set) var leftOut: [LeftOut] = []
@@ -62,7 +64,7 @@ final class Library: ObservableObject {
         var claudeModel: String?; var claudeScope: Int?; var claudeBatches: [ClaudeBatch]?; var rankBy: String?
         var claudeFailures: [String: Int]?; var learned: LearnedModel?; var claudeSensitive: Bool?
         var putBack: [String]?; var learnedFilter: LearnedFilter?; var trainedSignature: UInt64?
-        var claudeRemoved: [String: String]?; var claudeSent: [String: [String]]?
+        var claudeRemoved: [String: String]?; var claudeSent: [String: [String]]?; var claudeSentYear: [String: Int]?
     }
 
     init() {
@@ -108,6 +110,7 @@ final class Library: ObservableObject {
     func addClaudeBatch(_ b: ClaudeBatch) {
         claudeBatches.append(b)
         claudeSent[b.model, default: []].formUnion(b.photos.values)
+        for id in b.photos.values { if let d = photos[id]?.date { claudeSentYear[id] = Calendar.current.component(.year, from: d) } }
         flush()
     }
     func removeClaudeBatch(_ id: String) { claudeBatches.removeAll { $0.id == id }; save() }
@@ -375,7 +378,8 @@ final class Library: ObservableObject {
             let why: String
             if hidden.contains(p.id) { why = "Removed by you" }
             else if p.version != Scorer.version
-                        || (p.excluded == "No child" && p.soft == nil && (p.faces ?? 0) > 0 && (p.flagVersion ?? 0) < 3) {
+                        || (p.excluded == "No child" && p.soft == nil && (p.faces ?? 0) > 0 && (p.flagVersion ?? 0) < 3)
+                        || Scorer.needsShirtlessRecheck(p) {
                 why = "Waiting to be checked again"
             }
             else if filteredIDs.contains(p.id) { why = "Hidden by the learned filter" }
@@ -430,7 +434,8 @@ final class Library: ObservableObject {
                       claudeModel: claudeModel, claudeScope: claudeScope, claudeBatches: claudeBatches, rankBy: rankBy, claudeFailures: claudeFailures, learned: learnedIsBuiltIn ? nil : learned, claudeSensitive: claudeSensitive,
                       putBack: Array(putBack), learnedFilter: filterIsBuiltIn ? nil : learnedFilter,
                       trainedSignature: trainedSignature,
-                      claudeRemoved: claudeRemoved, claudeSent: claudeSent.mapValues { Array($0) })
+                      claudeRemoved: claudeRemoved, claudeSent: claudeSent.mapValues { Array($0) },
+                      claudeSentYear: claudeSentYear)
         let u = url
         // One save at a time, in order, so an older snapshot can never land after a newer one.
         Library.saveQueue.async {
@@ -463,6 +468,7 @@ final class Library: ObservableObject {
         trainedSignature = s.trainedSignature
         claudeRemoved = s.claudeRemoved ?? [:]
         claudeSent = (s.claudeSent ?? [:]).mapValues(Set.init)
+        claudeSentYear = s.claudeSentYear ?? [:]
         // Saves from before these ledgers: fill them from the verdicts and pending batches on hand.
         for p in photos.values {
             if let c = p.claude {
