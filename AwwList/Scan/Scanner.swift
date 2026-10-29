@@ -73,6 +73,8 @@ final class PhotoScanner: ObservableObject {
         // Photos that already have a record keep it if they can't be re-read this time (a scored photo keeps its
         // score; a bath photo keeps its exclusion and the quarantine around it).
         let ranked = Set(library.photos.keys)
+        // Photos recorded as being in the Hidden album, to notice photos hidden or unhidden since they were scanned.
+        let recordedHidden = Set(library.photos.values.filter { $0.hiddenAlbum == true }.map(\.id))
         // Older flagged or held-back records being re-read under the new rules: if the photo can't be read again,
         // the old record is kept but marked as done, so it isn't retried on every scan.
         let restamp = library.photos.filter { _, p in
@@ -91,13 +93,18 @@ final class PhotoScanner: ObservableObject {
             changes.watch(assets)
             var todo: [PHAsset] = []
             var alive = Set<String>()
+            var hiddenFlips: [String: Bool] = [:]
             assets.enumerateObjects { a, _, _ in
                 alive.insert(a.localIdentifier)
                 if !known.contains(a.localIdentifier) { todo.append(a) }
+                if all.contains(a.localIdentifier), a.isHidden != recordedHidden.contains(a.localIdentifier) {
+                    hiddenFlips[a.localIdentifier] = a.isHidden
+                }
             }
             let gone = all.subtracting(alive)
             let count = todo.count
-            Task { @MainActor in library.remove(gone); me.total = count; me.done = 0 }
+            let flips = hiddenFlips
+            Task { @MainActor in library.remove(gone); library.setHiddenAlbum(flips); me.total = count; me.done = 0 }
 
             // Several photos are analyzed at once (one worker per spare core). Photos already on the phone go first;
             // ones stored only in iCloud ("Optimize iPhone Storage") are downloaded afterwards, two at a time.
@@ -279,7 +286,9 @@ final class LibraryChangeFlag: NSObject, PHPhotoLibraryChangeObserver, @unchecke
     func photoLibraryDidChange(_ changeInstance: PHChange) {
         lock.lock(); defer { lock.unlock() }
         guard let f = fetch, let d = changeInstance.changeDetails(for: f) else { return }
-        if !d.hasIncrementalChanges || !d.insertedObjects.isEmpty || !d.removedObjects.isEmpty { changed = true }
+        // Changed photos count too: hiding or unhiding a photo (it stays in the fetch, which includes hidden ones)
+        // must be picked up. A scan with nothing new to analyze is quick.
+        if !d.hasIncrementalChanges || !d.insertedObjects.isEmpty || !d.removedObjects.isEmpty || !d.changedObjects.isEmpty { changed = true }
         fetch = d.fetchResultAfterChanges
     }
     /// Returns whether photos were added or deleted since the last call, and resets the flag.

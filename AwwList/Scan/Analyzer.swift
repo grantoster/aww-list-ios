@@ -56,13 +56,13 @@ final class Analyzer {
         if !ids.isEmpty && !missing.isEmpty { NSLog("Aww List: classifier labels not on this iOS (fragments still apply): \(missing.sorted())") }
     }
 
-    /// Nil when Vision failed, so the caller stores nothing and the photo is tried again on the next scan.
     private func reason(for id: String) -> String? { blocked[id] }
 
     static func severity(_ reason: String?) -> Int {
         switch reason { case "bath", "undressed": 3; case "swimwear": 2; case .some: 1; case nil: 0 }
     }
 
+    /// Nil when Vision failed, so the caller stores nothing and the photo is tried again on the next scan.
     func analyze(_ image: CGImage, orientation: CGImagePropertyOrientation) -> Signals? {
         var s = Signals()
 

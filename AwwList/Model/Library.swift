@@ -43,7 +43,8 @@ final class Library: ObservableObject {
     }
     /// Photos Apple held back as possible bath or undressed (newest first), for review in Settings.
     var heldBackPhotos: [PhotoScore] {
-        photos.values.filter { $0.raw == nil && Scorer.heldBack.contains($0.excluded ?? "") && $0.version == Scorer.version }
+        photos.values.filter { $0.raw == nil && Scorer.heldBack.contains($0.excluded ?? "") && $0.version == Scorer.version
+            && $0.hiddenAlbum != true }   // never show Hidden-album photos outside that album
             .sorted { $0.date > $1.date }
     }
 
@@ -276,6 +277,13 @@ final class Library: ObservableObject {
         return out
     }
 
+    /// Photos moved into or out of the iOS Hidden album since they were scanned.
+    func setHiddenAlbum(_ flips: [String: Bool]) {
+        guard !flips.isEmpty else { return }
+        for (id, h) in flips { photos[id]?.hiddenAlbum = h ? true : nil }
+        rebuild(); save()
+    }
+
     /// Drops scores for photos that were deleted from the library (ids found by the scanner).
     func remove(_ ids: Set<String>) {
         guard !ids.isEmpty else { return }
@@ -375,7 +383,8 @@ final class Library: ObservableObject {
             let why: String
             if hidden.contains(p.id) { why = "Removed by you" }
             else if p.hiddenAlbum == true { why = "In your Hidden album" }
-            else if p.version != Scorer.version || (p.excluded == "No child" && (p.faces ?? 0) > 0 && (p.flagVersion ?? 0) < 3) {
+            else if p.version != Scorer.version
+                        || (p.excluded == "No child" && p.soft == nil && (p.faces ?? 0) > 0 && (p.flagVersion ?? 0) < 3) {
                 why = "Waiting to be checked again"
             }
             else if filteredIDs.contains(p.id) { why = "Hidden by the learned filter" }
@@ -384,10 +393,10 @@ final class Library: ObservableObject {
             else if let e = p.excluded {
                 switch e {
                 case "No child seen":
-                    why = forbidden.contains(p.id) ? "Near a possible bath photo (never sent)"
+                    why = forbidden.contains(p.id) ? "Faces but no child label, near a photo that's never sent"
                         : p.claude != nil ? "Faces but no child label (Claude checked)"
                         : "Faces but no child label (Claude can still check these)"
-                case "No child": why = "No child and no face"
+                case "No child": why = (p.faces ?? 0) > 0 ? "No sign of a child" : "No child and no face"
                 case "Bath", "Undressed": why = "Possible bath or undressed"
                 case Scorer.unavailable: why = "Couldn't be loaded (iCloud)"
                 default: why = Scorer.softReasons.contains(e) ? "\(e), and no sign of a child" : e
@@ -459,6 +468,7 @@ final class Library: ObservableObject {
         putBack = Set(s.putBack ?? [])
         claudeSensitive = s.claudeSensitive ?? false
         learnedFilter = s.learnedFilter.flatMap { $0.weights.count == Learner.featureCount ? $0 : nil }
+        if let f = learnedFilter, let b = builtIn.filter, f.trainedOn < b.trainedOn { learnedFilter = nil }
         trainedSignature = s.trainedSignature
         claudeRemoved = s.claudeRemoved ?? [:]
         claudeSent = (s.claudeSent ?? [:]).mapValues(Set.init)
@@ -472,6 +482,8 @@ final class Library: ObservableObject {
         // A filter saved before its check counted removals would stay switched off: learn again once.
         if let f = learnedFilter, f.testRemovals == nil { trainedSignature = nil }
         learned = s.learned.flatMap { $0.weights.count == Learner.featureCount ? $0 : nil }
+        // A model of this phone's own that learned from fewer verdicts than the built-in one gives way to it.
+        if let m = learned, let b = builtIn.model, m.trainedOn < b.trainedOn { learned = nil }
         claudeScope = s.claudeScope ?? claudeScope
         claudeBatches = s.claudeBatches ?? []
         if s.claudeSent == nil { for b in claudeBatches { claudeSent[b.model, default: []].formUnion(b.photos.values) } }

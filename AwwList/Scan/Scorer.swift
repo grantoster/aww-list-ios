@@ -79,7 +79,9 @@ enum Scorer {
         // At most one bare chest is exempt: the smallest bare-chested face, and only when the photo reads as a baby
         // photo and that person's own crop does too (or, if no crop was measured, by being the smallest face).
         let bare = hasBareChest(s)
-        if bare && (s.childPrecise || s.childConfidence >= 0.15) { return (nil, "Shirtless") }
+        // Any non-baby bare chest is Shirtless, even with a weak child label, so its 2-minute window still guards
+        // the burst around it (a grown-up's photo with no hint of a child gets no listing score either way).
+        if bare { return (nil, "Shirtless") }
         guard s.childPrecise || s.childConfidence >= childThreshold else { return (nil, "No child") }
         if s.waterScene { return (nil, "Water") }
         guard let si = s.subjectIndex else { return (nil, "No face") }

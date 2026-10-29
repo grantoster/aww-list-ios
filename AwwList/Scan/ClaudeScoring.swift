@@ -243,7 +243,8 @@ final class ClaudeService: ObservableObject {
     /// photos Claude already scored (with this model, kept or removed) use up the budget, so re-ranking
     /// (for example by the learned score) never sends more than the chosen number. Within the budget, the best
     /// candidates go first: by the learned score once there is one, otherwise by Apple's.
-    func candidates(_ library: Library, skipping skip: Set<String> = []) -> [Moment] {
+    /// `refill`: slots freed by photos the final check held back go to the next-best candidates, not the spread.
+    func candidates(_ library: Library, skipping skip: Set<String> = [], refill: Bool = false) -> [Moment] {
         let model = library.claudeModel, n = library.claudeScope
         let pending = Set(library.claudeBatches.flatMap { $0.photos.values })
         let sentToModel = library.claudeSent[model] ?? []
@@ -275,7 +276,7 @@ final class ClaudeService: ObservableObject {
             // photos Apple ranked low (and the app learns where Apple was wrong).
             let left = max(0, n + max(1, n / 5) - (spent[year] ?? 0))
             // Photos with faces but no child label (often grown-ups) only compete for the spread, never the top.
-            let top = left - min(left, max(1, n / 5))
+            let top = refill ? left : left - min(left, max(1, n / 5))
             let isPool = { (m: Moment) in Scorer.poolOnly.contains(m.best.excluded ?? "") }
             let pool = list.filter { !(isPool($0) && library.learnedRemoves($0.best)) }
             let topPicks = Array(pool.filter { !isPool($0) }.prefix(top))
@@ -301,9 +302,14 @@ final class ClaudeService: ObservableObject {
     /// no photo within 2 minutes may be one Claude removed (the same burst, however it's grouped now).
     /// Photos outside a Limited Access selection can't be seen, so they can't be checked.
     static func sendable(_ m: Moment, _ library: Library) -> Bool {
-        let live = PHAsset.fetchAssets(withLocalIdentifiers: m.memberIDs, options: nil)
-        var dates: [Date] = []
-        live.enumerateObjects { a, _, _ in if let d = a.creationDate { dates.append(d) } }
+        let opts = PHFetchOptions(); opts.includeHiddenAssets = true
+        let live = PHAsset.fetchAssets(withLocalIdentifiers: m.memberIDs, options: opts)
+        var dates: [Date] = [], anyHidden = false
+        live.enumerateObjects { a, _, _ in
+            if let d = a.creationDate { dates.append(d) }
+            if a.isHidden { anyHidden = true }   // never send anything in the Hidden album
+        }
+        if anyHidden { return false }
         guard dates.count == m.memberIDs.count, let lo = dates.min(), let hi = dates.max() else { return false }
         let o = PHFetchOptions()
         o.includeHiddenAssets = true
@@ -338,7 +344,7 @@ final class ClaudeService: ObservableObject {
             return
         }
         busy = true; defer { busy = false }
-        var paused = false
+        var paused = false, unloaded = 0
         library.rebuild()   // fresh never-send set and pool, including photos added since the list last redrew
         let list = candidates(library)
         toSend = list.count; sent = 0
@@ -375,7 +381,8 @@ final class ClaudeService: ObservableObject {
                 let cleared = Set(chunk.filter { Self.sendable($0, library) }.map(\.best.id))
                 held.formUnion(chunk.map(\.best.id).filter { !cleared.contains($0) })
                 for (i, m) in chunk.enumerated() {
-                    guard let jpeg = jpegs[i], cleared.contains(m.best.id) else { continue }
+                    guard cleared.contains(m.best.id) else { continue }
+                    guard let jpeg = jpegs[i] else { unloaded += 1; continue }
                     let cid = "p\(sent + i)_\(Int(Date().timeIntervalSince1970))"
                     map[cid] = m.best.id
                     reqs.append(["custom_id": cid, "params": [
@@ -430,15 +437,17 @@ final class ClaudeService: ObservableObject {
                 library.addClaudeBatch(ClaudeBatch(id: id, model: model, photos: map, sent: Date()))
                 sent += reqs.count
             }
-            queue = held.isEmpty ? [] : candidates(library, skipping: held)
+            queue = held.isEmpty ? [] : candidates(library, skipping: held, refill: true)
             }
             let before = status
             await collect(library)
             if paused {
-                status = sent == 0 ? "Paused before sending: new photos are being checked. Send again when the scan finishes."
-                    : "Sent \(sent.formatted()) photos, then paused: new photos are being checked. Send again when the scan finishes."
+                let why = "your photo library changed while sending (new, changed or still-unchecked photos). Send again; the app checks them first."
+                status = sent == 0 ? "Paused before sending: " + why : "Sent \(sent.formatted()) photos, then paused: " + why
             } else if sent == 0 {
-                status = "Nothing could be sent yet: photos taken near the chosen ones aren't all checked yet, or are near possible bath photos or ones Claude removed."
+                status = unloaded > 0
+                    ? "Nothing could be sent: \(unloaded.formatted()) photos couldn't be loaded (check your connection if they're in iCloud), and the rest are held back."
+                    : "Nothing could be sent yet: photos taken near the chosen ones aren't all checked yet, or are near possible bath photos or ones Claude removed."
             } else if sent > 0 && status == before {
                 status = "Sent \(sent.formatted()) photos. Claude's scores usually arrive within an hour; they're picked up when you open the app."
             }

@@ -166,8 +166,10 @@ final class PoolTests: XCTestCase {
         var bare = s; bare.faces[0].bareTorso = 0.9
         XCTAssertNil(Scorer.poolScore(bare))
         var band = bare; band.childConfidence = 0.12
-        XCTAssertEqual(Scorer.score(band).excluded, "No child")
-        XCTAssertNil(Scorer.softScore(band))
+        XCTAssertEqual(Scorer.score(band).excluded, "Shirtless")   // gets the shirtless safeguards (2-minute window)
+        var bp = PhotoScore(id: "band", date: t, raw: nil, excluded: "Shirtless", age: .kid, caption: "", version: Scorer.version)
+        bp.soft = Scorer.softScore(band)
+        XCTAssertTrue(Scorer.neverSend([bp], allowSwimShirtless: false).contains("band"))
         // Photos in the iOS Hidden album are never listed.
         var h = PhotoScore(id: "h", date: t, raw: 0.8, excluded: nil, age: .kid, caption: "", version: Scorer.version)
         h.hiddenAlbum = true
