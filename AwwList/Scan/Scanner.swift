@@ -14,6 +14,15 @@ final class PhotoScanner: ObservableObject {
     private let cancelFlag = CancelFlag()
     private let changes = LibraryChangeFlag()
     private var hasScanned = false
+    private var finishHandlers: [() -> Void] = []
+    /// True when the last scan was stopped early (for example by iOS in the background), so the next visit resumes it.
+    private var stoppedEarly = false
+
+    /// Runs `handler` when the current scan (and any follow-up for photos added meanwhile) is done,
+    /// or right away when nothing is scanning.
+    func whenFinished(_ handler: @escaping () -> Void) {
+        if isScanning { finishHandlers.append(handler) } else { handler() }
+    }
 
     private static let retryKey = "lastUnavailableRetry"
 
@@ -24,7 +33,7 @@ final class PhotoScanner: ObservableObject {
         if isScanning { return }                       // don't consume a change while a scan is running
         let last = UserDefaults.standard.object(forKey: Self.retryKey) as? Date ?? .distantPast
         let retry = Date().timeIntervalSince(last) > 86_400
-        if hasScanned && !retry && !changes.takeChanged() { return }
+        if hasScanned && !retry && !stoppedEarly && !changes.takeChanged() { return }
         start(library: library, retryUnavailable: retry)
     }
 
@@ -40,8 +49,10 @@ final class PhotoScanner: ObservableObject {
         cancelFlag.reset()
         let all = Set(library.photos.keys)
         // Photos scored by an older version of the scorer are analyzed again.
+        // Counted photos from before Who's Who are measured again to get their face fingerprints.
         let known = Set(library.photos.values.filter {
             $0.version == Scorer.version && !(retryUnavailable && $0.excluded == Scorer.unavailable)
+                && ($0.raw == nil || $0.faceRecords != nil)
         }.map(\.id))
         let flag = cancelFlag
         let changes = self.changes
@@ -81,6 +92,7 @@ final class PhotoScanner: ObservableObject {
                         return PhotoScore(id: asset.localIdentifier, date: asset.creationDate ?? .distantPast, raw: nil,
                                           excluded: verdict, age: nil, caption: "", version: Scorer.version)
                     }
+                    var records: [FaceRecord] = []
                     if !signals.isScreenshot {
                         // Wait up to 20 s per photo (an iCloud download on a slow connection), then move on.
                         let got = LoadedImage()
@@ -106,6 +118,10 @@ final class PhotoScanner: ObservableObject {
                                               excluded: Scorer.unavailable, age: nil, caption: "", version: Scorer.version)
                         }
                         signals = measured
+                        if Scorer.score(measured).raw != nil {
+                            records = analyzer.facePrints(cg, orientation: CGImagePropertyOrientation(img.imageOrientation),
+                                                          faces: measured.faces)
+                        }
                     }
                     // Undated photos can't be placed in a year or grouped into moments, so they stay off the list.
                     // (No fallback to the modification date: that's the edit or import date, which would misfile them.)
@@ -117,7 +133,8 @@ final class PhotoScanner: ObservableObject {
                     let age: AgeGroup? = raw == nil ? nil : (signals.babyConfidence > 0.5 ? .baby : .kid)
                     return PhotoScore(id: asset.localIdentifier, date: date,
                                       raw: raw, excluded: excluded, age: age, caption: Scorer.caption(signals, date: date),
-                                      version: Scorer.version, faces: signals.faces.count)
+                                      version: Scorer.version, faces: signals.faces.count,
+                                      faceRecords: raw == nil ? nil : records)
                 }
                 checked += 1
                 if let result { batch.append(result) }
@@ -131,8 +148,15 @@ final class PhotoScanner: ObservableObject {
             Task { @MainActor in
                 library.add(out); library.finishScan()
                 me.done = n; me.isScanning = false
-                // Photos added while scanning are picked up right away.
-                if me.changes.peekChanged() { me.start(library: library) }
+                me.stoppedEarly = flag.isCancelled
+                // Photos added while scanning are picked up right away (unless the scan was stopped).
+                if !flag.isCancelled && me.changes.peekChanged() {
+                    me.start(library: library)
+                } else {
+                    let handlers = me.finishHandlers
+                    me.finishHandlers = []
+                    handlers.forEach { $0() }
+                }
             }
         }
     }
@@ -185,12 +209,12 @@ private func headerBytes(_ resource: PHAssetResource, limit: Int = 512 * 1024) -
     let sem = DispatchSemaphore(value: 0)
     let rid = manager.requestData(for: resource, options: opts, dataReceivedHandler: { chunk in
         if box.append(chunk), let id = box.requestID { manager.cancelDataRequest(id) }
-    }, completionHandler: { _ in sem.signal() })
+    }, completionHandler: { error in box.finished(error == nil); sem.signal() })
     box.requestID = rid
     if box.isFull { manager.cancelDataRequest(rid) }
     if sem.wait(timeout: .now() + 10) == .timedOut { manager.cancelDataRequest(rid) }
     let data = box.data
-    return data.isEmpty ? nil : (data, data.count < limit)
+    return data.isEmpty ? nil : (data, box.wholeFile && data.count < limit)
 }
 
 private final class HeaderBox: @unchecked Sendable {
@@ -210,6 +234,10 @@ private final class HeaderBox: @unchecked Sendable {
         return bytes.count >= limit
     }
     var isFull: Bool { lock.lock(); defer { lock.unlock() }; return bytes.count >= limit }
+    private var done = false
+    /// True when the request finished on its own (not cancelled or timed out), so `data` is the whole file.
+    var wholeFile: Bool { lock.lock(); defer { lock.unlock() }; return done }
+    func finished(_ ok: Bool) { lock.lock(); done = ok; lock.unlock() }
     var data: Data { lock.lock(); defer { lock.unlock() }; return bytes }
 }
 

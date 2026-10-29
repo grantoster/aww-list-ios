@@ -26,6 +26,8 @@ struct RootView: View {
                 if status == .authorized || status == .limited { scanner.startIfNeeded(library: library) }
             } else if phase == .background {
                 library.save()
+                BackgroundScan.wrapUpAfterClosing()
+                BackgroundScan.scheduleOvernight()
             }
         }
     }
@@ -145,8 +147,11 @@ struct BirthdaysSection: View {
             loaded = true
             kids = library.birthdays.map { Child(date: $0) }
         }
-        // Applied when you leave Settings, so picking a date doesn't re-sort the library on every tap.
-        .onDisappear {
+        // Saved a moment after the last change, so picking a date doesn't re-sort the library on every tap
+        // and nothing is lost if the app is closed with Settings open.
+        .task(id: kids.map(\.date)) {
+            try? await Task.sleep(for: .milliseconds(700))
+            guard !Task.isCancelled, loaded else { return }
             let dates = kids.map { Calendar.current.startOfDay(for: $0.date) }
             if dates.sorted() != library.birthdays { library.setBirthdays(dates) }
         }

@@ -8,6 +8,7 @@ struct FaceSignal: Equatable {
     var eyesClosed: Bool = false
     var bareTorso: Double = 0     // 0...1, share of the chest below this face that matches its skin tone
     var baby: Double? = nil       // "baby" label confidence on this person's own face-and-chest crop, when measured
+    var box: [Double] = []        // normalized x, y, width, height on the upright photo (bottom-left origin)
 }
 
 /// Everything the analyzer measured on one photo. Pure data, so scoring can be unit tested.

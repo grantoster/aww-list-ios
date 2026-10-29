@@ -295,6 +295,24 @@ final class AgeTagTests: XCTestCase {
     }
 }
 
+final class PeopleTests: XCTestCase {
+    private func noisy(_ base: [Float], _ seed: Int) -> [Float] {
+        base.enumerated().map { i, v in v + Float(((i * 7919 + seed * 104729) % 1000) - 500) / 5000 }
+    }
+
+    func testFingerprintsGroupLookalikesAndMatchNames() {
+        let a = (0..<768).map { Float(sin(Double($0))) }, b = (0..<768).map { Float(cos(Double($0) * 1.3)) }
+        XCTAssertEqual(People.embed(a), People.embed(a))                       // same every time
+        let faces = (0..<5).map { People.floats(People.embed(noisy(a, $0))) } + (0..<4).map { People.floats(People.embed(noisy(b, $0))) }
+        let groups = People.cluster(faces, threshold: People.threshold(strictness: 1))
+        XCTAssertEqual(groups.map(\.count), [5, 4])
+        let daniel = Person(name: "Daniel", centroid: People.merged([], count: 0, adding: Array(faces[0..<5])), count: 5,
+                            samplePhoto: "x", sampleBox: [0, 0, 1, 1])
+        XCTAssertEqual(People.match(faces[2], people: [daniel], threshold: 0.84), daniel.id)
+        XCTAssertNil(People.match(faces[7], people: [daniel], threshold: 0.84))
+    }
+}
+
 private extension Array {
     func repeated(_ n: Int) -> [Element] { (0..<n).flatMap { _ in self } }
 }

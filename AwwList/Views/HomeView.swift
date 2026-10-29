@@ -7,6 +7,8 @@ struct HomeView: View {
     @EnvironmentObject var scanner: PhotoScanner
     @State private var scope: ListScope = .all
     @State private var age: AgeGroup?
+    @State private var person: UUID?
+    @State private var showWho = false
     @State private var sortByDate = false
     @State private var viewer: ViewerState?
     @State private var showSettings = false
@@ -16,6 +18,7 @@ struct HomeView: View {
         library.moments.filter { m in
             if case .year(let y) = scope, m.year != y { return false }
             if let age, !m.ages.contains(age) { return false }
+            if let person, !m.people.contains(person) { return false }
             return true
         }
     }
@@ -26,9 +29,12 @@ struct HomeView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    if scanner.isScanning && scanner.total > 0 { ScanBanner() }
+                    if scanner.isScanning && scanner.total > 0 {
+                        ScanBanner().onAppear { BackgroundScan.continueInBackground() }
+                    }
                     scopeBar
                     ageBar
+                    whoBar
                     if age == .toddler && library.birthdays.isEmpty {
                         ContentUnavailableView {
                             Label("Add your kids' birthdays", systemImage: "birthday.cake")
@@ -53,14 +59,20 @@ struct HomeView: View {
             .navigationTitle("Aww List")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
+                    Button { showWho = true } label: { Image(systemName: "person.2.crop.square.stack") }
+                        .accessibilityLabel("Who's Who")
+                }
+                ToolbarItem(placement: .topBarTrailing) {
                     Button { showSettings = true } label: { Image(systemName: "gearshape") }
                         .accessibilityLabel("Settings")
                 }
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
+            .sheet(isPresented: $showWho) { WhoView() }
             .fullScreenCover(item: $viewer) { v in ViewerView(moments: v.list, index: v.index) }
             .onChange(of: scope) { shown = 60 }
             .onChange(of: age) { shown = 60 }
+            .onChange(of: person) { shown = 60 }
         }
     }
 
@@ -81,6 +93,21 @@ struct HomeView: View {
                 Text("Age").font(.subheadline).foregroundStyle(.secondary)
                 Pill(title: "All ages", on: age == nil, small: true) { age = nil }
                 ForEach(AgeGroup.allCases) { g in Pill(title: g.label, on: age == g, small: true) { age = g } }
+            }
+        }
+    }
+
+    /// Filter by someone named in Who's Who; until someone is named, a button to start.
+    @ViewBuilder private var whoBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                Text("Who").font(.subheadline).foregroundStyle(.secondary)
+                if library.people.isEmpty {
+                    Pill(title: "Name faces…", on: false, small: true) { showWho = true }
+                } else {
+                    Pill(title: "Everyone", on: person == nil, small: true) { person = nil }
+                    ForEach(library.people) { p in Pill(title: p.name, on: person == p.id, small: true) { person = p.id } }
+                }
             }
         }
     }
@@ -138,8 +165,9 @@ struct HomeView: View {
     }
 
     private var scopeTitle: String {
-        if case .year(let y) = scope { return String(y) }
-        return "Overall"
+        let who = person.flatMap { id in library.people.first { $0.id == id }?.name }
+        if case .year(let y) = scope { return who.map { "\($0)'s \(y)" } ?? String(y) }
+        return who.map { "\($0)'s" } ?? "Overall"
     }
 
     private func open(_ list: [Moment], _ i: Int) { viewer = ViewerState(list: list, index: i) }
@@ -214,7 +242,7 @@ struct ScanBanner: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Finding your cutest moments…").font(.subheadline.bold())
             ProgressView(value: Double(scanner.done), total: Double(max(1, scanner.total)))
-            Text("\(scanner.done.formatted()) of \(scanner.total.formatted()) photos checked. Keep the app open for the fastest scan.")
+            Text("\(scanner.done.formatted()) of \(scanner.total.formatted()) photos checked. It keeps going after you leave the app on iOS 26 and later, and finishes overnight while your phone charges.")
                 .font(.caption).foregroundStyle(.secondary)
         }
         .padding(12)

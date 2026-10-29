@@ -168,6 +168,8 @@ enum Provenance {
         let name = f.filename.lowercased(), sw = f.software.lowercased()
         if f.aiMarker { return "AI image" }
         if aiTools.contains(where: { sw.contains($0) }) || aiFilenames.contains(where: { name.contains($0) }) { return "AI image" }
+        // Adobe Firefly downloads: "Firefly <prompt> 12345.jpg"
+        if name.hasPrefix("firefly "), name.range(of: #"\d{3,}\.\w+$"#, options: .regularExpression) != nil { return "AI image" }
         let swNoOrdinary = ordinaryEditors.reduce(sw) { $0.replacingOccurrences(of: $1, with: "") }
         if retouchApps.contains(where: { swNoOrdinary.contains($0) }) || retouchFilenames.contains(where: { name.contains($0) }) { return "Edited" }
         // Cameras save HEIC or JPEG with camera details; a PNG with none came out of an app or an editor.

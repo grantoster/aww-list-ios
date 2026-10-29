@@ -34,7 +34,8 @@ enum AgeGroup: String, Codable, CaseIterable, Identifiable {
         if groups.isEmpty { return [] }
         if groups.count == 1 { return groups }
         if looksLikeBaby && groups.contains(.baby) && faces <= 2 { return [.baby] }
-        if faces >= 2 && faces >= born.count { return groups }
+        // Exactly two faces and two children: probably one child with a grown-up, so tag the main subject.
+        if faces >= 3 && faces >= born.count { return groups }
         let older = groups.subtracting([.baby])
         return older.isEmpty ? groups : older
     }
@@ -56,6 +57,8 @@ struct PhotoScore: Codable, Hashable, Identifiable {
     var version: Int? = nil
     /// Number of faces found (used to tell siblings-together photos from solo ones).
     var faces: Int? = nil
+    /// Face fingerprints for Who's Who (counted photos only); nil until measured.
+    var faceRecords: [FaceRecord]? = nil
 }
 
 /// One moment: photos taken less than 60 seconds apart (2 minutes at most), represented by its best shot.
@@ -69,5 +72,7 @@ struct Moment: Identifiable, Hashable {
     var score: Int
     /// Baby / Toddler / Kid tags (see AgeGroup.tags).
     var ages: Set<AgeGroup> = []
+    /// Named people (Who's Who) recognized in the best shot.
+    var people: Set<UUID> = []
     var year: Int { Calendar.current.component(.year, from: best.date) }
 }

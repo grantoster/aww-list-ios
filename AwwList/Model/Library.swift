@@ -8,6 +8,10 @@ final class Library: ObservableObject {
     @Published private(set) var hidden: Set<String> = []   // photos the user removed from the list
     /// The children's birthdays, which sort photos into Baby / Toddler / Kid.
     @Published private(set) var birthdays: [Date] = []
+    /// People named in Who's Who.
+    @Published private(set) var people: [Person] = []
+    /// Who's Who grouping: 0 stricter, 1 normal, 2 looser.
+    @Published private(set) var strictness = 1
 
     private static let saveQueue = DispatchQueue(label: "aww.save", qos: .utility)
     private var lastRebuild = Date.distantPast
@@ -18,7 +22,10 @@ final class Library: ObservableObject {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("scores.json")
     }()
-    private struct Saved: Codable { var photos: [PhotoScore]; var hidden: [String]; var birthdays: [Date]? }
+    private struct Saved: Codable {
+        var photos: [PhotoScore]; var hidden: [String]; var birthdays: [Date]?
+        var people: [Person]?; var strictness: Int?
+    }
 
     init() { load() }
 
@@ -39,6 +46,47 @@ final class Library: ObservableObject {
 
     func setBirthdays(_ dates: [Date]) { birthdays = dates.sorted(); rebuild(); save() }
 
+    // MARK: Who's Who
+
+    var threshold: Float { People.threshold(strictness: strictness) }
+    func setStrictness(_ v: Int) { strictness = v; rebuild(); save() }
+
+    /// Names a group of faces. Using a name that already exists adds the faces to that person.
+    func name(_ faces: [(photo: String, face: FaceRecord)], as rawName: String, birthday: Date?) {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, let first = faces.first else { return }
+        let vecs = faces.map { People.floats($0.face.vec) }
+        if let i = people.firstIndex(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
+            people[i].centroid = People.merged(people[i].centroid, count: people[i].count, adding: vecs)
+            people[i].count += vecs.count
+            if let birthday { people[i].birthday = birthday }
+        } else {
+            people.append(Person(name: name, birthday: birthday, centroid: People.merged([], count: 0, adding: vecs),
+                                 count: vecs.count, samplePhoto: first.photo, sampleBox: first.face.box))
+        }
+        rebuild(); save()
+    }
+
+    func update(_ person: Person) {
+        guard let i = people.firstIndex(where: { $0.id == person.id }) else { return }
+        people[i] = person; rebuild(); save()
+    }
+
+    func forget(_ person: Person) { people.removeAll { $0.id == person.id }; rebuild(); save() }
+
+    /// Faces in ranked photos that don't match anyone named yet (largest faces of the best moments first).
+    func unnamedFaces(limit: Int = 2500) -> [(photo: String, face: FaceRecord)] {
+        var out: [(photo: String, face: FaceRecord)] = []
+        let t = threshold
+        for m in moments {
+            for f in m.best.faceRecords ?? [] where People.match(People.floats(f.vec), people: people, threshold: t) == nil {
+                out.append((m.best.id, f))
+                if out.count >= limit { return out }
+            }
+        }
+        return out
+    }
+
     /// Drops scores for photos that were deleted from the library (ids found by the scanner).
     func remove(_ ids: Set<String>) {
         guard !ids.isEmpty else { return }
@@ -54,11 +102,16 @@ final class Library: ObservableObject {
         let cal = Calendar.current
         let scores = Scorer.calibrate(groups.map { $0.best.raw ?? 0 },
                                       years: groups.map { cal.component(.year, from: $0.best.date) })
-        let bdays = birthdays
+        let named = people, t = threshold
+        let bdays = Array(Set(birthdays + named.compactMap(\.birthday)))
         moments = zip(groups, scores).map { g, s in
-            Moment(best: g.best, shots: g.shots, memberIDs: g.ids, score: s,
-                   ages: AgeGroup.tags(date: g.best.date, birthdays: bdays,
-                                       looksLikeBaby: g.best.age == .baby, faces: g.best.faces ?? 1))
+            let who = Set((g.best.faceRecords ?? []).compactMap { People.match(People.floats($0.vec), people: named, threshold: t) })
+            // Named people with birthdays give exact ages; otherwise ages come from the birthdays and the photo.
+            let known = named.filter { who.contains($0.id) }.compactMap(\.birthday).filter { $0 <= g.best.date }
+            let ages: Set<AgeGroup> = known.isEmpty
+                ? AgeGroup.tags(date: g.best.date, birthdays: bdays, looksLikeBaby: g.best.age == .baby, faces: g.best.faces ?? 1)
+                : Set(known.map { AgeGroup.of(birth: $0, at: g.best.date) })
+            return Moment(best: g.best, shots: g.shots, memberIDs: g.ids, score: s, ages: ages, people: who)
         }
             .sorted(by: Library.ranked)
     }
@@ -76,7 +129,8 @@ final class Library: ObservableObject {
     /// Writes to disk off the main thread.
     func save() {
         unsaved = 0
-        let s = Saved(photos: Array(photos.values), hidden: Array(hidden), birthdays: birthdays)
+        let s = Saved(photos: Array(photos.values), hidden: Array(hidden), birthdays: birthdays,
+                      people: people, strictness: strictness)
         let u = url
         // One save at a time, in order, so an older snapshot can never land after a newer one.
         Library.saveQueue.async {
@@ -89,6 +143,8 @@ final class Library: ObservableObject {
         photos = Dictionary(s.photos.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         hidden = Set(s.hidden)
         birthdays = s.birthdays ?? []
+        people = s.people ?? []
+        strictness = s.strictness ?? 1
         rebuild()
     }
 }

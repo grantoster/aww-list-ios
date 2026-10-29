@@ -100,6 +100,7 @@ final class Analyzer {
         for o in faceObs {
             let box = o.boundingBox
             var face = FaceSignal(area: Double(box.width * box.height), quality: Double(o.faceCaptureQuality ?? 0))
+            face.box = [Double(box.minX), Double(box.minY), Double(box.width), Double(box.height)]
             if let m = ciFaces.max(by: { iou($0.box, box) < iou($1.box, box) }), iou(m.box, box) > 0.3 {
                 face.smile = m.smile
                 face.eyesClosed = m.closed
@@ -117,6 +118,29 @@ final class Analyzer {
         }
         s.sharpness = sharpness(ci, box: subjectBox)
         return s
+    }
+
+    /// Face fingerprints for Who's Who: Vision's image feature print of each of the (up to 4) largest faces.
+    func facePrints(_ image: CGImage, orientation: CGImagePropertyOrientation, faces: [FaceSignal]) -> [FaceRecord] {
+        let ci = CIImage(cgImage: image).oriented(orientation)
+        let e = ci.extent
+        let unit = CGRect(x: 0, y: 0, width: 1, height: 1)
+        var out: [FaceRecord] = []
+        for f in faces.filter({ $0.box.count == 4 && $0.area >= 0.006 }).sorted(by: { $0.area > $1.area }).prefix(4) {
+            let b = CGRect(x: f.box[0], y: f.box[1], width: f.box[2], height: f.box[3])
+                .insetBy(dx: -f.box[2] * 0.1, dy: -f.box[3] * 0.1).intersection(unit)
+            let r = CGRect(x: e.minX + b.minX * e.width, y: e.minY + b.minY * e.height,
+                           width: b.width * e.width, height: b.height * e.height).integral.intersection(e)
+            guard !r.isNull, r.width >= 24, r.height >= 24,
+                  let crop = ciContext.createCGImage(ci, from: r) else { continue }
+            let req = VNGenerateImageFeaturePrintRequest()
+            req.imageCropAndScaleOption = .scaleFill
+            guard (try? VNImageRequestHandler(cgImage: crop, options: [:]).perform([req])) != nil,
+                  let fp = req.results?.first, fp.elementType == .float else { continue }
+            let floats: [Float] = fp.data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+            out.append(FaceRecord(box: f.box.map { Float($0) }, vec: People.embed(floats)))
+        }
+        return out
     }
 
     /// "baby" label confidence for one person: the classifier run on their face and chest only.
