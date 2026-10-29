@@ -73,6 +73,9 @@ struct PhotoScore: Codable, Hashable, Identifiable {
     /// 2 once this photo was analyzed under "Apple flags, Claude decides" (provenance-flagged photos are fully
     /// analyzed, and held-back ones get a `soft` score for Put back). Older records of those kinds are re-read.
     var flagVersion: Int? = nil
+    /// A faint bath/undressed sign (or a bath flag from an older, stricter check): the photo is listed as usual,
+    /// but it and every shot within 10 minutes of it are never sent to Claude.
+    var privacyHold: Bool? = nil
     /// Why Apple flagged a photo that's still listed (water, swimwear, AI image, ...); nil when it wasn't flagged.
     var appleFlag: String? { raw == nil && Scorer.softReasons.contains(excluded ?? "") ? excluded : nil }
 }

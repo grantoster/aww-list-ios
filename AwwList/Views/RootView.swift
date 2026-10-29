@@ -122,7 +122,7 @@ struct SettingsView: View {
                     }
                     Text("Counts are photos, not moments; a moment's other shots in a burst count as on the list.")
                         .font(.footnote).foregroundStyle(.secondary)
-                    Text("On the phone: screenshots, documents, photos with no face and no sign of a child, Possible bath or undressed photos are listed and scored on the phone (you can keep any out above), but they and every shot within 10 minutes of one are never sent to Claude. Photos with faces but no child label stay off the list but are offered to Claude, which can put them on it.")
+                    Text("Left off on the phone: screenshots, documents, and photos with no face and no sign of a child. Photos with faces but no child label stay off the list but are offered to Claude, which can put them on it. Possible bath or undressed photos are listed and scored on the phone (you can keep any out above), but they, and every shot within 10 minutes of one or of any faint bath sign, are never sent to Claude.")
                         .font(.footnote)
                     Text("Everything else Apple isn't sure about stays on the list with a flag: no child spotted, water scenes, swimwear, shirtless, and files that look AI-generated, face-retouched or not from a camera. Claude makes the call on those, and once the app has learned from Claude's calls, it hides the ones it expects Claude would remove when ranking by Claude or by the learned score. Ranking by Apple shows them all.")
                         .font(.footnote)
@@ -134,7 +134,7 @@ struct SettingsView: View {
                         .font(.footnote)
                     Text("Each photo gets points for the main child's expression (a smile counts most; a sleeping baby counts too), for a second person close by, for how big the face is in the frame, and for how clearly a child is the subject. Blur scales the total down, and crowds count a little less.")
                         .font(.footnote)
-                    Text("Those points become 1–10 by rank across your whole library: the top 1% are 9s and 10s, the next 4% are 8s, the next 10% are 7s. Every year counts equally, so a huge year can't crowd out the others, and a photo needs real quality for a high score, not just being the best of a weak bunch.")
+                    Text("Those points become 1–10 by rank across your whole library: about 1 in 20 moments a year is a 9 or 10 (the top 1% are 10s), the next 10% are 8s and the next 15% are 7s. Every year counts equally, so a huge year can't crowd out the others, and a photo needs real quality for a high score, not just being the best of a weak bunch.")
                         .font(.footnote)
                     Text("Photos are analyzed with Apple's on-device Vision framework. Nothing is uploaded unless you score with Claude.")
                         .font(.footnote).foregroundStyle(.secondary)

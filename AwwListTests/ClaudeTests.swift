@@ -75,7 +75,7 @@ final class ClaudeTests: XCTestCase {
             XCTAssertEqual(Set(Scorer.moments(from: [flagged("f", why, 0), ok]).map(\.best.id)), ["f", "ok"], why)
         }
         let bath = flagged("bath", "Bath", 0)
-        XCTAssertTrue(Scorer.moments(from: [bath, ok]).isEmpty)                         // held back, and its 10 minutes
+        XCTAssertEqual(Scorer.moments(from: [bath, ok]).map(\.best.id), ["ok"])      // kept out: only itself drops
         XCTAssertEqual(Set(Scorer.moments(from: [bath, ok], putBack: ["bath"]).map(\.best.id)), ["bath", "ok"])
         var undressed = flagged("u", "Undressed", 0); undressed.soft = nil
         XCTAssertEqual(Scorer.moments(from: [undressed], putBack: ["u"]).count, 0)     // nothing to score it by
@@ -86,8 +86,12 @@ final class ClaudeTests: XCTestCase {
         let never = Scorer.neverSend([bath, burst, ok], allowSwimShirtless: false)
         XCTAssertEqual(never, ["bath", "burst", "ok"])   // ok is 400 s later, inside the 10 minutes
         XCTAssertEqual(Set(Scorer.moments(from: [bath, burst, ok], putBack: ["bath"]).flatMap(\.ids)), ["bath", "burst", "ok"])
-        // A put-back photo with no score doesn't free its neighbors.
-        XCTAssertTrue(Scorer.moments(from: [undressed, ok.withDate(t.addingTimeInterval(60))], putBack: ["u"]).isEmpty)
+        // A photo with no score isn't listed; its neighbors are (they're only kept from Claude).
+        XCTAssertEqual(Scorer.moments(from: [undressed, ok.withDate(t.addingTimeInterval(60))], putBack: ["u"]).map(\.best.id), ["ok"])
+        // A never-send hold (faint bath sign, or an older bath flag) blocks its 10 minutes even with no flag now.
+        var held = PhotoScore(id: "hold", date: t, raw: 0.7, excluded: nil, age: .kid, caption: "", version: Scorer.version)
+        held.privacyHold = true
+        XCTAssertEqual(Scorer.neverSend([held, burst], allowSwimShirtless: true), ["hold", "burst"])
         // Swimwear: listed, but not sent (nor the 10 minutes around it) unless allowed.
         let swim = flagged("swim", "Swimwear", 0)
         XCTAssertEqual(Scorer.neverSend([swim, burst, ok], allowSwimShirtless: false), ["swim", "burst", "ok"])

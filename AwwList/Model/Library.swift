@@ -82,7 +82,10 @@ final class Library: ObservableObject {
         guard !new.isEmpty else { return }
         for var p in new {
             if p.claude == nil { p.claude = photos[p.id]?.claude }   // a rescan never throws away Claude's verdict
-            if p.feat == nil { p.feat = photos[p.id]?.feat }         // nor a good fingerprint when this read's scene print failed
+            if p.feat == nil { p.feat = photos[p.id]?.feat }
+            if photos[p.id]?.privacyHold == true || Scorer.heldBack.contains(photos[p.id]?.excluded ?? "") && p.excluded != photos[p.id]?.excluded {
+                p.privacyHold = true                                  // a never-send hold is never lifted by a re-read
+            }         // nor a good fingerprint when this read's scene print failed
             photos[p.id] = p
         }
         unsaved += new.count
@@ -358,7 +361,8 @@ final class Library: ObservableObject {
             // Claude's removal sticks to the whole burst, even if a different shot becomes its best later.
             if m.memberIDs.contains(where: { photos[$0]?.claude?.exclude != nil }) { return nil }
             if (useClaude || useLearned) && m.best.claude == nil
-                && !Scorer.heldBack.contains(m.best.excluded ?? "") && learnedRemoves(m.best) {   // you chose to keep these
+                && !m.memberIDs.contains(where: { Scorer.heldBack.contains(photos[$0]?.excluded ?? "") })
+                && learnedRemoves(m.best) {   // you chose to keep possible bath photos
                 filtered += 1; filteredIDs.formUnion(m.memberIDs); return nil
             }
             if useClaude {

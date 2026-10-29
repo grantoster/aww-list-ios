@@ -93,7 +93,7 @@ final class ScorerTests: XCTestCase {
         let blurrySmile = Scorer.score(kid(smile: true, sharp: 0)).raw!
         XCTAssertLessThan(blurrySmile, Scorer.score(kid(smile: true, sharp: 1)).raw! * 0.5)
         XCTAssertLessThan(blurrySmile, sharpNeutral)
-        XCTAssertLessThanOrEqual(Scorer.ceiling(blurrySmile), 5)
+        XCTAssertLessThanOrEqual(Scorer.ceiling(blurrySmile), 6)
     }
 
     func testSleepingBabyIsNotPenalized() {
@@ -114,12 +114,12 @@ final class ScorerTests: XCTestCase {
         XCTAssertLessThan(Scorer.score(blink).raw!, Scorer.score(kid()).raw!)
     }
 
-    func testOldVersionsStillQuarantineButAreNotShown() {
+    func testOldVersionsAreNotShown() {
         let t = Date(timeIntervalSince1970: 1_700_000_000)
         let p = [PhotoScore(id: "old", date: t, raw: nil, excluded: "Bath", age: nil, caption: "", version: 1),
                  PhotoScore(id: "new", date: t.addingTimeInterval(90), raw: 0.8, excluded: nil, age: .kid, caption: "", version: 4),
                  PhotoScore(id: "stale", date: t.addingTimeInterval(9000), raw: 0.8, excluded: nil, age: .kid, caption: "", version: 1)]
-        XCTAssertTrue(Scorer.moments(from: p, version: 4).isEmpty)
+        XCTAssertEqual(Scorer.moments(from: p, version: 4).map(\.best.id), ["new"])   // no list quarantine any more
     }
 
     func testIdenticalFacesBothCount() {
@@ -138,15 +138,16 @@ final class ScorerTests: XCTestCase {
     func testCalibrationKeepsTopScoresRare() {
         let raws = (0..<1000).map { Double($0) / 1000 }
         let cal = Scorer.calibrate(raws)
-        XCTAssertEqual(cal.filter { $0 >= 9 }.count, 10)
+        XCTAssertEqual(cal.filter { $0 >= 9 }.count, 50)   // about 1 in 20 is a 9 or 10
+        XCTAssertEqual(cal.filter { $0 == 10 }.count, 10)  // about 1 in 100 is a 10
         XCTAssertEqual(cal[999], 10)
         XCTAssertEqual(cal[0], 1)
     }
 
     func testCalibrationTiesSmallLibrariesAndCeilings() {
         XCTAssertEqual(Set(Scorer.calibrate([0.8, 0.8, 0.8])).count, 1)          // ties share a score
-        XCTAssertLessThanOrEqual(Scorer.calibrate([0.95, 0.5, 0.4]).max()!, 8)   // under 50 moments: 8 at most
-        XCTAssertLessThanOrEqual(Scorer.calibrate((0..<100).map { _ in 0.4 } + [0.42]).max()!, 5) // weak library stays weak
+        XCTAssertLessThanOrEqual(Scorer.calibrate([0.95, 0.5, 0.4]).max()!, 9)   // under 50 moments: 9 at most
+        XCTAssertLessThanOrEqual(Scorer.calibrate((0..<100).map { _ in 0.3 } + [0.32]).max()!, 6) // weak library stays weak
     }
 
     func testOneHugeYearDoesNotSwampAnother() {
@@ -184,12 +185,14 @@ final class ScorerTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(Scorer.moments(from: p).count, 10)
     }
 
-    func testFramesNearABathPhotoAreQuarantined() {
+    func testFramesNearABathPhotoAreListedButNeverSent() {
         let t = Date(timeIntervalSince1970: 1_700_000_000)
         var p = (0..<10).map { PhotoScore(id: "bath\($0)", date: t.addingTimeInterval(Double($0) * 5), raw: nil, excluded: "Bath", age: nil, caption: "") }
         p[3] = PhotoScore(id: "bath3", date: t.addingTimeInterval(15), raw: 0.8, excluded: nil, age: .baby, caption: "Baby grin")
         p.append(PhotoScore(id: "later", date: t.addingTimeInterval(3600), raw: 0.6, excluded: nil, age: .kid, caption: ""))
-        XCTAssertEqual(Scorer.moments(from: p).map(\.best.id), ["later"])
+        XCTAssertEqual(Scorer.moments(from: p).map(\.best.id), ["bath3", "later"])
+        XCTAssertTrue(Scorer.neverSend(p, allowSwimShirtless: true).contains("bath3"))
+        XCTAssertFalse(Scorer.neverSend(p, allowSwimShirtless: true).contains("later"))
     }
 
     func testTiesPickTheSameShotEveryTime() {

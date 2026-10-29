@@ -23,6 +23,7 @@ struct Signals: Equatable {
     var isScreenshot: Bool = false
     var blockedLabel: String? = nil      // "bath", "swimwear", "undressed", "document", "screenshot"
     var scenePrint: [Float] = []         // Vision's feature print of the whole photo (for the learned score)
+    var privacyHint = false              // even a faint bath/undressed sign: listed, but never sent to Claude
 
     var subjectIndex: Int? { faces.indices.max { faces[$0].area < faces[$1].area } }
     var subject: FaceSignal? { subjectIndex.map { faces[$0] } }
@@ -155,25 +156,24 @@ enum Scorer {
 
     static func bucket(_ p: Double) -> Int {
         switch p {
-        case ..<0.002: return 10
-        case ..<0.01: return 9
-        case ..<0.05: return 8
-        case ..<0.15: return 7
-        case ..<0.35: return 6
-        case ..<0.60: return 5
-        case ..<0.80: return 4
-        case ..<0.92: return 3
-        case ..<0.98: return 2
+        case ..<0.01: return 10
+        case ..<0.05: return 9
+        case ..<0.15: return 8
+        case ..<0.30: return 7
+        case ..<0.55: return 6
+        case ..<0.75: return 5
+        case ..<0.88: return 4
+        case ..<0.95: return 3
+        case ..<0.99: return 2
         default: return 1
         }
     }
 
-    /// Turns raw scores into 1...10 by percentile, so 9s and 10s stay rare:
-    /// top 1% → 9–10, next 4% → 8, next 10% → 7, next 20% → 6, next 25% → 5, the rest 1–4.
+    /// Turns raw scores into 1...10 by percentile: the top 1% are 10s, the next 4% 9s (so about 1 in 20 moments
+    /// a year is a 9 or 10), the next 10% 8s, the next 15% 7s, the next 25% 6s, the next 20% 5s, the rest 1–4.
     /// Each full year carries equal weight, so one huge year can't push every other year up or down;
     /// a year with under 200 moments counts in proportion to its size.
-    /// Tied raw scores get the same score. Small libraries top out lower, and a weak photo
-    /// can't earn a high score just by being the best of a weak bunch.
+    /// Tied raw scores get the same score. A weak photo can't earn a high score just by being the best of a weak bunch.
     static func calibrate(_ raws: [Double], years: [Int]? = nil) -> [Int] {
         guard !raws.isEmpty else { return [] }
         let yrs = years ?? Array(repeating: 0, count: raws.count)
@@ -191,12 +191,12 @@ enum Scorer {
             above += tieWeight
             i = j
         }
-        let libraryCap = raws.count < 50 ? 8 : raws.count < 500 ? 9 : 10
+        let libraryCap = raws.count < 50 ? 9 : 10
         return zip(out, raws).map { v, r in min(v, libraryCap, ceiling(r)) }
     }
 
     /// The highest score a raw value can earn, whatever the rest of the library looks like.
-    static func ceiling(_ r: Double) -> Int { r < 0.30 ? 4 : r < 0.45 ? 5 : r < 0.60 ? 7 : r < 0.70 ? 8 : 10 }
+    static func ceiling(_ r: Double) -> Int { r < 0.25 ? 4 : r < 0.40 ? 6 : r < 0.50 ? 8 : 10 }
 
     /// Groups photos into moments: shots less than 60 s apart are one moment, but a moment never runs past 2 minutes.
     /// Everything within 10 minutes of a possible bath or undressed photo is held back too, so one missed frame
@@ -250,8 +250,9 @@ enum Scorer {
                         putBack: Set<String> = [], includePoolOnly: Bool = false) -> [(best: PhotoScore, shots: Int, ids: [String])] {
         func value(_ p: PhotoScore) -> Double? { listedValue(p, putBack: putBack, includePoolOnly: includePoolOnly) }
         // A put-back photo stops holding back its neighbors only when it can actually be listed (has a score).
-        let hot = photos.filter { !(putBack.contains($0.id) && value($0) != nil) }
-            .compactMap { p in quarantineWindow[p.excluded ?? ""].map { (date: p.date, window: $0) } }
+        // Nothing is taken off the list for being near a possible bath photo any more (those shots are only kept
+        // from Claude, by neverSend); a photo the user keeps out drops only itself.
+        let hot: [(date: Date, window: TimeInterval)] = []
             .sorted { $0.date < $1.date }
         func quarantined(_ d: Date) -> Bool {
             var lo = 0, hi = hot.count
@@ -300,7 +301,7 @@ enum Scorer {
         let sorted = photos.sorted { $0.date < $1.date }
         var out = Set<String>()
         for (i, p) in sorted.enumerated() {
-            guard let w = window(p) else { continue }
+            guard let w = [window(p), p.privacyHold == true ? 600 : nil].compactMap({ $0 }).max() else { continue }
             out.insert(p.id)
             var j = i - 1
             while j >= 0 && p.date.timeIntervalSince(sorted[j].date) <= w { out.insert(sorted[j].id); j -= 1 }

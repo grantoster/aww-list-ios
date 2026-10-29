@@ -391,6 +391,11 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
         }
         p.softChecked = true
         p.flagVersion = 5
+        if signals.privacyHint { p.privacyHold = true }
+        // Flagged as a possible bath photo by an older check: the hold stays, even if the stricter check clears it.
+        if let old = restamp[asset.localIdentifier], Scorer.heldBack.contains(old.excluded ?? "") || old.privacyHold == true {
+            p.privacyHold = true
+        }
         p.featChecked = true
         if let base = raw ?? p.soft, !signals.scenePrint.isEmpty {
             p.feat = Learner.encode(signals: Learner.signals(signals, apple: base),

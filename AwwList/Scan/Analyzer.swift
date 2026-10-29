@@ -43,6 +43,8 @@ final class Analyzer {
         var out = blockedExact
         for id in supported {
             let l = id.lowercased()
+            if ["baby_shower", "bridal_shower"].contains(where: { l.contains($0) }) { continue }   // parties, not baths
+            if l.contains("bathing_suit") { out[id] = "swimwear"; continue }
             if out[id] == nil, let hit = blockedFragments.first(where: { l.contains($0.0) }) { out[id] = hit.1 }
         }
         return out
@@ -59,6 +61,7 @@ final class Analyzer {
     /// Labels that mean an actual bath or shower (not just a bathroom or a bathrobe).
     static func isActualBath(_ id: String) -> Bool {
         let l = id.lowercased()
+        if ["baby_shower", "bridal_shower", "shower_curtain", "bathing_suit"].contains(where: { l.contains($0) }) { return false }
         return l == "bath" || l == "bathing" || ["bathtub", "bath_tub", "shower", "jacuzzi", "hot_tub", "hottub", "bubble_bath"]
             .contains { l.contains($0) }
     }
@@ -76,13 +79,18 @@ final class Analyzer {
         let handler = VNImageRequestHandler(cgImage: image, orientation: orientation, options: [:])
         do { try handler.perform([classify, faces]) } catch { return nil }
 
-        var bathroomRoom = false
+        var bathroomRoom = false, tubFaint = false, hint = false
         for obs in classify.results ?? [] {
             let id = obs.identifier
             // The most serious match wins (bath or undressed over swimwear over document or screenshot),
             // whatever order Vision lists them in. Each needs a real level of confidence: the old "loose" bar
             // (10% precision) flagged fully clothed kids in hallways, classrooms and kitchens as bath photos.
             if let reason = blocked[id] {
+                // Any faint bath or undressed sign keeps the photo (and its session) from ever being sent.
+                if (reason == "bath" || reason == "undressed") && obs.confidence > 0.1 {
+                    if !(reason == "bath" && !Self.isActualBath(id)) { hint = true }
+                    if reason == "bath" && Self.isActualBath(id) { tubFaint = true }
+                }
                 let need: Float
                 if reason == "bath" && !Self.isActualBath(id) {
                     // A bathroom or bathrobe label alone isn't a bath: it only counts with a bare chest (checked below).
@@ -103,6 +111,7 @@ final class Analyzer {
         }
 
         let faceObs = faces.results ?? []
+        s.privacyHint = hint
         guard !faceObs.isEmpty else { return s }
 
         // Vision boxes and CIDetector boxes are both bottom-left origin on the upright image; match them by overlap.
@@ -139,8 +148,11 @@ final class Analyzer {
             s.faces.append(face)
         }
         s.sharpness = sharpness(ci, box: subjectBox)
-        // A confident bathroom scene plus a bare chest (not a baby's) counts as a possible bath photo.
-        if bathroomRoom && Self.severity("bath") > Self.severity(s.blockedLabel) && Scorer.hasBareChest(s) { s.blockedLabel = "bath" }
+        // A bathroom scene or a faint tub/shower label plus any bare chest (babies included: this is about baths,
+        // not the diaper rule) counts as a possible bath photo.
+        let anyBare = s.faces.contains { $0.bareTorso >= Scorer.bareTorsoLimit }
+        if (bathroomRoom || tubFaint) && anyBare && Self.severity("bath") > Self.severity(s.blockedLabel) { s.blockedLabel = "bath" }
+        if anyBare && (bathroomRoom || tubFaint || hint) { s.privacyHint = true }
         return s
     }
 
