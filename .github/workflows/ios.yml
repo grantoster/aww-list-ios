@@ -22,7 +22,7 @@ jobs:
           if grep -rnE "$PAT" AwwList project.yml; then echo "::error::Photo-library write API found. Aww List must stay read-only."; exit 1; fi
           grep -qE '^[[:space:]]*vc\.excludedActivityTypes = \[\.saveToCameraRoll, .*StreamShareService' AwwList/Views/ViewerView.swift || { echo "::error::The share sheet must keep excluding Save Image and Shared Album."; exit 1; }
           # Never look in the Hidden album.
-          if grep -rnE "includeHiddenAssets *= *true|\.isHidden|hiddenAlbum|smartAlbumAllHidden" AwwList; then echo "::error::The app must never look in the Hidden album."; exit 1; fi
+          if grep -rnE "includeHiddenAssets *= *[^f ]|isHidden|hiddenAlbum|smartAlbumAllHidden|AllHidden" AwwList; then echo "::error::The app must never look in the Hidden album."; exit 1; fi
           echo "No photo-library write APIs or Hidden-album access found."
       - name: Select newest Xcode 26 (App Store uploads need the iOS 26 SDK)
         run: |

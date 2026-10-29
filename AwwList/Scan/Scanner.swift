@@ -308,8 +308,12 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
                   ranked: Set<String>, restamp: [String: PhotoScore] = [:]) -> PhotoOutcome {
     func keepOld() -> PhotoOutcome? {
         guard var old = restamp[asset.localIdentifier] else { return nil }
-        // Can't be re-read: keep the record, but it can no longer be listed or offered on its old score.
-        if Scorer.needsShirtlessRecheck(old) { old.soft = nil }
+        // A photo that needs the shirtless re-check and can't be read: treat it as unreadable (never listed, guards
+        // the 10 minutes around it, retried about once a day) rather than as checked.
+        if Scorer.needsShirtlessRecheck(old) {
+            return .done(PhotoScore(id: old.id, date: old.date, raw: nil, excluded: Scorer.unavailable, age: nil,
+                                    caption: "", version: Scorer.version))
+        }
         old.flagVersion = 4
         old.version = Scorer.version   // its held-back or flagged reason stands; just don't keep re-reading it
         return .done(old)

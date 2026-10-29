@@ -303,14 +303,13 @@ final class ClaudeService: ObservableObject {
     }
 
     /// Whether a moment may be sent right now. Reads the photo library itself (not just the app's records):
-    /// every photo taken within 10 minutes of the moment, hidden ones included, must have been checked by the
+    /// every photo taken within 10 minutes of the moment (the Hidden album is never looked at) must have been checked by the
     /// current scorer and read successfully, none of them may make the moment off-limits (Scorer.neverSend), and
     /// no photo within 2 minutes may be one Claude removed (the same burst, however it's grouped now).
     /// Photos outside a Limited Access selection can't be seen, so they can't be checked.
     static func sendable(_ m: Moment, _ library: Library) -> Bool {
-        // The Hidden album is never looked at: a photo moved there drops out of this fetch, so its moment isn't sent.
-        let opts = PHFetchOptions(); opts.includeHiddenAssets = false
-        let live = PHAsset.fetchAssets(withLocalIdentifiers: m.memberIDs, options: opts)
+        // The Hidden album is never looked at: a photo moved there isn't found, so its moment isn't sent.
+        let live = AssetImage.visible(m.memberIDs)
         var dates: [Date] = []
         live.enumerateObjects { a, _, _ in if let d = a.creationDate { dates.append(d) } }
         guard dates.count == m.memberIDs.count, let lo = dates.min(), let hi = dates.max() else { return false }
@@ -364,9 +363,13 @@ final class ClaudeService: ObservableObject {
             toSend = sent + queue.count
             for chunk in stride(from: 0, to: queue.count, by: 25).map({ Array(queue[$0..<min($0 + 25, queue.count)]) }) {
                 // A scan that started meanwhile (new photos) may find a bath photo next to these: stop, send later.
-                if Shared.scanner.isScanning { paused = true; break }
+                if Shared.scanner.isScanning || Shared.scanner.needsScan { paused = true; break }
                 let blocked = library.neverSend
-                let chunk = chunk.filter { !$0.memberIDs.contains(where: blocked.contains) }
+                let unblocked = chunk.filter { !$0.memberIDs.contains(where: blocked.contains) }
+                // Checked before any photo is even loaded, and again right before upload.
+                let preCleared = Set(unblocked.filter { Self.sendable($0, library) }.map(\.best.id))
+                held.formUnion(unblocked.map(\.best.id).filter { !preCleared.contains($0) })
+                let chunk = unblocked.filter { preCleared.contains($0.best.id) }
                 if chunk.isEmpty { continue }
                 var reqs: [[String: Any]] = [], map: [String: String] = [:]
                 status = "Preparing photos \((sent + 1).formatted())–\((sent + chunk.count).formatted()) of \(toSend.formatted())…"
@@ -381,7 +384,7 @@ final class ClaudeService: ObservableObject {
                 }
                 // The last check before anything leaves the phone: every photo taken within 10 minutes must be
                 // checked, and none may be (or be near) a possible bath photo.
-                if Shared.scanner.isScanning { paused = true; break }
+                if Shared.scanner.isScanning || Shared.scanner.needsScan { paused = true; break }
                 let cleared = Set(chunk.filter { Self.sendable($0, library) }.map(\.best.id))
                 held.formUnion(chunk.map(\.best.id).filter { !cleared.contains($0) })
                 for (i, m) in chunk.enumerated() {

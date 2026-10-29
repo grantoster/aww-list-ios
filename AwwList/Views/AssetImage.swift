@@ -30,9 +30,18 @@ struct AssetImage: View {
 
     static let manager = PHCachingImageManager()
 
+    /// Looks photos up by id the same way the scan does, so the Hidden album is never looked at: a photo that's
+    /// hidden simply isn't found.
+    nonisolated static func visible(_ ids: [String]) -> PHFetchResult<PHAsset> {
+        let o = PHFetchOptions()
+        o.includeHiddenAssets = false
+        o.predicate = NSPredicate(format: "localIdentifier IN %@", ids)
+        return PHAsset.fetchAssets(with: o)
+    }
+
     /// Loads one image. Cancelled automatically when the view scrolls away; returns the best image delivered.
     static func load(id: String, size: CGSize, mode: PHImageContentMode) async -> UIImage? {
-        guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil).firstObject else { return nil }
+        guard let asset = visible([id]).firstObject else { return nil }
         let opts = PHImageRequestOptions()
         opts.deliveryMode = .opportunistic
         opts.isNetworkAccessAllowed = true

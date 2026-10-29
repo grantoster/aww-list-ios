@@ -232,8 +232,6 @@ enum Scorer {
     static func softScore(_ s: Signals) -> Double? {
         if s.isScreenshot || s.blockedLabel == "document" || s.blockedLabel == "screenshot" { return nil }
         guard s.childConfidence >= 0.10 else { return nil }   // some hint of a child, so grown-up photos don't flood the pool
-        // A bare chest the shirtless check skipped only because the child label was weak: keep it off the list
-        // (it would otherwise be listed, and sent, as plain "No child" without the shirtless safeguards).
         var t = s
         t.blockedLabel = nil; t.waterScene = false; t.childPrecise = true
         for i in t.faces.indices { t.faces[i].bareTorso = 0 }

@@ -110,7 +110,9 @@ final class Library: ObservableObject {
     func addClaudeBatch(_ b: ClaudeBatch) {
         claudeBatches.append(b)
         claudeSent[b.model, default: []].formUnion(b.photos.values)
-        for id in b.photos.values { if let d = photos[id]?.date { claudeSentYear[id] = Calendar.current.component(.year, from: d) } }
+        for id in b.photos.values where claudeSentYear[id] == nil {
+            if let d = photos[id]?.date { claudeSentYear[id] = Calendar.current.component(.year, from: d) }
+        }
         flush()
     }
     func removeClaudeBatch(_ id: String) { claudeBatches.removeAll { $0.id == id }; save() }
@@ -484,6 +486,12 @@ final class Library: ObservableObject {
         claudeScope = s.claudeScope ?? claudeScope
         claudeBatches = s.claudeBatches ?? []
         if s.claudeSent == nil { for b in claudeBatches { claudeSent[b.model, default: []].formUnion(b.photos.values) } }
+        // Photos sent by builds from before the year was recorded: fix it now, from the record (if still there).
+        let sentIDs = claudeSent.values.reduce(into: Set<String>()) { $0.formUnion($1) }
+            .union(claudeBatches.flatMap { $0.photos.values })
+        for id in sentIDs where claudeSentYear[id] == nil {
+            if let d = photos[id]?.date { claudeSentYear[id] = Calendar.current.component(.year, from: d) }
+        }
         rankBy = s.rankBy ?? "claude"
         claudeFailures = s.claudeFailures ?? [:]
         rebuild()
