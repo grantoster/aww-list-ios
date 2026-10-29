@@ -184,16 +184,23 @@ struct HomeView: View {
             Text("\(pool.count.formatted()) moments ranked").font(.subheadline).foregroundStyle(.secondary)
             // While picking, this row stays (blank) so the photos don't jump under your finger.
             Group {
-                let n = min(3, top.count)
+                let n = min(maxPick, top.count)
                 HStack(spacing: 8) {
-                    Button { send(Array(top.prefix(3)).map(\.best.id), copy: true) } label: {
+                    Button { send(Array(top.prefix(maxPick)).map(\.best.id), copy: true) } label: {
                         Label("Copy top \(n)", systemImage: "doc.on.doc").frame(maxWidth: .infinity)
                     }
-                    Button { send(Array(top.prefix(3)).map(\.best.id), copy: false) } label: {
+                    Button { send(Array(top.prefix(maxPick)).map(\.best.id), copy: false) } label: {
                         Label("Share top \(n)", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
                     }
                 }
                 .buttonStyle(.bordered).controlSize(.regular).disabled(preparing || top.isEmpty || selecting)
+                .overlay {
+                    if preparing && !selecting {
+                        Text("Getting \(progress.done) of \(progress.of)…").font(.subheadline.bold())
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                    }
+                }
                 .opacity(selecting ? 0 : 1)
                 .accessibilityHidden(selecting)
                 Text(selecting ? "Tap photos to pick up to \(maxPick)." : "Tip: hold any photo to pick several to send.")
