@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 enum ListScope: Hashable { case all, year(Int) }
 
@@ -14,6 +15,17 @@ struct HomeView: View {
     @State private var viewer: ViewerState?
     @State private var showSettings = false
     @State private var shown = 60
+    /// Picking photos to send: hold any photo to start, then tap more. Best-photo ids, in the order picked.
+    @State private var selecting = false
+    @State private var picked: [String] = []
+    @State private var preparing = false
+    @State private var sharing: SharePayload?
+    @State private var note: String?
+
+    struct SharePayload: Identifiable {
+        let id = UUID()
+        let images: [UIImage]
+    }
 
     private var pool: [Moment] {
         library.moments.filter { m in
@@ -60,8 +72,26 @@ struct HomeView: View {
                 .padding(.horizontal, 16)
                 .padding(.bottom, 32)
             }
-            .navigationTitle("Aww List")
+            .navigationTitle(selecting ? "\(picked.count) selected" : "Aww List")
+            .navigationBarTitleDisplayMode(selecting ? .inline : .automatic)
+            .safeAreaInset(edge: .bottom) { if selecting { selectionBar } }
+            .overlay(alignment: .bottom) {
+                if let note {
+                    Text(note).font(.subheadline.bold()).foregroundStyle(.white)
+                        .padding(.horizontal, 16).padding(.vertical, 10)
+                        .background(Color.black.opacity(0.85), in: Capsule())
+                        .padding(.bottom, selecting ? 90 : 24)
+                        .transition(.opacity)
+                        .accessibilityAddTraits(.isStaticText)
+                }
+            }
+            .sheet(item: $sharing) { p in ShareSheet(images: p.images).presentationDetents([.medium, .large]) }
             .toolbar {
+                if selecting {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("Cancel") { endSelecting() }
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showWho = true } label: { Image(systemName: "person.2.crop.square.stack") }
                         .accessibilityLabel("Who's Who")
@@ -148,17 +178,30 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text(scopeTitle + " top 30").font(Theme.display(26)).lineLimit(1).minimumScaleFactor(0.7)
             Text("\(pool.count.formatted()) moments ranked").font(.subheadline).foregroundStyle(.secondary)
+            if !selecting {
+                let n = min(3, top.count)
+                HStack(spacing: 8) {
+                    Button { send(Array(top.prefix(3)).map(\.best.id), copy: true) } label: {
+                        Label("Copy top \(n)", systemImage: "doc.on.doc").frame(maxWidth: .infinity)
+                    }
+                    Button { send(Array(top.prefix(3)).map(\.best.id), copy: false) } label: {
+                        Label("Share top \(n)", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
+                    }
+                }
+                .buttonStyle(.bordered).controlSize(.regular).disabled(preparing || top.isEmpty)
+                Text("Tip: hold any photo to pick several to send.").font(.caption).foregroundStyle(.secondary)
+            }
             if let first = top.first {
-                Card(moment: first, rank: 1, height: 380) { open(top, 0) }
+                Card(moment: first, rank: 1, height: 380, picked: pickState(first), onHold: { hold(first) }) { tap(top, 0) }
             }
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
                 ForEach(Array(top.dropFirst().prefix(4).enumerated()), id: \.element.id) { i, m in
-                    Card(moment: m, rank: i + 2, height: 190) { open(top, i + 1) }
+                    Card(moment: m, rank: i + 2, height: 190, picked: pickState(m), onHold: { hold(m) }) { tap(top, i + 1) }
                 }
             }
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 4), spacing: 6) {
                 ForEach(Array(top.dropFirst(5).enumerated()), id: \.element.id) { i, m in
-                    Tile(moment: m, rank: i + 6) { open(top, i + 5) }
+                    Tile(moment: m, rank: i + 6, picked: pickState(m), onHold: { hold(m) }) { tap(top, i + 5) }
                 }
             }
         }
@@ -179,7 +222,7 @@ struct HomeView: View {
             }
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 3), spacing: 4) {
                 ForEach(Array(listed.prefix(shown).enumerated()), id: \.element.id) { i, m in
-                    Tile(moment: m, rank: nil) { open(listed, i) }
+                    Tile(moment: m, rank: nil, picked: pickState(m), onHold: { hold(m) }) { tap(listed, i) }
                 }
             }
             if listed.count > shown {
@@ -203,6 +246,77 @@ struct HomeView: View {
     }
 
     private func open(_ list: [Moment], _ i: Int) { viewer = ViewerState(list: list, index: i) }
+
+    // MARK: Picking photos to send
+
+    /// nil when not picking; otherwise whether this one is picked.
+    private func pickState(_ m: Moment) -> Bool? { selecting ? picked.contains(m.best.id) : nil }
+
+    private func tap(_ list: [Moment], _ i: Int) {
+        if selecting { toggle(list[i]) } else { open(list, i) }
+    }
+
+    /// Holding a photo starts picking (with that photo picked), or toggles it if already picking.
+    private func hold(_ m: Moment) {
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        if selecting { toggle(m) } else { selecting = true; picked = [m.best.id] }
+    }
+
+    private func toggle(_ m: Moment) {
+        if let i = picked.firstIndex(of: m.best.id) { picked.remove(at: i) } else { picked.append(m.best.id) }
+    }
+
+    private func endSelecting() { selecting = false; picked = [] }
+
+    private var selectionBar: some View {
+        HStack(spacing: 10) {
+            Button { send(picked, copy: true) } label: {
+                Label("Copy", systemImage: "doc.on.doc").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            Button { send(picked, copy: false) } label: {
+                Label(preparing ? "Getting photos…" : "Share \(picked.count)", systemImage: "square.and.arrow.up")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .controlSize(.large)
+        .disabled(picked.isEmpty || preparing)
+        .padding(.horizontal, 16).padding(.vertical, 10)
+        .background(.bar)
+    }
+
+    /// Loads the full photos (read only, never changed) and copies them for pasting into a text, or opens the share sheet.
+    private func send(_ ids: [String], copy: Bool) {
+        guard !ids.isEmpty, !preparing else { return }
+        preparing = true
+        Task {
+            var images: [UIImage] = []
+            for id in ids {
+                if let img = await AssetImage.load(id: id, size: CGSize(width: 2048, height: 2048), mode: .aspectFit) { images.append(img) }
+            }
+            preparing = false
+            guard !images.isEmpty else { flash("Couldn't load those photos"); return }
+            let missing = ids.count - images.count
+            if copy {
+                UIPasteboard.general.images = images
+                let n = images.count
+                flash("Copied \(n) photo\(n == 1 ? "" : "s"). Paste into a text." + (missing > 0 ? " (\(missing) couldn't load)" : ""))
+            } else {
+                sharing = SharePayload(images: images)
+                if missing > 0 { flash("\(missing) photo\(missing == 1 ? "" : "s") couldn't load") }
+            }
+            if selecting { endSelecting() }
+        }
+    }
+
+    private func flash(_ text: String) {
+        withAnimation { note = text }
+        Task {
+            try? await Task.sleep(for: .seconds(3))
+            withAnimation { if note == text { note = nil } }
+        }
+    }
 }
 
 struct ViewerState: Identifiable {
@@ -233,38 +347,75 @@ struct Card: View {
     let moment: Moment
     let rank: Int
     let height: CGFloat
+    var picked: Bool? = nil
+    var onHold: () -> Void = {}
     let action: () -> Void
     var body: some View {
-        Button(action: action) {
-            VStack(alignment: .leading, spacing: 6) {
-                AssetImage(id: moment.best.id, targetSide: height * 1.4)
-                    .frame(height: height).frame(maxWidth: .infinity)
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
-                    .overlay(alignment: .topLeading) { RankBadge(rank: rank).padding(8) }
-                    .overlay(alignment: .topTrailing) { ScoreBadge(score: moment.score).padding(8) }
-                Text(moment.caption).font(.subheadline.bold()).lineLimit(2, reservesSpace: true)
-                Text(moment.best.date.shortDay).font(.caption).foregroundStyle(.secondary)
-            }
+        VStack(alignment: .leading, spacing: 6) {
+            AssetImage(id: moment.best.id, targetSide: height * 1.4)
+                .frame(height: height).frame(maxWidth: .infinity)
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .overlay { PickMark(picked: picked, cornerRadius: 16) }
+                .overlay(alignment: .topLeading) { RankBadge(rank: rank).padding(8) }
+                .overlay(alignment: .topTrailing) { ScoreBadge(score: moment.score).padding(8) }
+            Text(moment.caption).font(.subheadline.bold()).lineLimit(2, reservesSpace: true)
+            Text(moment.best.date.shortDay).font(.caption).foregroundStyle(.secondary)
         }
-        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .onTapGesture(perform: action)
+        .onLongPressGesture(minimumDuration: 0.4, perform: onHold)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(picked == true ? [.isButton, .isSelected] : .isButton)
+        .accessibilityAction(.default, action)
+        .accessibilityAction(named: picked == nil ? "Pick photos to send" : "Pick or unpick", onHold)
+    }
+}
+
+/// While picking photos: a dimmed check when picked, an empty circle when not.
+struct PickMark: View {
+    let picked: Bool?
+    var cornerRadius: CGFloat = 10
+    var body: some View {
+        if let picked {
+            ZStack(alignment: .bottomTrailing) {
+                RoundedRectangle(cornerRadius: cornerRadius)
+                    .fill(picked ? Color.black.opacity(0.3) : Color.clear)
+                RoundedRectangle(cornerRadius: cornerRadius)
+                    .strokeBorder(picked ? Theme.accent : Color.clear, lineWidth: 3)
+                Image(systemName: picked ? "checkmark.circle.fill" : "circle")
+                    .font(.title2.bold())
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(Color.white, picked ? Theme.accent : Color.black.opacity(0.25))
+                    .shadow(radius: 2)
+                    .padding(6)
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
     }
 }
 
 struct Tile: View {
     let moment: Moment
     let rank: Int?
+    var picked: Bool? = nil
+    var onHold: () -> Void = {}
     let action: () -> Void
     var body: some View {
-        Button(action: action) {
-            Color.clear.aspectRatio(1, contentMode: .fit)
-                .overlay(AssetImage(id: moment.best.id, targetSide: 200))
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-                .overlay(alignment: .topLeading) { if let rank { RankBadge(rank: rank).scaleEffect(0.8).padding(2) } }
-                .overlay(alignment: .bottomTrailing) { ScoreBadge(score: moment.score).scaleEffect(0.85).padding(3) }
-        }
-        .buttonStyle(.plain)
-        .contentShape(RoundedRectangle(cornerRadius: 10))
-        .accessibilityLabel("Score \(moment.score), \(moment.caption), \(moment.best.date.shortDay)")
+        Color.clear.aspectRatio(1, contentMode: .fit)
+            .overlay(AssetImage(id: moment.best.id, targetSide: 200))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(alignment: .topLeading) { if let rank { RankBadge(rank: rank).scaleEffect(0.8).padding(2) } }
+            .overlay(alignment: .bottomTrailing) { if picked == nil { ScoreBadge(score: moment.score).scaleEffect(0.85).padding(3) } }
+            .overlay { PickMark(picked: picked) }
+            .contentShape(RoundedRectangle(cornerRadius: 10))
+            .onTapGesture(perform: action)
+            .onLongPressGesture(minimumDuration: 0.4, perform: onHold)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Score \(moment.score), \(moment.caption), \(moment.best.date.shortDay)")
+            .accessibilityAddTraits(picked == true ? [.isButton, .isSelected] : .isButton)
+            .accessibilityAction(.default, action)
+            .accessibilityAction(named: picked == nil ? "Pick photos to send" : "Pick or unpick", onHold)
     }
 }
 

@@ -86,9 +86,11 @@ struct ViewerView: View {
 
 /// The system share sheet without "Save Image": Aww List only reads the photo library, it never adds to it.
 struct ShareSheet: UIViewControllerRepresentable {
-    let image: UIImage
+    let images: [UIImage]
+    init(image: UIImage) { images = [image] }
+    init(images: [UIImage]) { self.images = images }
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        let vc = UIActivityViewController(activityItems: [image], applicationActivities: nil)
+        let vc = UIActivityViewController(activityItems: images, applicationActivities: nil)
         // No "Save Image" and no adding to an iCloud Shared Album (both would write to the photo library).
         vc.excludedActivityTypes = [.saveToCameraRoll, UIActivity.ActivityType("com.apple.mobileslideshow.StreamShareService")]
         return vc
