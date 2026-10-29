@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 enum ListScope: Hashable { case all, year(Int) }
 
@@ -19,12 +20,16 @@ struct HomeView: View {
     @State private var selecting = false
     @State private var picked: [String] = []
     @State private var preparing = false
+    @State private var progress = (done: 0, of: 0)
+    @State private var sendTask: Task<Void, Never>?
     @State private var sharing: SharePayload?
-    @State private var note: String?
+    @State private var note: (id: UUID, text: String)?
+    /// Most photos you can pick at once (each is a full-size photo in memory while it's copied or shared).
+    private let maxPick = 20
 
     struct SharePayload: Identifiable {
         let id = UUID()
-        let images: [UIImage]
+        let files: [URL]
     }
 
     private var pool: [Moment] {
@@ -73,11 +78,10 @@ struct HomeView: View {
                 .padding(.bottom, 32)
             }
             .navigationTitle(selecting ? "\(picked.count) selected" : "Aww List")
-            .navigationBarTitleDisplayMode(selecting ? .inline : .automatic)
             .safeAreaInset(edge: .bottom) { if selecting { selectionBar } }
             .overlay(alignment: .bottom) {
                 if let note {
-                    Text(note).font(.subheadline.bold()).foregroundStyle(.white)
+                    Text(note.text).font(.subheadline.bold()).foregroundStyle(.white)
                         .padding(.horizontal, 16).padding(.vertical, 10)
                         .background(Color.black.opacity(0.85), in: Capsule())
                         .padding(.bottom, selecting ? 90 : 24)
@@ -85,11 +89,11 @@ struct HomeView: View {
                         .accessibilityAddTraits(.isStaticText)
                 }
             }
-            .sheet(item: $sharing) { p in ShareSheet(images: p.images).presentationDetents([.medium, .large]) }
+            .sheet(item: $sharing) { p in ShareSheet(items: p.files).presentationDetents([.medium, .large]) }
             .toolbar {
                 if selecting {
                     ToolbarItem(placement: .topBarLeading) {
-                        Button("Cancel") { endSelecting() }
+                        Button("Cancel") { sendTask?.cancel(); endSelecting() }
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
@@ -104,10 +108,10 @@ struct HomeView: View {
             .sheet(isPresented: $showSettings) { SettingsView() }
             .sheet(isPresented: $showWho) { WhoView() }
             .fullScreenCover(item: $viewer) { v in ViewerView(moments: v.list, index: v.index) }
-            .onChange(of: scope) { shown = 60 }
-            .onChange(of: age) { shown = 60 }
-            .onChange(of: shot) { shown = 60 }
-            .onChange(of: person) { shown = 60 }
+            .onChange(of: scope) { shown = 60; if !preparing { endSelecting() } }
+            .onChange(of: age) { shown = 60; if !preparing { endSelecting() } }
+            .onChange(of: shot) { shown = 60; if !preparing { endSelecting() } }
+            .onChange(of: person) { shown = 60; if !preparing { endSelecting() } }
             .onChange(of: library.people) {
                 if let p = person, !library.people.contains(where: { $0.id == p }) { person = nil }
             }
@@ -178,7 +182,8 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text(scopeTitle + " top 30").font(Theme.display(26)).lineLimit(1).minimumScaleFactor(0.7)
             Text("\(pool.count.formatted()) moments ranked").font(.subheadline).foregroundStyle(.secondary)
-            if !selecting {
+            // While picking, this row stays (blank) so the photos don't jump under your finger.
+            Group {
                 let n = min(3, top.count)
                 HStack(spacing: 8) {
                     Button { send(Array(top.prefix(3)).map(\.best.id), copy: true) } label: {
@@ -188,8 +193,11 @@ struct HomeView: View {
                         Label("Share top \(n)", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
                     }
                 }
-                .buttonStyle(.bordered).controlSize(.regular).disabled(preparing || top.isEmpty)
-                Text("Tip: hold any photo to pick several to send.").font(.caption).foregroundStyle(.secondary)
+                .buttonStyle(.bordered).controlSize(.regular).disabled(preparing || top.isEmpty || selecting)
+                .opacity(selecting ? 0 : 1)
+                .accessibilityHidden(selecting)
+                Text(selecting ? "Tap photos to pick up to \(maxPick)." : "Tip: hold any photo to pick several to send.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             if let first = top.first {
                 Card(moment: first, rank: 1, height: 380, picked: pickState(first), onHold: { hold(first) }) { tap(top, 0) }
@@ -258,15 +266,19 @@ struct HomeView: View {
 
     /// Holding a photo starts picking (with that photo picked), or toggles it if already picking.
     private func hold(_ m: Moment) {
+        guard !preparing else { return }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         if selecting { toggle(m) } else { selecting = true; picked = [m.best.id] }
     }
 
     private func toggle(_ m: Moment) {
-        if let i = picked.firstIndex(of: m.best.id) { picked.remove(at: i) } else { picked.append(m.best.id) }
+        guard !preparing else { return }
+        if let i = picked.firstIndex(of: m.best.id) { picked.remove(at: i) }
+        else if picked.count >= maxPick { flash("You can pick up to \(maxPick) photos at a time") }
+        else { picked.append(m.best.id) }
     }
 
-    private func endSelecting() { selecting = false; picked = [] }
+    private func endSelecting() { selecting = false; picked = []; preparing = false }
 
     private var selectionBar: some View {
         HStack(spacing: 10) {
@@ -275,7 +287,8 @@ struct HomeView: View {
             }
             .buttonStyle(.bordered)
             Button { send(picked, copy: false) } label: {
-                Label(preparing ? "Getting photos…" : "Share \(picked.count)", systemImage: "square.and.arrow.up")
+                Label(preparing ? "Getting \(progress.done) of \(progress.of)…" : "Share \(picked.count)",
+                      systemImage: "square.and.arrow.up")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
@@ -286,35 +299,62 @@ struct HomeView: View {
         .background(.bar)
     }
 
-    /// Loads the full photos (read only, never changed) and copies them for pasting into a text, or opens the share sheet.
+    /// Loads the photos (read only, never changed), turns them into JPEGs off the main thread, and either copies them
+    /// for pasting into a text or opens the share sheet. Nothing is written to the photo library.
     private func send(_ ids: [String], copy: Bool) {
+        let ids = Array(ids.prefix(maxPick))
         guard !ids.isEmpty, !preparing else { return }
         preparing = true
-        Task {
-            var images: [UIImage] = []
+        progress = (0, ids.count)
+        let wasPicking = selecting, session = picked
+        sendTask = Task {
+            var jpegs: [Data] = []
             for id in ids {
-                if let img = await AssetImage.load(id: id, size: CGSize(width: 2048, height: 2048), mode: .aspectFit) { images.append(img) }
+                if Task.isCancelled { break }
+                if let img = await AssetImage.load(id: id, size: CGSize(width: 1600, height: 1600), mode: .aspectFit),
+                   let data = await Task.detached(priority: .userInitiated, operation: { img.jpegData(compressionQuality: 0.85) }).value {
+                    jpegs.append(data)
+                }
+                progress.done += 1
             }
             preparing = false
-            guard !images.isEmpty else { flash("Couldn't load those photos"); return }
-            let missing = ids.count - images.count
+            guard !Task.isCancelled else { return }
+            guard !jpegs.isEmpty else { flash("Couldn't load those photos"); return }
+            let missing = ids.count - jpegs.count
+            let n = jpegs.count
+            let gap = missing > 0 ? " (\(missing) couldn't load)" : ""
             if copy {
-                UIPasteboard.general.images = images
-                let n = images.count
-                flash("Copied \(n) photo\(n == 1 ? "" : "s"). Paste into a text." + (missing > 0 ? " (\(missing) couldn't load)" : ""))
+                UIPasteboard.general.setItems(jpegs.map { [UTType.jpeg.identifier: $0] })
+                flash("Copied \(n) photo\(n == 1 ? "" : "s"). Paste into a text." + gap)
             } else {
-                sharing = SharePayload(images: images)
-                if missing > 0 { flash("\(missing) photo\(missing == 1 ? "" : "s") couldn't load") }
+                let files = await Task.detached(priority: .userInitiated) { Self.writeTemp(jpegs) }.value
+                guard !files.isEmpty else { flash("Couldn't get those photos ready"); return }
+                if missing > 0 { flash("Sharing \(n)" + gap) }
+                sharing = SharePayload(files: files)
             }
-            if selecting { endSelecting() }
+            // End picking only if it's still the same pick (not a new one started meanwhile).
+            if wasPicking && selecting && picked == session { endSelecting() }
+        }
+    }
+
+    /// Writes the JPEGs to this app's own temporary folder (replacing the last batch) for the share sheet.
+    nonisolated private static func writeTemp(_ jpegs: [Data]) -> [URL] {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("AwwShare", isDirectory: true)
+        try? FileManager.default.removeItem(at: dir)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return jpegs.enumerated().compactMap { i, d in
+            let url = dir.appendingPathComponent("Aww \(i + 1).jpg")
+            return (try? d.write(to: url)) != nil ? url : nil
         }
     }
 
     private func flash(_ text: String) {
-        withAnimation { note = text }
+        let id = UUID()
+        withAnimation { note = (id, text) }
+        AccessibilityNotification.Announcement(text).post()
         Task {
             try? await Task.sleep(for: .seconds(3))
-            withAnimation { if note == text { note = nil } }
+            withAnimation { if note?.id == id { note = nil } }
         }
     }
 }
@@ -350,6 +390,7 @@ struct Card: View {
     var picked: Bool? = nil
     var onHold: () -> Void = {}
     let action: () -> Void
+    @State private var pressing = false
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             AssetImage(id: moment.best.id, targetSide: height * 1.4)
@@ -362,8 +403,10 @@ struct Card: View {
             Text(moment.best.date.shortDay).font(.caption).foregroundStyle(.secondary)
         }
         .contentShape(Rectangle())
+        .scaleEffect(pressing ? 0.97 : 1)
+        .animation(.easeOut(duration: 0.15), value: pressing)
         .onTapGesture(perform: action)
-        .onLongPressGesture(minimumDuration: 0.4, perform: onHold)
+        .onLongPressGesture(minimumDuration: 0.4, perform: onHold, onPressingChanged: { pressing = $0 })
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(picked == true ? [.isButton, .isSelected] : .isButton)
         .accessibilityAction(.default, action)
@@ -401,6 +444,7 @@ struct Tile: View {
     var picked: Bool? = nil
     var onHold: () -> Void = {}
     let action: () -> Void
+    @State private var pressing = false
     var body: some View {
         Color.clear.aspectRatio(1, contentMode: .fit)
             .overlay(AssetImage(id: moment.best.id, targetSide: 200))
@@ -409,8 +453,10 @@ struct Tile: View {
             .overlay(alignment: .bottomTrailing) { if picked == nil { ScoreBadge(score: moment.score).scaleEffect(0.85).padding(3) } }
             .overlay { PickMark(picked: picked) }
             .contentShape(RoundedRectangle(cornerRadius: 10))
+            .scaleEffect(pressing ? 0.95 : 1)
+            .animation(.easeOut(duration: 0.15), value: pressing)
             .onTapGesture(perform: action)
-            .onLongPressGesture(minimumDuration: 0.4, perform: onHold)
+            .onLongPressGesture(minimumDuration: 0.4, perform: onHold, onPressingChanged: { pressing = $0 })
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Score \(moment.score), \(moment.caption), \(moment.best.date.shortDay)")
             .accessibilityAddTraits(picked == true ? [.isButton, .isSelected] : .isButton)
