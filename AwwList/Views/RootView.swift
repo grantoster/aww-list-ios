@@ -240,10 +240,10 @@ struct ClaudeSection: View {
                 }
                 .disabled(!hasKey || !agreed || claude.busy || rc == 0 || scanner.isScanning)
                 if let c = library.consistency {
-                    let pts = String(format: "%.1f", (c.gap * 10).rounded(.toNearestOrAwayFromZero) / 10)
+                    let pts = String(format: "%.1f", (c.gap * 10 + 1e-9).rounded(.toNearestOrAwayFromZero) / 10)
                     let pct = Int((c.withinHalf * 100 + 1e-9).rounded(.toNearestOrAwayFromZero))
                     LabeledContent("Claude vs. itself", value: "\(pts) points apart · \(pct)% within half a point")
-                    Text("On \(c.n.formatted()) photos Claude scored twice. No learned score can match Claude more closely than Claude matches itself. The learning uses the average of the two scores. The cost is an estimate; your Anthropic bill shows the actual.")
+                    Text("On \(c.n.formatted()) photos Claude scored twice. That's how much Claude's own scores wobble; the learned score can't reliably beat that noise. The learning uses the average of the two scores (so its accuracy above is measured against those averages too). The cost is an estimate; your Anthropic bill shows the actual.")
                         .font(.footnote).foregroundStyle(.secondary)
                 } else {
                     Text("Re-sends photos Claude already scored (spread across the years) to see how much its scores vary, and to give the learning steadier targets. Same privacy rules as scoring.")

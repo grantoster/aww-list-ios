@@ -138,7 +138,9 @@ final class Analyzer {
                 face.eyesClosed = m.closed
             }
             // Is this person a child? (Checked for the four largest faces big enough to read.)
-            if box.height >= 0.04 && boxes.filter({ $0.width * $0.height > box.width * box.height }).count < 4 {
+            // Only worth it with two or more faces and some sign of a child (otherwise it can't change the subject).
+            if faceObs.count >= 2 && (s.childPrecise || s.childConfidence >= 0.1)
+                && box.height >= 0.04 && boxes.filter({ $0.width * $0.height > box.width * box.height }).count < 4 {
                 face.child = childConfidence(handler, face: box)
             }
             // Shirtless check on every face big enough to measure: about 30 px tall, or the main face(s) of the photo.

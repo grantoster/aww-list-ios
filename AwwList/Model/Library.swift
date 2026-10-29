@@ -127,11 +127,22 @@ final class Library: ObservableObject {
     func removeClaudeBatch(_ id: String) { claudeBatches.removeAll { $0.id == id }; save() }
     /// Second scores from the consistency check: stored next to the first (a removal on the second pass is
     /// recorded as no second score), and the learning then uses the average.
-    func applyRecheck(_ verdicts: [String: ClaudeVerdict]) {
-        guard !verdicts.isEmpty else { return }
-        for (id, v) in verdicts where photos[id]?.claude != nil {
-            photos[id]?.claude?.score2 = v.exclude == nil ? v.score : nil
+    func applyRecheck(_ verdicts: [String: ClaudeVerdict], failed: [String] = []) {
+        guard !verdicts.isEmpty || !failed.isEmpty else { return }
+        for id in failed { photos[id]?.claude?.rechecked = true }   // not offered (or billed) again
+        for (id, v) in verdicts {
+            guard let c = photos[id]?.claude else { continue }
             photos[id]?.claude?.rechecked = true
+            // Only a second score from the same model and rubric is averaged with the first.
+            guard v.model == c.model && v.rubric == c.rubric else { continue }
+            if let e = v.exclude {
+                // Claude took it off on the second pass: that call stands (and guards its burst from now on).
+                claudeRemoved[id] = e
+                photos[id]?.claude?.exclude = e
+                photos[id]?.claude?.score2 = nil
+            } else {
+                photos[id]?.claude?.score2 = v.score
+            }
         }
         rebuild(); flush()
         retrain()
@@ -222,7 +233,7 @@ final class Library: ObservableObject {
         return (Learner.predict(m, x) * 10).rounded(.toNearestOrAwayFromZero) / 10
     }
 
-    /// Re-learns from every Claude verdict (off the main thread; a few seconds at most). Runs after new verdicts
+    /// Re-learns from every Claude verdict (off the main thread; up to about half a minute for thousands of scores). Runs after new verdicts
     /// arrive and after a scan adds fingerprints; skipped when nothing changed since the last run (even across launches).
     private var pendingRetrain = false
     private var trainedSignature: UInt64?
@@ -563,7 +574,12 @@ final class Library: ObservableObject {
         }
         // A filter saved before its check counted removals would stay switched off: learn again once.
         if let f = ownFilter, f.testRemovals == nil { trainedSignature = nil }
-        ownModel = s.learned.flatMap { $0.weights.count == Learner.featureCount ? $0 : nil }
+        ownModel = s.learned.flatMap { m -> LearnedModel? in
+            guard m.weights.count == Learner.featureCount else { return nil }
+            var m = m
+            if let n = m.mlp, n.w1.count != n.h * Learner.netInputs || n.b1.count != n.h || n.w2.count != n.h { m.mlp = nil; m.blend = 0 }
+            return m
+        }
         applyLearning()
         claudeScope = s.claudeScope ?? claudeScope
         claudeBatches = s.claudeBatches ?? []

@@ -350,7 +350,7 @@ final class ClaudeService: ObservableObject {
         let model = library.claudeModel
         let pending = Set(library.claudeBatches.flatMap { $0.photos.values })
         let pool = library.claudePool.filter { m in
-            guard let c = m.best.claude, c.exclude == nil, c.model == model, c.rechecked != true else { return false }
+            guard let c = m.best.claude, c.exclude == nil, c.model == model, c.rubric == Claude.rubric, c.rechecked != true else { return false }
             return !pending.contains(m.best.id) && !m.memberIDs.contains(where: library.neverSend.contains)
         }.sorted { $0.best.date < $1.best.date }
         guard pool.count > Self.recheckCount else { return pool }
@@ -496,7 +496,7 @@ final class ClaudeService: ObservableObject {
         for b in library.claudeBatches {
             do {
                 let (data, code) = try await fetch(request(endpoint.appendingPathComponent(b.id)))
-                if code == 404 { library.unsend(model: b.model, Array(b.photos.values)); library.removeClaudeBatch(b.id); status = "A batch was no longer on Anthropic's side; those photos can be sent again."; continue }
+                if code == 404 { if b.recheck != true { library.unsend(model: b.model, Array(b.photos.values)) }; library.removeClaudeBatch(b.id); status = "A batch was no longer on Anthropic's side; those photos can be sent again."; continue }
                 guard code == 200, let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                     throw ClaudeError.http(code, code == 429 || code >= 500 ? "Claude is busy; try again in a few minutes." : "")
                 }
@@ -507,7 +507,7 @@ final class ClaudeService: ObservableObject {
                     continue
                 }
                 guard let urlString = obj["results_url"] as? String, let url = URL(string: urlString) else {
-                    library.unsend(model: b.model, Array(b.photos.values)); library.removeClaudeBatch(b.id); continue
+                    if b.recheck != true { library.unsend(model: b.model, Array(b.photos.values)) }; library.removeClaudeBatch(b.id); continue
                 }
                 let (results, rcode) = try await fetch(request(url))
                 guard rcode == 200 else { throw ClaudeError.http(rcode, "Couldn't download the results yet; they'll be retried.") }
@@ -526,7 +526,7 @@ final class ClaudeService: ObservableObject {
                     }
                 }
                 if b.recheck == true {
-                    library.applyRecheck(verdicts)        // second scores; failures just aren't re-checked
+                    library.applyRecheck(verdicts, failed: failed)   // second scores; failures aren't offered again
                 } else {
                     library.applyClaude(verdicts)
                     library.noteClaudeFailures(failed)

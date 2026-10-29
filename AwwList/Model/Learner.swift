@@ -399,7 +399,7 @@ enum Learner {
         guard train.count >= minimumExamples, test.count >= 10 else { return nil }
         func fold(_ d: Date) -> UInt64 { (group(d) / 5) % 4 }
         var bestLambda = 100.0, bestGap = Double.infinity
-        for lambda in [1.0, 10, 100, 1000] {
+        for lambda in [1.0, 10, 100, 1000, 10000] {
             var total = 0.0, count = 0
             for k in 0..<UInt64(4) {
                 let fitPart = train.filter { fold($0.date) != k }, checkPart = train.filter { fold($0.date) == k }
@@ -410,6 +410,19 @@ enum Learner {
         }
         guard let f = fit(train.map(\.x), train.map(\.y), lambda: bestLambda),
               let all = fit(examples.map(\.x), examples.map(\.y), lambda: bestLambda) else { return nil }
+        // The net's training rows see the formula's out-of-fold guess (as it will on new photos), not its guess on
+        // rows it was fitted to; `f` is only used for standardizing.
+        func netRows(_ rows: [(date: Date, x: [Double], y: Double)], _ f: Fit) -> [[Double]] {
+            var out = rows.map { netInput($0.x, f) }
+            for k in 0..<UInt64(4) {
+                let idx = rows.indices.filter { fold(rows[$0].date) == k }
+                let rest = rows.indices.filter { fold(rows[$0].date) != k }
+                guard !idx.isEmpty, rest.count >= 2,
+                      let g = fit(rest.map { rows[$0].x }, rest.map { rows[$0].y }, lambda: bestLambda) else { continue }
+                for i in idx { out[i][out[i].count - 1] = (predict(g, rows[i].x) - 5.5) / 2 }
+            }
+            return out
+        }
 
         // The neural net: trained on three folds of the training days, stopped when the fourth stops improving,
         // and blended with the formula by whatever mix does best on that fourth fold.
@@ -418,7 +431,7 @@ enum Learner {
             let fitPart = train.filter { fold($0.date) != 0 }, valPart = train.filter { fold($0.date) == 0 }
             if fitPart.count >= minimumExamples, valPart.count >= 10,
                let rf = fit(fitPart.map(\.x), fitPart.map(\.y), lambda: bestLambda) {
-                let zf = fitPart.map { netInput($0.x, rf) }, zv = valPart.map { netInput($0.x, rf) }
+                let zf = netRows(fitPart, rf), zv = valPart.map { netInput($0.x, rf) }
                 if let (net, e) = trainMLP(zf, fitPart.map(\.y), epochs: 150, val: (zv, valPart.map(\.y))), e > 0 {
                     epochs = e
                     var bestErr = Double.infinity
@@ -432,7 +445,7 @@ enum Learner {
         }
         // The honest check on held-back days, with the formula and net trained on the training days only.
         var testNet: MLP? = nil
-        if blend > 0 { testNet = trainMLP(train.map { netInput($0.x, f) }, train.map(\.y), epochs: epochs)?.net }
+        if blend > 0 { testNet = trainMLP(netRows(train, f), train.map(\.y), epochs: epochs)?.net }
         func testPredict(_ x: [Double]) -> Double {
             let linear = predict(f, x)
             guard let n = testNet else { return linear }
@@ -447,12 +460,13 @@ enum Learner {
         func mean(_ g: [Double]) -> Double { g.reduce(0, +) / Double(g.count) }
         // Top picks: Claude's top fifth of the held-back photos, and how many of them the learning also ranks there.
         let k = max(1, Int((Double(test.count) * 0.2).rounded(.up)))
-        let claudeTop = Set(test.indices.sorted { test[$0].y > test[$1].y }.prefix(k))
-        let learnedTop = Set(test.indices.sorted { preds[$0] > preds[$1] }.prefix(k))
-        let overlap = Double(claudeTop.intersection(learnedTop).count) / Double(k)
+        // A pick counts when Claude scored it at least as high as its k-th best (so ties can't change the result).
+        let kth = test.map(\.y).sorted(by: >)[k - 1]
+        let learnedTop = test.indices.sorted { preds[$0] != preds[$1] ? preds[$0] > preds[$1] : $0 < $1 }.prefix(k)
+        let overlap = Double(learnedTop.filter { test[$0].y >= kth - 1e-9 }.count) / Double(k)
         // The final net, on everything (same number of epochs).
         var finalNet: MLP? = nil
-        if blend > 0 { finalNet = trainMLP(examples.map { netInput($0.x, all) }, examples.map(\.y), epochs: epochs)?.net }
+        if blend > 0 { finalNet = trainMLP(netRows(examples, all), examples.map(\.y), epochs: epochs)?.net }
         return LearnedModel(mean: all.mean, std: all.std, weights: all.w, bias: all.bias, lambda: bestLambda,
                             trainedOn: examples.count, tested: test.count, within1: within(gaps), meanGap: mean(gaps),
                             date: Date(), baselineWithin1: within(baseGaps), baselineGap: mean(baseGaps),

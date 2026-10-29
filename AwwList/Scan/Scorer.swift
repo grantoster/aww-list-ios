@@ -110,7 +110,7 @@ enum Scorer {
         let subj = s.faces[si]
         let others = s.faces.enumerated().filter { $0.offset != si }.map(\.element)
 
-        // Expression: the subject (largest face) counts double; everyone else shares the rest.
+        // Expression: the subject (the child's face, see subjectIndex) counts double; everyone else shares the rest.
         // Two smiling adults beside a serious baby no longer beat one smiling child.
         var emotion = (2 * (subj.smile ? 1.0 : 0) + Double(others.filter(\.smile).count)) / Double(2 + others.count)
         // A sleeping baby is a sweet moment, not a miss, whether alone or in someone's arms.
