@@ -38,8 +38,10 @@ struct RootView: View {
 struct WelcomeView: View {
     let onStart: () -> Void
     var body: some View {
+        GeometryReader { geo in
+        ScrollView {
         VStack(spacing: 20) {
-            Spacer()
+            Spacer(minLength: 0)
             Image(systemName: "heart.text.square.fill").font(.system(size: 72)).foregroundStyle(Theme.accent)
             Text("Aww List").font(Theme.display(40))
             Text("Finds the cutest photos of your kids and ranks them, year by year.")
@@ -50,7 +52,7 @@ struct WelcomeView: View {
                 Label("Bursts count as one moment, using the best shot.", systemImage: "square.stack")
             }
             .font(.subheadline).padding().background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 14))
-            Spacer()
+            Spacer(minLength: 0)
             Button(action: onStart) {
                 Text("Choose photos to scan").font(.headline).frame(maxWidth: .infinity, minHeight: 52)
             }
@@ -58,6 +60,9 @@ struct WelcomeView: View {
             Text("For the full list, allow access to all photos.").font(.caption).foregroundStyle(.secondary)
         }
         .padding(24)
+        .frame(minHeight: geo.size.height)   // fills the screen, and scrolls when text is large
+        }
+        }
     }
 }
 
@@ -88,7 +93,7 @@ struct SettingsView: View {
                     if !library.hidden.isEmpty {
                         Button("Put back \(library.hidden.count) removed photos") { library.restoreHidden() }
                     }
-                    Button(scanner.isScanning ? "Scanning…" : "Scan for new photos") { scanner.start(library: library, retryUnavailable: true) }
+                    Button(scanner.isScanning ? "Scanning…" : "Rescan, including photos that couldn't load") { scanner.start(library: library, retryUnavailable: true) }
                         .disabled(scanner.isScanning)
                 }
                 Section("How scores work") {

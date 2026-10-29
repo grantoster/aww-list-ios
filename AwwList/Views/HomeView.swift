@@ -102,7 +102,7 @@ struct HomeView: View {
                 HStack {
                     Text("See all").font(Theme.display(22))
                     Spacer()
-                    sortPicker.frame(width: 180)
+                    sortPicker.frame(maxWidth: 200)
                 }
                 VStack(alignment: .leading, spacing: 8) {
                     Text("See all").font(Theme.display(22))
@@ -194,6 +194,7 @@ struct Tile: View {
                 .overlay(alignment: .bottomTrailing) { ScoreBadge(score: moment.score).scaleEffect(0.85).padding(3) }
         }
         .buttonStyle(.plain)
+        .contentShape(RoundedRectangle(cornerRadius: 10))
         .accessibilityLabel("Score \(moment.score), \(moment.best.caption), \(moment.best.date.shortDay)")
     }
 }

@@ -20,6 +20,7 @@ struct AssetImage: View {
                 }
             }
             .clipped()
+            .contentShape(Rectangle())   // taps land on the visible photo, not its cropped-off overflow
         .task(id: id) {
             let px = targetSide * scale
             image = await Self.load(id: id, size: CGSize(width: px, height: px),
