@@ -130,6 +130,7 @@ final class Library: ObservableObject {
               let t = try? String(contentsOf: u, encoding: .utf8) else { return (nil, nil) }
         return LearningPack.read(t)
     }()
+    var builtInScores: Int { builtIn.model?.trainedOn ?? 0 }
     @Published private(set) var learnedIsBuiltIn = false
     @Published private(set) var filterIsBuiltIn = false
     /// This phone's own learning (not the built-in one) as text, for building into the app.
@@ -189,10 +190,13 @@ final class Library: ObservableObject {
                     self.pendingRetrain = false; self.retrain(); return
                 }
                 self.trainedSignature = signature
-                // Too few scores (for example after clearing) means no learning of this phone's own:
-                // fall back to the built-in learning, or none.
-                self.learned = model; self.learnedIsBuiltIn = false
-                self.learnedFilter = filter; self.filterIsBuiltIn = false
+                // Too few scores (for example after clearing) means no learning of this phone's own: fall back to the
+                // built-in learning, or none. This phone's own learning takes over from the built-in one only once it
+                // has learned from at least as many Claude verdicts, so a fresh install doesn't trade 1,600 scores for 60.
+                let keepModel = model.map { m in self.builtIn.model.map { m.trainedOn >= $0.trainedOn } ?? true } ?? false
+                let keepFilter = filter.map { f in self.builtIn.filter.map { f.trainedOn >= $0.trainedOn } ?? true } ?? false
+                self.learned = keepModel ? model : nil; self.learnedIsBuiltIn = false
+                self.learnedFilter = keepFilter ? filter : nil; self.filterIsBuiltIn = false
                 self.useBuiltInWhereMissing()
                 self.rebuild(); self.save()
                 if self.pendingRetrain { self.pendingRetrain = false; self.retrain() }

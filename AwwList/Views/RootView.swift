@@ -291,7 +291,7 @@ struct LearnedSection: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             if library.learnedIsBuiltIn || library.filterIsBuiltIn {
-                Text("Using the learning built into the app for now. Your own Claude scores take over once there are enough of them.")
+                Text("Using the learning built into the app (from \(library.builtInScores.formatted()) Claude scores). Your own Claude scores take over once there are at least as many.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             if let text = library.learningText {
