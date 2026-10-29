@@ -91,6 +91,7 @@ struct DeniedView: View {
 struct SettingsView: View {
     @EnvironmentObject var library: Library
     @EnvironmentObject var scanner: PhotoScanner
+    @State private var keepTick = 0
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         NavigationStack {
@@ -106,6 +107,12 @@ struct SettingsView: View {
                     }
                     Button(scanner.isScanning ? "Scanning…" : "Rescan, including photos that couldn't load") { scanner.start(library: library, retryUnavailable: true) }
                         .disabled(scanner.isScanning)
+                    if BackgroundScan.canContinueInBackground {
+                        Toggle("Keep scanning when I leave the app", isOn: Binding(
+                            get: { UserDefaults.standard.bool(forKey: BackgroundScan.autoKey) },
+                            set: { UserDefaults.standard.set($0, forKey: BackgroundScan.autoKey); keepTick += 1 }))
+                            .id(keepTick)
+                    }
                 }
                 HeldBackSection()
                 Section("What's left out") {
@@ -181,6 +188,7 @@ struct BirthdaysSection: View {
 struct ClaudeSection: View {
     @EnvironmentObject var library: Library
     @EnvironmentObject var claude: ClaudeService
+    @EnvironmentObject var scanner: PhotoScanner
     @State private var key = ""
     @State private var hasKey = Claude.apiKey != nil
     @State private var agreed = false
@@ -217,8 +225,8 @@ struct ClaudeSection: View {
             Toggle("Also send possible swimwear or shirtless photos",
                    isOn: Binding(get: { library.claudeSensitive }, set: { library.setClaudeSensitive($0) }))
             Toggle("Send these photos to Claude", isOn: $agreed)
-            Button(claude.busy ? "Working…" : "Score with Claude") { Task { await claude.send(library) } }
-                .disabled(!hasKey || !agreed || claude.busy || n == 0)
+            Button(claude.busy ? "Working…" : scanner.isScanning ? "Score with Claude (after the scan)" : "Score with Claude") { Task { await claude.send(library) } }
+                .disabled(!hasKey || !agreed || claude.busy || n == 0 || scanner.isScanning)
             if !library.claudeBatches.isEmpty {
                 Button("Check for Claude's scores") { Task { await claude.collect(library) } }.disabled(claude.busy)
             }

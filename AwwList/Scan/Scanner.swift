@@ -298,6 +298,7 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
     func keepOld() -> PhotoOutcome? {
         guard var old = restamp[asset.localIdentifier] else { return nil }
         old.flagVersion = 2
+        old.version = Scorer.version   // its held-back or flagged reason stands; just don't keep re-reading it
         return .done(old)
     }
     return autoreleasepool {

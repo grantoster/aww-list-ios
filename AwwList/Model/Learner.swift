@@ -41,7 +41,7 @@ struct LearnedFilter: Codable, Equatable {
     var testRemovals: Int? = nil   // Claude's removals among the held-back photos
     /// Only used when the check had enough of Claude's removals to mean something and it beat keeping everything
     /// by at least 2 points (so one lucky photo can't switch it on).
-    var useful: Bool { (testRemovals ?? 0) >= Learner.minimumTestRemovals && accuracy >= baselineAccuracy + 0.02 }
+    var useful: Bool { (testRemovals ?? 0) >= Learner.minimumTestRemovals && accuracy + 1e-9 >= baselineAccuracy + 0.02 }
 }
 
 /// Turns photos into fingerprints and learns Claude's scoring from them. Pure math, so it's unit tested.

@@ -382,6 +382,8 @@ final class Library: ObservableObject {
         claudeSensitive = s.claudeSensitive ?? false
         learnedFilter = s.learnedFilter.flatMap { $0.weights.count == Learner.featureCount ? $0 : nil }
         trainedSignature = s.trainedSignature
+        // A filter saved before its check counted removals would stay switched off: learn again once.
+        if let f = learnedFilter, f.testRemovals == nil { trainedSignature = nil }
         learned = s.learned.flatMap { $0.weights.count == Learner.featureCount ? $0 : nil }
         claudeScope = s.claudeScope ?? claudeScope
         claudeBatches = s.claudeBatches ?? []

@@ -251,15 +251,21 @@ enum Scorer {
     static func caption(_ s: Signals, date: Date? = nil) -> String { Describe.caption(s, date: date) }
 
     /// Photos that must never be sent to Claude, whatever the user puts back: every possible bath or undressed
-    /// photo and every shot within 10 minutes of one, plus, unless the user allows it, possible swimwear photos
-    /// (with the 10 minutes around them) and shirtless ones (with the 2 minutes around them).
+    /// photo (by Apple's check or an earlier Claude verdict) and every shot within 10 minutes of one; every shot
+    /// within 10 minutes of a photo that couldn't be read (so it was never checked); plus, unless the user allows
+    /// it, possible swimwear photos (10 minutes around) and shirtless ones (2 minutes around).
     static func neverSend(_ photos: [PhotoScore], allowSwimShirtless: Bool) -> Set<String> {
-        var windows: [String: TimeInterval] = ["Bath": 600, "Undressed": 600]
+        var windows: [String: TimeInterval] = ["Bath": 600, "Undressed": 600, unavailable: 600]
         if !allowSwimShirtless { windows["Swimwear"] = 600; windows["Shirtless"] = 120 }
+        let claudeReason = ["bath": "Bath", "undressed": "Undressed", "swimwear": "Swimwear"]
+        func window(_ p: PhotoScore) -> TimeInterval? {
+            let a = windows[p.excluded ?? ""], b = p.claude?.exclude.flatMap { claudeReason[$0] }.flatMap { windows[$0] }
+            return [a, b].compactMap { $0 }.max()
+        }
         let sorted = photos.sorted { $0.date < $1.date }
         var out = Set<String>()
         for (i, p) in sorted.enumerated() {
-            guard let w = windows[p.excluded ?? ""] else { continue }
+            guard let w = window(p) else { continue }
             out.insert(p.id)
             var j = i - 1
             while j >= 0 && p.date.timeIntervalSince(sorted[j].date) <= w { out.insert(sorted[j].id); j -= 1 }

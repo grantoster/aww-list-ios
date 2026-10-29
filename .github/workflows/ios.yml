@@ -20,7 +20,7 @@ jobs:
         run: |
           PAT='performChanges|PHAssetChangeRequest|PHAssetCreationRequest|PHAssetCollectionChangeRequest|PHCollectionListChangeRequest|deleteAssets|UIImageWriteToSavedPhotosAlbum|UISaveVideoAtPathToSavedPhotosAlbum|PHContentEditingOutput|ShareLink|NSPhotoLibraryAddUsageDescription'
           if grep -rnE "$PAT" AwwList project.yml; then echo "::error::Photo-library write API found. Aww List must stay read-only."; exit 1; fi
-          grep -q "saveToCameraRoll" AwwList/Views/ViewerView.swift || { echo "::error::The share sheet must keep excluding Save Image."; exit 1; }
+          grep -qE '^[[:space:]]*vc\.excludedActivityTypes = \[\.saveToCameraRoll, .*StreamShareService' AwwList/Views/ViewerView.swift || { echo "::error::The share sheet must keep excluding Save Image and Shared Album."; exit 1; }
           echo "No photo-library write APIs found."
       - name: Select newest Xcode 26 (App Store uploads need the iOS 26 SDK)
         run: |

@@ -81,11 +81,14 @@ enum BackgroundScan {
     @MainActor static var lastError: String?
     @MainActor private static var continuedRunning = false
 
-    /// Asks iOS to keep the running scan going after the app is left. Called from the button and automatically
-    /// whenever the app starts to close mid-scan (it has to be asked while the app is still on screen).
-    /// Once you've tapped "Keep scanning in the background", later scans keep going on their own when you leave.
+    /// Once you've tapped "Keep scanning in the background" (or turned it on in Settings), later scans keep going
+    /// on their own when you leave. It can be turned off in Settings.
     static let autoKey = "keepScanningWhenLeaving"
     @MainActor static var autoContinue: Bool { UserDefaults.standard.bool(forKey: autoKey) }
+    @MainActor private static var continuedStarted = false
+
+    /// Asks iOS to keep the running scan going after the app is left. Called from the button and automatically
+    /// whenever the app starts to close mid-scan (it has to be asked while the app is still on screen).
 
     @discardableResult
     @MainActor static func continueInBackground(userTapped: Bool = false) -> Bool {
@@ -102,7 +105,7 @@ enum BackgroundScan {
             // If iOS never got to it before the scan ended, withdraw the request (so it can't start a scan out of the
             // blue later) and allow asking again for the next scan.
             Shared.scanner.whenFinished {
-                if !taskOwnsScan {
+                if !continuedStarted {
                     continuedRunning = false
                     BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: continuedID)
                 }
@@ -121,6 +124,7 @@ enum BackgroundScan {
         let done = Once()
         taskOwnsScan = true
         continuedRunning = true
+        continuedStarted = true
         if !scanner.isScanning { scanner.start(library: Shared.library) }
         // Progress is reported every second from the photo-by-photo count: iOS ends a continued task whose
         // progress stops moving, and the 50-photo batches (or one slow iCloud download) used to look like a stall.
@@ -139,7 +143,7 @@ enum BackgroundScan {
             }
         }
         func finish(_ ok: Bool) {
-            if done.claim() { taskOwnsScan = false; continuedRunning = false; task.setTaskCompleted(success: ok) }
+            if done.claim() { taskOwnsScan = false; continuedRunning = false; continuedStarted = false; task.setTaskCompleted(success: ok) }
         }
         let expired = Once()
         task.expirationHandler = {

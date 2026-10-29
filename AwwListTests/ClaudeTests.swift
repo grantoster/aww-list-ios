@@ -92,6 +92,12 @@ final class ClaudeTests: XCTestCase {
         let swim = flagged("swim", "Swimwear", 0)
         XCTAssertEqual(Scorer.neverSend([swim, burst, ok], allowSwimShirtless: false), ["swim", "burst", "ok"])
         XCTAssertTrue(Scorer.neverSend([swim, burst, ok], allowSwimShirtless: true).isEmpty)
+        // Claude's own bath call, or a photo that couldn't be read, also blocks the 10 minutes around it.
+        var claudeBath = PhotoScore(id: "cb", date: t, raw: 0.6, excluded: nil, age: .kid, caption: "", version: Scorer.version)
+        claudeBath.claude = ClaudeVerdict(score: 1, caption: "", exclude: "bath", model: "m", rubric: Claude.rubric)
+        XCTAssertEqual(Scorer.neverSend([claudeBath, burst], allowSwimShirtless: true), ["cb", "burst"])
+        let unreadable = PhotoScore(id: "x", date: t, raw: nil, excluded: Scorer.unavailable, age: nil, caption: "", version: Scorer.version)
+        XCTAssertEqual(Scorer.neverSend([unreadable, burst], allowSwimShirtless: true), ["x", "burst"])
     }
 
     func testFilterLearnsClaudesRemovals() {

@@ -256,8 +256,11 @@ final class ClaudeService: ObservableObject {
         var spent: [Int: Int] = [:]
         for p in library.photos.values where used(p) { spent[cal.component(.year, from: p.date), default: 0] += 1 }
         let forbidden = library.neverSend
+        // A burst Claude removed (with any model) is never sent again, so switching models can't re-send it.
         func open(_ m: Moment) -> Bool {
-            !m.memberIDs.contains { id in forbidden.contains(id) || library.photos[id].map(used) == true }
+            !m.memberIDs.contains { id in
+                forbidden.contains(id) || library.photos[id].map(used) == true || library.photos[id]?.claude?.exclude != nil
+            }
         }
         var byYear: [Int: [Moment]] = [:]
         for m in library.claudePool { byYear[m.year, default: []].append(m) }   // cached at each rebuild
@@ -275,6 +278,8 @@ final class ClaudeService: ObservableObject {
     /// Sends the next photos in batches of 50 (small enough to finish uploading if the app is closed), then checks for results.
     func send(_ library: Library) async {
         guard !busy else { return }
+        // Only once the scan is finished: until then a bath photo near a candidate may not be checked yet.
+        guard !Shared.scanner.isScanning else { status = "Wait for the scan to finish, then send."; return }
         busy = true; defer { busy = false }
         library.rebuild()   // fresh never-send set and pool, including photos added since the list last redrew
         let list = candidates(library)
@@ -285,6 +290,11 @@ final class ClaudeService: ObservableObject {
             status = "Checking your API key…"
             try await checkKey()
             for chunk in stride(from: 0, to: list.count, by: 25).map({ Array(list[$0..<min($0 + 25, list.count)]) }) {
+                // A scan that started meanwhile (new photos) may find a bath photo next to these: stop, send later.
+                if Shared.scanner.isScanning { status = "Paused: new photos are being checked. Send again when the scan finishes."; break }
+                let blocked = library.neverSend
+                let chunk = chunk.filter { !$0.memberIDs.contains(where: blocked.contains) }
+                if chunk.isEmpty { continue }
                 var reqs: [[String: Any]] = [], map: [String: String] = [:]
                 status = "Preparing photos \((sent + 1).formatted())–\((sent + chunk.count).formatted()) of \(toSend.formatted())…"
                 // Load and shrink several photos at once.
