@@ -11,13 +11,15 @@ struct AssetImage: View {
     @State private var image: UIImage?
 
     var body: some View {
-        ZStack {
-            Color.secondary.opacity(0.15)
-            if let image {
-                Image(uiImage: image).resizable().aspectRatio(contentMode: contentMode)
+        // The placeholder sets the size and the photo is drawn on top of it, so a wide photo filling a tile
+        // can never make the tile (and the whole screen) wider than the space it was given.
+        Color.secondary.opacity(0.15)
+            .overlay {
+                if let image {
+                    Image(uiImage: image).resizable().aspectRatio(contentMode: contentMode)
+                }
             }
-        }
-        .clipped()
+            .clipped()
         .task(id: id) {
             let px = targetSide * scale
             image = await Self.load(id: id, size: CGSize(width: px, height: px),

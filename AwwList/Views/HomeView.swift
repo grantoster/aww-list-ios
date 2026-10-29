@@ -26,7 +26,7 @@ struct HomeView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    if scanner.isScanning { ScanBanner() }
+                    if scanner.isScanning && scanner.total > 0 { ScanBanner() }
                     scopeBar
                     ageBar
                     if pool.isEmpty {
@@ -67,16 +67,18 @@ struct HomeView: View {
     }
 
     private var ageBar: some View {
-        HStack(spacing: 8) {
-            Text("Age").font(.subheadline).foregroundStyle(.secondary)
-            Pill(title: "All ages", on: age == nil, small: true) { age = nil }
-            ForEach(AgeGroup.allCases) { g in Pill(title: g.label, on: age == g, small: true) { age = g } }
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                Text("Age").font(.subheadline).foregroundStyle(.secondary)
+                Pill(title: "All ages", on: age == nil, small: true) { age = nil }
+                ForEach(AgeGroup.allCases) { g in Pill(title: g.label, on: age == g, small: true) { age = g } }
+            }
         }
     }
 
     private var topSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(scopeTitle + " top 20").font(Theme.display(26))
+            Text(scopeTitle + " top 20").font(Theme.display(26)).lineLimit(1).minimumScaleFactor(0.7)
             Text("\(pool.count.formatted()) moments ranked").font(.subheadline).foregroundStyle(.secondary)
             if let first = top.first {
                 Card(moment: first, rank: 1, height: 380) { open(top, 0) }
@@ -96,13 +98,16 @@ struct HomeView: View {
 
     private var allSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("See all").font(Theme.display(22))
-                Spacer()
-                Picker("Sort", selection: $sortByDate) {
-                    Text("Cutest").tag(false)
-                    Text("By date").tag(true)
-                }.pickerStyle(.segmented).frame(width: 180)
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    Text("See all").font(Theme.display(22))
+                    Spacer()
+                    sortPicker.frame(width: 180)
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("See all").font(Theme.display(22))
+                    sortPicker
+                }
             }
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 3), spacing: 4) {
                 ForEach(Array(listed.prefix(shown).enumerated()), id: \.element.id) { i, m in
@@ -114,6 +119,13 @@ struct HomeView: View {
                     .buttonStyle(.bordered).frame(maxWidth: .infinity)
             }
         }
+    }
+
+    private var sortPicker: some View {
+        Picker("Sort", selection: $sortByDate) {
+            Text("Cutest").tag(false)
+            Text("By date").tag(true)
+        }.pickerStyle(.segmented)
     }
 
     private var scopeTitle: String {

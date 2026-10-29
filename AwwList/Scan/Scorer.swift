@@ -28,6 +28,8 @@ struct Signals: Equatable {
 enum Scorer {
     /// Bump when scoring changes; photos scored by an older version are analyzed again.
     static let version = 7
+    /// Exclusion reason for a photo whose image couldn't be loaded (offline iCloud photo).
+    static let unavailable = "Unavailable"
 
     /// Minimum label confidence for a photo to count as having a child in it (unless the precise filter passed).
     static let childThreshold = 0.35

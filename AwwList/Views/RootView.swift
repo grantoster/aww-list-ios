@@ -13,7 +13,7 @@ struct RootView: View {
             switch status {
             case .authorized, .limited:
                 HomeView()
-                    .onAppear { scanner.start(library: library) }
+                    .task { scanner.startIfNeeded(library: library) }
             case .denied, .restricted:
                 DeniedView()
             default:
@@ -23,7 +23,7 @@ struct RootView: View {
         .onChange(of: phase) {
             if phase == .active {
                 status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-                if status == .authorized || status == .limited { scanner.start(library: library) }
+                if status == .authorized || status == .limited { scanner.startIfNeeded(library: library) }
             } else if phase == .background {
                 library.save()
             }
@@ -88,7 +88,7 @@ struct SettingsView: View {
                     if !library.hidden.isEmpty {
                         Button("Put back \(library.hidden.count) removed photos") { library.restoreHidden() }
                     }
-                    Button(scanner.isScanning ? "Scanning…" : "Scan for new photos") { scanner.start(library: library) }
+                    Button(scanner.isScanning ? "Scanning…" : "Scan for new photos") { scanner.start(library: library, retryUnavailable: true) }
                         .disabled(scanner.isScanning)
                 }
                 Section("How scores work") {

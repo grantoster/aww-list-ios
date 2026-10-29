@@ -12,14 +12,29 @@ final class PhotoScanner: ObservableObject {
 
     private let queue = DispatchQueue(label: "aww.scan", qos: .utility)
     private let cancelFlag = CancelFlag()
+    private let changes = LibraryChangeFlag()
+    private var hasScanned = false
 
-    func start(library: Library) {
+    /// Scans on first launch and afterwards only when photos were added, changed or deleted, so opening and
+    /// closing photos, or switching back to the app, doesn't start the whole scan over.
+    func startIfNeeded(library: Library) {
+        if hasScanned && !changes.takeChanged() { return }
+        start(library: library)
+    }
+
+    /// `retryUnavailable` also retries photos whose image couldn't be loaded last time (the Settings button).
+    func start(library: Library, retryUnavailable: Bool = false) {
         guard !isScanning else { return }
         isScanning = true
+        hasScanned = true
+        changes.register()
+        _ = changes.takeChanged()
         cancelFlag.reset()
         let all = Set(library.photos.keys)
         // Photos scored by an older version of the scorer are analyzed again.
-        let known = Set(library.photos.values.filter { $0.version == Scorer.version }.map(\.id))
+        let known = Set(library.photos.values.filter {
+            $0.version == Scorer.version && !(retryUnavailable && $0.excluded == Scorer.unavailable)
+        }.map(\.id))
         let flag = cancelFlag
         let me = self
         queue.async {
@@ -43,7 +58,7 @@ final class PhotoScanner: ObservableObject {
             req.isSynchronous = true            // fine here: this is a dedicated serial queue, not the Swift concurrency pool
             req.deliveryMode = .highQualityFormat // one callback, at the 768 px size asked for
             req.resizeMode = .fast
-            req.isNetworkAccessAllowed = false   // iCloud-only photos without a local preview are retried on a later scan
+            req.isNetworkAccessAllowed = true    // "Optimize iPhone Storage" keeps originals in iCloud; fetch a small copy
             var batch: [PhotoScore] = []
             var checked = 0
 
@@ -56,8 +71,12 @@ final class PhotoScanner: ObservableObject {
                         var image: UIImage?
                         manager.requestImage(for: asset, targetSize: CGSize(width: 768, height: 768),
                                              contentMode: .aspectFit, options: req) { img, _ in image = img }
-                        // No image (offline iCloud photo): store nothing, so it's tried again next time.
-                        guard let img = image, let cg = img.cgImage else { return nil }
+                        // No image even from iCloud (offline): remember that, so it isn't retried on every launch.
+                        // The Settings "Scan for new photos" button tries these again.
+                        guard let img = image, let cg = img.cgImage else {
+                            return PhotoScore(id: asset.localIdentifier, date: asset.creationDate ?? .distantPast, raw: nil,
+                                              excluded: Scorer.unavailable, age: nil, caption: "", version: Scorer.version)
+                        }
                         // Vision failed: store nothing, so it's tried again next time.
                         guard let measured = analyzer.analyze(cg, orientation: CGImagePropertyOrientation(img.imageOrientation)) else { return nil }
                         signals = measured
@@ -116,4 +135,20 @@ extension CGImagePropertyOrientation {
         @unknown default: self = .up
         }
     }
+}
+
+/// Notes when the photo library changes (new photos, edits, deletions) so the next foreground visit rescans.
+final class LibraryChangeFlag: NSObject, PHPhotoLibraryChangeObserver, @unchecked Sendable {
+    private let lock = NSLock()
+    private var changed = false
+    private var registered = false
+    func register() {
+        lock.lock(); defer { lock.unlock() }
+        guard !registered else { return }
+        registered = true
+        PHPhotoLibrary.shared().register(self)
+    }
+    func photoLibraryDidChange(_ changeInstance: PHChange) { lock.lock(); changed = true; lock.unlock() }
+    /// Returns whether anything changed since the last call, and resets the flag.
+    func takeChanged() -> Bool { lock.lock(); defer { changed = false; lock.unlock() }; return changed }
 }
