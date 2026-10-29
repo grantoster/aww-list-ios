@@ -10,6 +10,10 @@ final class PhotoScanner: ObservableObject {
     @Published private(set) var done = 0
     @Published private(set) var total = 0
 
+    /// Photos checked so far in this scan, counted one by one from the workers (`done` only moves every 50).
+    /// The background task reports this to iOS every second, which treats a task whose progress stalls as stuck.
+    nonisolated let live = Counter()
+
     private let queue = DispatchQueue(label: "aww.scan", qos: .userInitiated)
     private let cancelFlag = CancelFlag()
     private let changes = LibraryChangeFlag()
@@ -42,6 +46,7 @@ final class PhotoScanner: ObservableObject {
         guard !isScanning else { return }
         isScanning = true
         total = 0; done = 0                            // so no stale "x of y" shows before counting finishes
+        live.reset()
         hasScanned = true
         changes.register()
         _ = changes.takeChanged()
@@ -57,7 +62,10 @@ final class PhotoScanner: ObservableObject {
                 && !(Scorer.softReasons.contains($0.excluded ?? "") && $0.softChecked != true
                      && ($0.faces ?? 0) > 0)
                 // photos on the list (or offered to Claude) get the fingerprint the learned score needs
-                && !(($0.raw != nil || $0.soft != nil) && $0.featChecked != true)
+                && !(($0.raw != nil || $0.soft != nil) && $0.featChecked != true && $0.feat?.count != Learner.featureCount)
+                // file-flagged photos used to be skipped unanalyzed, and held-back ones had no score for Put back
+                && !((Scorer.provenanceReasons.contains($0.excluded ?? "") || Scorer.heldBack.contains($0.excluded ?? ""))
+                     && $0.flagVersion != 2)
         }.map(\.id))
         // Photos already on the list keep their score if they can't be re-read this time.
         // Photos that already have a record keep it if they can't be re-read this time (a scored photo keeps its
@@ -86,7 +94,9 @@ final class PhotoScanner: ObservableObject {
             // ones stored only in iCloud ("Optimize iPhone Storage") are downloaded afterwards, two at a time.
             let workers = min(4, max(2, ProcessInfo.processInfo.activeProcessorCount - 2))
             let collector = Collector()
+            let live = me.live
             func post(_ r: PhotoScore?) {
+                live.add()
                 if let ready = collector.add(r) {
                     let (out, n) = ready
                     Task { @MainActor in library.add(out); me.done = max(me.done, n) }
@@ -283,11 +293,9 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
     autoreleasepool {
         var signals = Signals()
         signals.isScreenshot = asset.mediaSubtypes.contains(.photoScreenshot)
-        // Clearly AI-generated or face-retouched photos stay off the list (checked from the file's details).
-        if !signals.isScreenshot, let verdict = Provenance.verdict(fileInfo(asset, manager: manager)) {
-            return .done(PhotoScore(id: asset.localIdentifier, date: asset.creationDate ?? .distantPast, raw: nil,
-                                    excluded: verdict, age: nil, caption: "", version: Scorer.version))
-        }
+        // Photos that look AI-generated or face-retouched (from the file's details) are flagged, not dropped:
+        // they're analyzed like any other photo and listed, and Claude decides.
+        let verdict = signals.isScreenshot ? nil : Provenance.verdict(fileInfo(asset, manager: manager))
         var records: [FaceRecord] = []
         if !signals.isScreenshot {
             let req = PHImageRequestOptions()
@@ -335,17 +343,20 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
             return .done(PhotoScore(id: asset.localIdentifier, date: .distantPast, raw: nil, excluded: "No date",
                                     age: nil, caption: "", version: Scorer.version))
         }
-        let (raw, excluded) = Scorer.score(signals)
+        var (raw, excluded) = Scorer.score(signals)
+        var flaggedScore: Double? = nil
+        if let verdict, raw != nil { flaggedScore = raw; raw = nil; excluded = verdict }
         let age: AgeGroup? = raw == nil ? nil : (signals.babyConfidence > 0.5 ? .baby : .kid)
         var p = PhotoScore(id: asset.localIdentifier, date: date,
                            raw: raw, excluded: excluded, age: age, caption: Scorer.caption(signals, date: date),
                            version: Scorer.version, faces: signals.faces.count,
-                           faceRecords: raw == nil ? nil : records)
-        if raw == nil, Scorer.softReasons.contains(excluded ?? "") {
-            p.soft = Scorer.softScore(signals)
+                           faceRecords: (raw != nil || flaggedScore != nil) ? records : nil)
+        if raw == nil, let e = excluded, Scorer.softReasons.contains(e) || Scorer.heldBack.contains(e) {
+            p.soft = flaggedScore ?? Scorer.softScore(signals)
             p.age = signals.babyConfidence > 0.5 ? .baby : .kid
         }
         p.softChecked = true
+        p.flagVersion = 2
         p.featChecked = true
         if let base = raw ?? p.soft, !signals.scenePrint.isEmpty {
             p.feat = Learner.encode(signals: Learner.signals(signals, apple: base),
@@ -378,4 +389,13 @@ final class Deferred: @unchecked Sendable {
     private var list: [PHAsset] = []
     func add(_ a: PHAsset) { lock.lock(); list.append(a); lock.unlock() }
     var items: [PHAsset] { lock.lock(); defer { lock.unlock() }; return list }
+}
+
+/// A thread-safe count (photos checked so far).
+final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var n = 0
+    func add() { lock.lock(); n += 1; lock.unlock() }
+    func reset() { lock.lock(); n = 0; lock.unlock() }
+    var value: Int { lock.lock(); defer { lock.unlock() }; return n }
 }

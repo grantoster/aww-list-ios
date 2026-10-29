@@ -8,6 +8,7 @@ struct ViewerView: View {
     @EnvironmentObject var library: Library
     @Environment(\.dismiss) private var dismiss
     @State private var shareImage: UIImage?
+    @State private var sharing: UIImage?
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -39,6 +40,9 @@ struct ViewerView: View {
             shareImage = nil
             shareImage = await AssetImage.load(id: moments[index].best.id, size: CGSize(width: 2048, height: 2048), mode: .aspectFit)
         }
+        .sheet(isPresented: Binding(get: { sharing != nil }, set: { if !$0 { sharing = nil } })) {
+            if let sharing { ShareSheet(image: sharing).presentationDetents([.medium, .large]) }
+        }
     }
 
     @ViewBuilder private var caption: some View {
@@ -50,7 +54,7 @@ struct ViewerView: View {
                     Text("/10").foregroundStyle(.white.opacity(0.7))
                     Spacer()
                     if let shareImage {
-                        ShareLink(item: Image(uiImage: shareImage), preview: SharePreview(m.caption, image: Image(uiImage: shareImage))) {
+                        Button { sharing = shareImage } label: {
                             Image(systemName: "square.and.arrow.up").font(.title3).foregroundStyle(.white).frame(width: 44, height: 44)
                         }
                     }
@@ -75,6 +79,18 @@ struct ViewerView: View {
         func one(_ v: Double) -> String { v == v.rounded() ? String(Int(v)) : String(format: "%.1f", v) }
         if let l = m.learnedScore { s += " · Learned " + one(l) }
         if let c = m.claudeScore { s += " · Claude " + one(c) }
+        if let f = m.best.appleFlag, m.claudeScore == nil { s += " · Apple flagged: " + f.lowercased() }
         return s
     }
+}
+
+/// The system share sheet without "Save Image": Aww List only reads the photo library, it never adds to it.
+struct ShareSheet: UIViewControllerRepresentable {
+    let image: UIImage
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        let vc = UIActivityViewController(activityItems: [image], applicationActivities: nil)
+        vc.excludedActivityTypes = [.saveToCameraRoll]
+        return vc
+    }
+    func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
 }

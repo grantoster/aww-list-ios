@@ -66,9 +66,9 @@ final class ScorerTests: XCTestCase {
         let t = Date(timeIntervalSince1970: 1_700_000_000)
         let burst = [PhotoScore(id: "a", date: t, raw: nil, excluded: "Shirtless", age: nil, caption: ""),
                      PhotoScore(id: "b", date: t.addingTimeInterval(90), raw: 0.8, excluded: nil, age: .kid, caption: "")]
-        XCTAssertTrue(Scorer.moments(from: burst).isEmpty)
-        let later = [burst[0], PhotoScore(id: "c", date: t.addingTimeInterval(300), raw: 0.8, excluded: nil, age: .kid, caption: "")]
-        XCTAssertEqual(Scorer.moments(from: later).map(\.best.id), ["c"])   // shirtless hides its burst, not the whole party
+        // Shirtless is only a flag now: it doesn't hold back the shots around it (Claude decides)
+        XCTAssertEqual(Scorer.moments(from: burst).map(\.best.id), ["b"])
+        XCTAssertFalse(Scorer.sensitive.contains("Shirtless"))
         var lake = kid(); lake.waterScene = true
         XCTAssertEqual(Scorer.score(lake).excluded, "Water")
         XCTAssertFalse(Scorer.sensitive.contains("Water"))
@@ -348,7 +348,11 @@ final class LearnerTests: XCTestCase {
         let share = Double(days.filter(Learner.heldBack).count) / 1000
         XCTAssertEqual(share, 0.2, accuracy: 0.05)
         // two shots an hour apart on the same day always land on the same side
-        for d in days.prefix(50) { XCTAssertEqual(Learner.heldBack(d), Learner.heldBack(d.addingTimeInterval(3600 * 0.5))) }
+        var cal = Calendar(identifier: .gregorian); cal.timeZone = TimeZone(identifier: "America/Chicago")!
+        for d in days.prefix(50) {
+            let morning = cal.date(bySettingHour: 9, minute: 0, second: 0, of: d)!
+            XCTAssertEqual(Learner.heldBack(morning), Learner.heldBack(morning.addingTimeInterval(3600 * 8)))
+        }
     }
 }
 

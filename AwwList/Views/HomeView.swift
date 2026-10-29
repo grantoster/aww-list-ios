@@ -256,17 +256,20 @@ struct Tile: View {
 struct ScanBanner: View {
     @EnvironmentObject var scanner: PhotoScanner
     @State private var asked = false
+    @State private var failed: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Finding your cutest moments…").font(.subheadline.bold())
             ProgressView(value: Double(scanner.done), total: Double(max(1, scanner.total)))
-            Text("\(scanner.done.formatted()) of \(scanner.total.formatted()) photos checked. If you leave, it picks up overnight while your phone charges, or when you come back.")
+            Text("\(scanner.done.formatted()) of \(scanner.total.formatted()) photos checked. If you leave, it keeps going in the background (iOS shows its progress), and otherwise picks up overnight while your phone charges, or when you come back.")
                 .font(.caption).foregroundStyle(.secondary)
             if BackgroundScan.canContinueInBackground {
                 Button(asked ? "It'll keep going after you leave" : "Keep scanning in the background") {
-                    BackgroundScan.continueInBackground(); asked = true
+                    asked = BackgroundScan.continueInBackground()
+                    if !asked { failed = BackgroundScan.lastError }
                 }
                 .buttonStyle(.bordered).font(.subheadline).disabled(asked)
+                if let failed { Text(failed).font(.caption).foregroundStyle(.secondary) }
             }
         }
         .padding(12)

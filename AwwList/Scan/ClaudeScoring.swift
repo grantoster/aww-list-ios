@@ -239,28 +239,30 @@ final class ClaudeService: ObservableObject {
         }
     }
 
-    /// The moments still to send. Each year gets a fixed budget: N photos from Apple's list plus a fifth of N
-    /// that Apple set aside; photos Claude already scored (with this model) use up the budget, so re-ranking
+    /// The moments still to send. Each year gets a fixed budget of N plus a fifth of N, flagged photos included;
+    /// photos Claude already scored (with this model) use up the budget, so re-ranking
     /// (for example by the learned score) never sends more than the chosen number. Within the budget, the best
     /// candidates go first: by the learned score once there is one, otherwise by Apple's.
     func candidates(_ library: Library) -> [Moment] {
         let model = library.claudeModel, n = library.claudeScope
         let pending = Set(library.claudeBatches.flatMap { $0.photos.values })
-        func done(_ m: Moment) -> Bool {
-            pending.contains(m.best.id) || (library.claudeFailures[m.best.id] ?? 0) >= 2
-                || (m.best.claude.map { $0.model == model && $0.rubric == Claude.rubric } ?? false)
-        }
+        var isDone: Set<String> = []
+        for m in library.claudePool where pending.contains(m.best.id) || (library.claudeFailures[m.best.id] ?? 0) >= 2
+            || (m.best.claude.map { $0.model == model && $0.rubric == Claude.rubric } ?? false) { isDone.insert(m.best.id) }
         var byYear: [Int: [Moment]] = [:]
         for m in library.claudePool { byYear[m.year, default: []].append(m) }   // cached at each rebuild
-        return byYear.values.flatMap { list -> [Moment] in
-            let listed = list.filter { $0.best.raw != nil }, aside = list.filter { $0.best.raw == nil }
-            guard n > 0 else { return list.filter { !done($0) } }
-            func pick(_ group: [Moment], budget: Int) -> [Moment] {
-                let left = max(0, budget - group.filter(done).count)
-                return Array(group.filter { !done($0) }.prefix(left))
-            }
-            return pick(listed, budget: n) + pick(aside, budget: max(1, n / 5))
+        var out: [Moment] = []
+        for list in byYear.values {
+            // Possible bath or undressed photos are never sent, even after the user puts them back.
+            let list = list.filter { !Scorer.heldBack.contains($0.best.excluded ?? "") }
+            if n <= 0 { out += list.filter { !isDone.contains($0.best.id) }; continue }
+            // One budget for everything listed, flagged or not (the same total as before: N plus a fifth),
+            // best candidates first, so Apple's flags don't decide what Claude gets to see.
+            let budget = n + max(1, n / 5)
+            let left = max(0, budget - list.filter { isDone.contains($0.best.id) }.count)
+            out += list.filter { !isDone.contains($0.best.id) }.prefix(left)
         }
+        return out
     }
 
     /// Sends the next photos in batches of 50 (small enough to finish uploading if the app is closed), then checks for results.

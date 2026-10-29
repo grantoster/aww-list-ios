@@ -36,9 +36,14 @@ enum Scorer {
 
     /// Minimum label confidence for a photo to count as having a child in it (unless the precise filter passed).
     static let childThreshold = 0.35
-    /// How long before and after a sensitive photo every other shot is hidden: 10 minutes around bath and swim
-    /// photos (the whole session), 2 minutes around a shirtless one (its burst), since that check is a skin-tone guess.
-    static let quarantineWindow: [String: TimeInterval] = ["Bath": 600, "Swimwear": 600, "Undressed": 600, "Shirtless": 120]
+    /// How long before and after a held-back photo every other shot is held back too: 10 minutes around a
+    /// possible bath or undressed photo (the whole session). Swimwear and shirtless are only flags now (see softReasons).
+    static let quarantineWindow: [String: TimeInterval] = ["Bath": 600, "Undressed": 600]
+    /// The only checks Apple still decides on its own: possible bath or undressed photos stay off the list (and are
+    /// never sent to Claude) unless the user puts them back in Settings.
+    static let heldBack: Set<String> = ["Bath", "Undressed"]
+    /// Flags from the file's details (Provenance.verdict). The photo stays listed; Claude makes the call.
+    static let provenanceReasons: Set<String> = ["AI image", "Edited", "Not a camera photo"]
     static var sensitive: Set<String> { Set(quarantineWindow.keys) }
     static let quarantine: TimeInterval = quarantineWindow.values.max() ?? 0   // the longest window
     /// Share of the chest area that has to match the face's skin tone for a photo to count as shirtless.
@@ -175,19 +180,26 @@ enum Scorer {
     static func ceiling(_ r: Double) -> Int { r < 0.30 ? 4 : r < 0.45 ? 5 : r < 0.60 ? 7 : r < 0.70 ? 8 : 10 }
 
     /// Groups photos into moments: shots less than 60 s apart are one moment, but a moment never runs past 2 minutes.
-    /// Everything within 10 minutes of a bath, swimwear or undressed photo (2 minutes of a shirtless one) is left out too, so one missed frame
+    /// Everything within 10 minutes of a possible bath or undressed photo is held back too, so one missed frame
     /// of a bath burst can't slip onto the list. The best shot wins; ties go to the earlier, then the smaller id.
     /// Every stored photo feeds the quarantine (old versions and hidden ones too); only photos that are shown —
     /// not hidden, and scored by `version` when given — can become moments.
-    /// Reasons Apple's check sets a photo aside that Claude may overrule: Apple's labels miss children seen from
-    /// behind or far away, and its bath/swim/water/shirtless checks lean hard toward leaving photos out.
-    /// (Bath and undressed photos are never sent anywhere.)
-    static let softReasons: Set<String> = ["No child", "No face", "Water", "Swimwear", "Shirtless"]
-    /// Soft reasons that are only offered to Claude when the user opts in to sending possible swimwear/shirtless photos.
-    static let sensitiveSoft: Set<String> = ["Swimwear", "Shirtless"]
+    /// Apple's flags that no longer take a photo off the list: its labels miss children seen from behind or far
+    /// away, and its water/swim/shirtless and file checks lean hard toward leaving photos out. A flagged photo is
+    /// listed with the score it would have had (`soft`), and Claude decides whether it stays. (A photo with no
+    /// hint of a child at all still stays off: softScore is nil for it.)
+    static let softReasons: Set<String> = Set(["No child", "No face", "Water", "Swimwear", "Shirtless"]).union(provenanceReasons)
 
-    /// A score for a photo Apple set aside for a soft reason, as if that check hadn't fired, so it can still be
-    /// offered to Claude. Nil when there's nothing to go on (no face and no hint of a child) or it's a screenshot
+    /// The value a photo is listed with: its score, or for a flagged photo the score it would have had.
+    /// Held-back photos count only once the user puts them back.
+    static func listedValue(_ p: PhotoScore, putBack: Set<String> = []) -> Double? {
+        if let r = p.raw { return r }
+        guard let e = p.excluded else { return nil }
+        if softReasons.contains(e) || (heldBack.contains(e) && putBack.contains(p.id)) { return p.soft }
+        return nil
+    }
+
+    /// A score for a photo Apple flagged (or held back), as if that check hadn't fired, so it can still be listed. Nil when there's nothing to go on (no face and no hint of a child) or it's a screenshot
     /// or document.
     static func softScore(_ s: Signals) -> Double? {
         if s.isScreenshot || s.blockedLabel == "document" || s.blockedLabel == "screenshot" { return nil }
@@ -199,12 +211,13 @@ enum Scorer {
         return score(t).raw
     }
 
-    /// `soft` also groups photos Apple set aside for a soft reason (scored by `softScore`) and skips the
-    /// quarantine: that's the pool offered to Claude, which makes the final call.
+    /// Flagged photos are grouped with their listed value (see listedValue); held-back photos the user put back
+    /// count too, and neither they nor anything else they're near holds back the shots around them.
     static func moments(from photos: [PhotoScore], hidden: Set<String> = [], version: Int? = nil,
-                        soft: Bool = false) -> [(best: PhotoScore, shots: Int, ids: [String])] {
-        func value(_ p: PhotoScore) -> Double? { soft ? (p.raw ?? p.soft) : p.raw }
-        let hot = photos.compactMap { p in quarantineWindow[p.excluded ?? ""].map { (date: p.date, window: $0) } }
+                        putBack: Set<String> = []) -> [(best: PhotoScore, shots: Int, ids: [String])] {
+        func value(_ p: PhotoScore) -> Double? { listedValue(p, putBack: putBack) }
+        let hot = photos.filter { !putBack.contains($0.id) }
+            .compactMap { p in quarantineWindow[p.excluded ?? ""].map { (date: p.date, window: $0) } }
             .sorted { $0.date < $1.date }
         func quarantined(_ d: Date) -> Bool {
             var lo = 0, hi = hot.count
@@ -215,7 +228,7 @@ enum Scorer {
             }
             return false
         }
-        let counted = photos.filter { value($0) != nil && !hidden.contains($0.id) && (version == nil || $0.version == version) && (soft || !quarantined($0.date)) }
+        let counted = photos.filter { value($0) != nil && !hidden.contains($0.id) && (version == nil || $0.version == version) && (putBack.contains($0.id) || !quarantined($0.date)) }
             .sorted { ($0.date, $0.id) < ($1.date, $1.id) }
         var result: [(best: PhotoScore, shots: Int, ids: [String])] = []
         var group: [PhotoScore] = []

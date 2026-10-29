@@ -5,3 +5,4 @@ fastlane/report.xml
 AuthKey.p8
 *.ipa
 *.dSYM.zip
+AwwList/Resources/BuiltInLearning.json

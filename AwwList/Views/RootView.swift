@@ -21,6 +21,10 @@ struct RootView: View {
             }
         }
         .onChange(of: phase) {
+            if phase == .inactive && scanner.isScanning {
+                // Leaving the app mid-scan: ask iOS to keep it going (it must be asked while still on screen).
+                BackgroundScan.continueInBackground()
+            }
             if phase == .active {
                 status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
                 if status == .authorized || status == .limited { scanner.startIfNeeded(library: library) }
@@ -102,9 +106,14 @@ struct SettingsView: View {
                     Button(scanner.isScanning ? "Scanning…" : "Rescan, including photos that couldn't load") { scanner.start(library: library, retryUnavailable: true) }
                         .disabled(scanner.isScanning)
                 }
+                HeldBackSection()
                 Section("What's left out") {
-                    Text("Screenshots, documents and photos without a child. Bath, pool, beach and swimwear photos, and every shot within 10 minutes of one. Shirtless kids past the baby stage (babies in a diaper are fine). Confident lake, ocean, river and sprinkler scenes. Photos that are clearly AI-generated (tagged by the AI tool, or saved from ChatGPT, Gemini and similar), retouched in face apps like FaceApp or Facetune or in Photoshop, or not made by a camera at all. Light edits in Photos, Lightroom or Snapseed, and AI clean-ups of real photos (removing a stranger in the background), are fine.")
+                    Text("On the phone: screenshots, documents, photos with no sign of a child at all, and possible bath or undressed photos plus every shot within 10 minutes of one (you can put those back above).")
                         .font(.footnote)
+                    Text("Everything else Apple isn't sure about stays on the list with a flag: no child spotted, water scenes, swimwear, shirtless, and files that look AI-generated, face-retouched or not from a camera. Claude makes the call on those, and once the app has learned from Claude's calls, it hides the ones it expects Claude would remove when ranking by Claude or by the learned score. Ranking by Apple shows them all.")
+                        .font(.footnote)
+                    Text("Aww List only reads your photo library. It never changes, adds to or deletes anything in it; Remove from list only hides a photo inside this app.")
+                        .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("How scores work") {
                     Text("Shots less than a minute apart (two at most) count as one moment, and only its best shot is ranked.")
@@ -113,7 +122,7 @@ struct SettingsView: View {
                         .font(.footnote)
                     Text("Those points become 1–10 by rank across your whole library: the top 1% are 9s and 10s, the next 4% are 8s, the next 10% are 7s. Every year counts equally, so a huge year can't crowd out the others, and a photo needs real quality for a high score, not just being the best of a weak bunch.")
                         .font(.footnote)
-                    Text("Photos are analyzed with Apple's on-device Vision framework. Nothing is uploaded.")
+                    Text("Photos are analyzed with Apple's on-device Vision framework. Nothing is uploaded unless you score with Claude.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }
@@ -204,8 +213,6 @@ struct ClaudeSection: View {
             if hasKey {
                 Button("Test connection") { Task { await claude.testConnection() } }.disabled(claude.busy)
             }
-            Toggle("Also let Claude check possible swimwear or shirtless photos",
-                   isOn: Binding(get: { library.claudeSensitive }, set: { library.setClaudeSensitive($0) }))
             Toggle("Send these photos to Claude", isOn: $agreed)
             Button(claude.busy ? "Working…" : "Score with Claude") { Task { await claude.send(library) } }
                 .disabled(!hasKey || !agreed || claude.busy || n == 0)
@@ -220,7 +227,7 @@ struct ClaudeSection: View {
         } header: {
             Text("Score with Claude")
         } footer: {
-            Text("Optional. Your phone still checks every photo first; the photos you choose are then sent to Anthropic's Claude for the final 1–10 score, a description, and a second check for bath, swimwear, shirtless and AI or edited photos. Each year's top photos are chosen by Apple's score, plus up to a fifth more that Apple's check set aside (no child spotted, water scenes, and, only if you turn it on above, possible swimwear or shirtless), so Claude can decide; any Claude clears join the list when ranking by Claude. Photos Apple flags as possible bath or undressed are never sent. Photos are sent at 768 px without location or file details. Photos the phone's own check missed are sent too, so Claude can catch them. It uses your own API key from console.anthropic.com; charges go to your Anthropic account. When ranking by Claude, photos Claude hasn't seen are held at 6 or below.")
+            Text("Optional. Claude decides what comes off the list. Your phone scores every photo first and only flags what it isn't sure about (no child spotted, water, swimwear, shirtless, AI or edited files); flagged photos stay listed. Each year's best photos, flagged or not, are sent to Anthropic's Claude for the final 1–10 score, a description, and the call on whether a photo belongs (bath, swimwear, shirtless, AI or edited, no child). Photos Apple flags as possible bath or undressed are never sent, even if you put them back. Photos are sent at 768 px without location or file details. It uses your own API key from console.anthropic.com; charges go to your Anthropic account. When ranking by Claude, photos Claude hasn't seen are held at 6 or below.")
         }
     }
 }
@@ -228,11 +235,12 @@ struct ClaudeSection: View {
 /// The app's learned score: what it picked up from Claude's scores, and how close it gets.
 struct LearnedSection: View {
     @EnvironmentObject var library: Library
+    @State private var copied = false
     var body: some View {
         Section {
             if let m = library.learned {
                 LabeledContent("Learned from", value: "\(m.trainedOn.formatted()) Claude scores")
-                let pct = { (v: Double) in "\(Int((v * 100).rounded(.toNearestOrAwayFromZero)))%" }
+                let pct = { (v: Double) in "\(Int((v * 100 + 1e-9).rounded(.toNearestOrAwayFromZero)))%" }
                 let pts = { (v: Double) in String(format: "%.1f", (v * 10).rounded(.toNearestOrAwayFromZero) / 10) + " points" }
                 LabeledContent("Within 1 point of Claude", value: pct(m.within1))
                 LabeledContent("Average gap", value: pts(m.meanGap))
@@ -248,11 +256,83 @@ struct LearnedSection: View {
                             : "Learning starts once there are roughly 80–100 Claude scores (spread over enough days to test it fairly). You have \(n.formatted()) so far.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            if let f = library.learnedFilter {
+                let pct = { (v: Double) in "\(Int((v * 100 + 1e-9).rounded(.toNearestOrAwayFromZero)))%" }
+                LabeledContent("Removals learned from", value: "\(f.removals.formatted()) of \(f.trainedOn.formatted())")
+                LabeledContent("Agrees with Claude on keep or remove", value: pct(f.accuracy))
+                LabeledContent("Just keeping everything", value: pct(f.baselineAccuracy))
+                if let c = f.caught { LabeledContent("Catches Claude's removals", value: pct(c)) }
+                if let w = f.wronglyRemoved { LabeledContent("Would wrongly remove", value: pct(w) + " of keepers") }
+                Text(f.useful
+                     ? "Checked on \(f.tested.formatted()) photos from days it didn't learn from. When ranking by Claude or by the learned score, it's hiding \(library.filteredOut.formatted()) photos Claude hasn't seen."
+                     : "Checked on \(f.tested.formatted()) photos from days it didn't learn from. It isn't better than keeping everything yet, so it isn't hiding anything.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            } else if library.learned != nil {
+                Text("Learning Claude's removals starts once Claude has removed at least \(Learner.minimumRemovals) photos (from enough days to test it fairly).")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            if library.learnedIsBuiltIn || library.filterIsBuiltIn {
+                Text("Using the learning built into the app for now. Your own Claude scores take over once there are enough of them.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            if let text = library.learningText {
+                Button(copied ? "Copied" : "Copy learning") {
+                    UIPasteboard.general.string = text
+                    copied = true
+                }
+                Text("Copies this phone's learning (numbers only, no photos) so it can be built into the app as the starting point for new installs.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
             if library.training { HStack { ProgressView(); Text("Learning…").foregroundStyle(.secondary) } }
         } header: {
             Text("Learned score")
         } footer: {
-            Text("The app studies Claude's scores alongside what it measures on the phone (smiles, closeness, face size, sharpness and the scene), then predicts a Claude-style score for every photo, privately and for free. Its accuracy is checked on a fifth of Claude's scores it didn't learn from. Claude's own score always wins where it exists; with Rank by Claude, photos Claude hasn't seen use the learned score.")
+            Text("The app studies Claude's scores alongside what it measures on the phone (smiles, closeness, face size, sharpness and the scene), then predicts a Claude-style score for every photo, privately and for free. It also learns which photos Claude takes off the list, so removals follow Claude's judgment instead of Apple's. Both are checked on a fifth of Claude's verdicts it didn't learn from. Claude's own score and removals always win where they exist; with Rank by Claude, photos Claude hasn't seen use the learned score.")
         }
+    }
+}
+
+/// Possible bath or undressed photos Apple held back, with a way to put any of them back on the list.
+struct HeldBackSection: View {
+    @EnvironmentObject var library: Library
+    var body: some View {
+        let held = library.heldBackPhotos
+        if !held.isEmpty {
+            Section {
+                NavigationLink {
+                    HeldBackView()
+                } label: {
+                    LabeledContent("Review", value: "\(held.count.formatted()) photos")
+                }
+            } header: {
+                Text("Held back for privacy")
+            } footer: {
+                Text("Apple's check thinks these may be bath or undressed photos. They stay off the list unless you put them back, and they're never sent to Claude either way.")
+            }
+        }
+    }
+}
+
+struct HeldBackView: View {
+    @EnvironmentObject var library: Library
+    private let columns = [GridItem(.adaptive(minimum: 104), spacing: 8)]
+    var body: some View {
+        ScrollView {
+            LazyVGrid(columns: columns, spacing: 12) {
+                ForEach(library.heldBackPhotos) { p in
+                    let back = library.putBack.contains(p.id)
+                    VStack(spacing: 6) {
+                        AssetImage(id: p.id, targetSide: 120)
+                            .aspectRatio(1, contentMode: .fit)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        Text(p.date.formatted(date: .abbreviated, time: .omitted)).font(.caption2).foregroundStyle(.secondary)
+                        Button(back ? "Keep out" : "Put back") { library.setPutBack(p.id, !back) }
+                            .buttonStyle(.bordered).controlSize(.small)
+                    }
+                }
+            }
+            .padding(16)
+        }
+        .navigationTitle("Held back")
     }
 }

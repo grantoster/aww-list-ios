@@ -18,9 +18,17 @@ final class Library: ObservableObject {
     @Published private(set) var claudeBatches: [ClaudeBatch] = []
     /// Which score orders the lists once Claude has scored something: "claude" or "apple".
     @Published private(set) var rankBy = "claude"
-    /// Off unless the user turns it on: also offer Claude photos Apple flagged as possible swimwear or shirtless.
-    @Published private(set) var claudeSensitive = false
-    func setClaudeSensitive(_ v: Bool) { claudeSensitive = v; rebuild(); save() }
+    /// Possible bath or undressed photos the user put back on the list. They're listed, but never sent to Claude.
+    @Published private(set) var putBack: Set<String> = []
+    func setPutBack(_ id: String, _ on: Bool) {
+        if on { putBack.insert(id) } else { putBack.remove(id) }
+        rebuild(); save()
+    }
+    /// Photos Apple held back as possible bath or undressed (newest first), for review in Settings.
+    var heldBackPhotos: [PhotoScore] {
+        photos.values.filter { $0.raw == nil && Scorer.heldBack.contains($0.excluded ?? "") && $0.version == Scorer.version }
+            .sorted { $0.date > $1.date }
+    }
 
     private static let saveQueue = DispatchQueue(label: "aww.save", qos: .utility)
     private var lastRebuild = Date.distantPast
@@ -35,16 +43,21 @@ final class Library: ObservableObject {
         var photos: [PhotoScore]; var hidden: [String]; var birthdays: [Date]?
         var people: [Person]?; var strictness: Int?
         var claudeModel: String?; var claudeScope: Int?; var claudeBatches: [ClaudeBatch]?; var rankBy: String?
-        var claudeFailures: [String: Int]?; var claudeSensitive: Bool?; var learned: LearnedModel?
+        var claudeFailures: [String: Int]?; var learned: LearnedModel?
+        var putBack: [String]?; var learnedFilter: LearnedFilter?; var trainedSignature: UInt64?
     }
 
-    init() { load() }
+    init() {
+        load()
+        if learned == nil || learnedFilter == nil { useBuiltInWhereMissing(); rebuild() }
+    }
 
     /// New results from the scanner. The list is rebuilt at most every 2 seconds while scanning.
     func add(_ new: [PhotoScore]) {
         guard !new.isEmpty else { return }
         for var p in new {
             if p.claude == nil { p.claude = photos[p.id]?.claude }   // a rescan never throws away Claude's verdict
+            if p.feat == nil { p.feat = photos[p.id]?.feat }         // nor a good fingerprint when this read's scene print failed
             photos[p.id] = p
         }
         unsaved += new.count
@@ -82,10 +95,37 @@ final class Library: ObservableObject {
     /// The app's model of Claude's scoring, learned from the photos Claude has scored.
     @Published private(set) var learned: LearnedModel?
     @Published private(set) var training = false
+    /// The app's model of Claude's removals, and how many unseen photos it's keeping off the list right now.
+    @Published private(set) var learnedFilter: LearnedFilter?
+    @Published private(set) var filteredOut = 0
+    /// The learning built into the app (from Resources/BuiltInLearning.json, when present): new installs start
+    /// with it, and this phone's own Claude scores replace each part once there are enough of them.
+    private let builtIn: (model: LearnedModel?, filter: LearnedFilter?) = {
+        guard let u = Bundle.main.url(forResource: "BuiltInLearning", withExtension: "json"),
+              let t = try? String(contentsOf: u, encoding: .utf8) else { return (nil, nil) }
+        return LearningPack.read(t)
+    }()
+    @Published private(set) var learnedIsBuiltIn = false
+    @Published private(set) var filterIsBuiltIn = false
+    /// This phone's own learning (not the built-in one) as text, for building into the app.
+    var learningText: String? {
+        let m = learnedIsBuiltIn ? nil : learned, f = filterIsBuiltIn ? nil : learnedFilter
+        return m == nil && f == nil ? nil : LearningPack(model: m, filter: f).text()
+    }
+    private func useBuiltInWhereMissing() {
+        if learned == nil, let m = builtIn.model { learned = m; learnedIsBuiltIn = true }
+        if learnedFilter == nil, let f = builtIn.filter { learnedFilter = f; filterIsBuiltIn = true }
+    }
 
     /// Claude scores that have a fingerprint to learn from.
     var learnableCount: Int {
         photos.values.filter { $0.claude != nil && $0.claude?.exclude == nil && $0.feat?.count == Learner.featureCount }.count
+    }
+
+    /// True when the learned filter expects Claude would take this photo off the list.
+    func learnedRemoves(_ p: PhotoScore) -> Bool {
+        guard let f = learnedFilter, f.useful, let feat = p.feat, let x = Learner.decode(feat) else { return false }
+        return Learner.removalChance(f, x) >= Learner.removeAt
     }
 
     func learnedScore(for p: PhotoScore) -> Double? {
@@ -93,28 +133,43 @@ final class Library: ObservableObject {
         return (Learner.predict(m, x) * 10).rounded(.toNearestOrAwayFromZero) / 10
     }
 
-    /// Re-learns from every Claude score (off the main thread; a few seconds at most). Runs after new scores
-    /// arrive, after a scan adds fingerprints, and at launch when the model is out of date.
+    /// Re-learns from every Claude verdict (off the main thread; a few seconds at most). Runs after new verdicts
+    /// arrive and after a scan adds fingerprints; skipped when nothing changed since the last run (even across launches).
     private var pendingRetrain = false
-    private var trainedSignature: Int?
+    private var trainedSignature: UInt64?
+    /// Bumped by "Go back to on-device scores only", so a training run that started before it is ignored.
+    private var generation = 0
 
     func retrain() {
         guard !training else { pendingRetrain = true; return }   // run again once the current one finishes
-        var sig = Hasher()
-        let examples = photos.values.sorted { $0.id < $1.id }.compactMap { p -> (date: Date, x: [Double], y: Double)? in
-            guard let c = p.claude, c.exclude == nil, let f = p.feat, let x = Learner.decode(f) else { return nil }
-            sig.combine(p.id); sig.combine(c.score)
-            return (p.date, x, c.score)
+        var parts: [String] = []
+        var examples: [(date: Date, x: [Double], y: Double)] = []
+        var verdicts: [(date: Date, x: [Double], removed: Bool)] = []
+        for p in photos.values.sorted(by: { $0.id < $1.id }) {
+            guard let c = p.claude, let f = p.feat, let x = Learner.decode(f) else { continue }
+            parts.append("\(p.id)|\(c.score)|\(c.exclude ?? "")")
+            verdicts.append((p.date, x, c.exclude != nil))
+            if c.exclude == nil { examples.append((p.date, x, c.score)) }
         }
-        let signature = sig.finalize()
-        guard signature != trainedSignature else { return }      // nothing new to learn from
+        let signature = Learner.stableHash(parts)
+        guard signature != trainedSignature else { return }      // nothing new to learn from (also across launches)
         training = true
+        let gen = generation
         Task.detached(priority: .utility) {
             let model = Learner.train(examples)
+            let filter = Learner.trainFilter(verdicts)
             await MainActor.run {
                 self.training = false
+                guard gen == self.generation else {          // cleared while this was running: start over
+                    self.pendingRetrain = false; self.retrain(); return
+                }
                 self.trainedSignature = signature
-                if let model { self.learned = model; self.rebuild(); self.save() }
+                // Too few scores (for example after clearing) means no learning of this phone's own:
+                // fall back to the built-in learning, or none.
+                self.learned = model; self.learnedIsBuiltIn = false
+                self.learnedFilter = filter; self.filterIsBuiltIn = false
+                self.useBuiltInWhereMissing()
+                self.rebuild(); self.save()
                 if self.pendingRetrain { self.pendingRetrain = false; self.retrain() }
             }
         }
@@ -122,7 +177,9 @@ final class Library: ObservableObject {
     func clearClaude() {
         for id in photos.keys where photos[id]?.claude != nil { photos[id]?.claude = nil }
         claudeBatches = []
-        learned = nil; trainedSignature = nil
+        learned = nil; learnedFilter = nil; trainedSignature = nil; generation += 1
+        learnedIsBuiltIn = false; filterIsBuiltIn = false
+        useBuiltInWhereMissing()
         if rankBy == "learned" { rankBy = "apple" }
         rebuild(); save()
     }
@@ -194,9 +251,13 @@ final class Library: ObservableObject {
         lastRebuild = Date()
         // Results from an older scorer never went through today's filters, so they stay off the list until re-scored,
         // but their bath/swim exclusions still quarantine the shots around them.
-        let groups = Scorer.moments(from: Array(photos.values), hidden: hidden, version: Scorer.version)
+        // Apple's flags (no child spotted, water, swimwear, shirtless, AI or edited file) no longer take a photo
+        // off the list: it's listed with the score it would have had, and Claude decides. Only possible bath or
+        // undressed photos (and the shots around them) are held back, unless the user puts them back.
+        let groups = Scorer.moments(from: Array(photos.values), hidden: hidden, version: Scorer.version, putBack: putBack)
         let cal = Calendar.current
-        let scores = Scorer.calibrate(groups.map { $0.best.raw ?? 0 },
+        let pb = putBack
+        let scores = Scorer.calibrate(groups.map { Scorer.listedValue($0.best, putBack: pb) ?? 0 },
                                       years: groups.map { cal.component(.year, from: $0.best.date) })
         let named = people, t = threshold
         let gregorian = Calendar(identifier: .gregorian)
@@ -213,25 +274,34 @@ final class Library: ObservableObject {
             let ages: Set<AgeGroup> = known.isEmpty
                 ? AgeGroup.tags(date: date, birthdays: bdays, looksLikeBaby: g.best.age == .baby, faces: g.best.faces ?? 1)
                 : Set(known.map { AgeGroup.of(birth: $0, at: g.best.date) })
-            return Moment(best: g.best, shots: g.shots, memberIDs: g.ids, score: s, ages: ages, people: who)
+            var m = Moment(best: g.best, shots: g.shots, memberIDs: g.ids, score: s, ages: ages, people: who)
+            m.apple = s
+            m.claudeScore = g.best.claude.flatMap { $0.exclude == nil ? $0.score : nil }
+            m.learnedScore = learnedScore(for: g.best)
+            return m
         }
-        moments = zip(groups, scores).map { makeMoment($0, $1) }
-        // Every moment keeps its Apple score; moments sent to Claude also get Claude's. Claude's safety checks
-        // (bath, swimwear, shirtless, AI or edited, no child) take a photo off the list in both rankings.
-        // Ranking by Claude: Claude's score leads, and moments it hasn't seen are capped at 6 so they can't
-        // outrank the ones it looked at (the same rule as the Aww List website).
-        // With a learned model, moments Claude hasn't seen use the app's prediction of Claude's score instead.
+        let all = zip(groups, scores).map { makeMoment($0, $1) }
+        // What can be sent to Claude: everything listed except photos the user put back after Apple held them back
+        // (those are never sent). Kept even after Claude removes a photo, so a removal still uses up the budget.
+        // Once the app has learned, it picks what to send Claude by its prediction of Claude's score.
+        func poolValue(_ m: Moment) -> Double { m.learnedScore ?? 10 * (Scorer.listedValue(m.best, putBack: pb) ?? 0) }
+        claudePool = all.filter { !Scorer.heldBack.contains($0.best.excluded ?? "") }.sorted { a, b in
+            let va = poolValue(a), vb = poolValue(b)
+            return va != vb ? va > vb : a.best.date < b.best.date
+        }
+        // Claude decides removals: a photo Claude took off (bath, swimwear, shirtless, AI or edited, no child) is
+        // off in every ranking. Ranking by Claude: Claude's score leads, and moments it hasn't seen are capped at 6
+        // (8 with a learned score) so they can't outrank the ones it looked at. Ranking by Claude or by the learned
+        // score, moments Claude hasn't seen are also left off when the learned filter (learned from Claude's own
+        // removals) expects Claude would remove them. Ranking by Apple shows Apple's view, flags and all.
         let anyClaude = photos.values.contains { $0.claude != nil && $0.claude?.exclude == nil && $0.version == Scorer.version }
         let useClaude = anyClaude && rankBy == "claude"
         let useLearned = learned != nil && rankBy == "learned"
-        moments = moments.compactMap { m in
+        var filtered = 0
+        moments = all.compactMap { m in
             var m = m
-            m.apple = m.score
-            if let c = m.best.claude {
-                if c.exclude != nil { return nil }
-                m.claudeScore = c.score
-            }
-            m.learnedScore = learnedScore(for: m.best)
+            if m.best.claude?.exclude != nil { return nil }
+            if (useClaude || useLearned) && m.best.claude == nil && learnedRemoves(m.best) { filtered += 1; return nil }
             if useClaude {
                 // learned scores top out at 8 here, so Claude's own 9s and 10s stay Claude's
                 m.score = m.claudeScore.map(Claude.displayScore) ?? m.learnedScore.map { min(Claude.displayScore($0), 8) } ?? min(m.apple, 6)
@@ -240,29 +310,7 @@ final class Library: ObservableObject {
             }
             return m
         }
-        // The wider pool for Claude: Apple's moments plus set-aside ones (no child seen, water, etc.).
-        let listed = Set(moments.flatMap(\.memberIDs))
-        let softGroups = Scorer.moments(from: Array(photos.values), hidden: hidden, version: Scorer.version, soft: true)
-            .filter { $0.best.raw == nil && listed.isDisjoint(with: $0.ids)
-                && (claudeSensitive || !Scorer.sensitiveSoft.contains($0.best.excluded ?? "")) }
-        let softMoments = softGroups.map { g -> Moment in
-            var m = makeMoment(g, 0); m.claudeScore = g.best.claude?.score; m.learnedScore = learnedScore(for: g.best); return m
-        }
-        // Once the app has learned, it picks what to send Claude by its prediction of Claude's score.
-        func poolValue(_ m: Moment) -> Double { m.learnedScore ?? 10 * (m.best.raw ?? m.best.soft ?? 0) }
-        claudePool = (moments + softMoments).sorted { a, b in
-            let va = poolValue(a), vb = poolValue(b)
-            return va != vb ? va > vb : a.best.date < b.best.date
-        }
-        // Set-aside photos Claude looked at and cleared join the list when ranking by Claude.
-        if useClaude {
-            for var m in softMoments {
-                guard let c = m.best.claude, c.exclude == nil else { continue }
-                m.claudeScore = c.score
-                m.score = Claude.displayScore(c.score)
-                moments.append(m)
-            }
-        }
+        filteredOut = filtered
         moments.sort(by: Library.ranked)
     }
 
@@ -292,7 +340,9 @@ final class Library: ObservableObject {
         unsaved = 0
         let s = Saved(photos: Array(photos.values), hidden: Array(hidden), birthdays: birthdays,
                       people: people, strictness: strictness,
-                      claudeModel: claudeModel, claudeScope: claudeScope, claudeBatches: claudeBatches, rankBy: rankBy, claudeFailures: claudeFailures, claudeSensitive: claudeSensitive, learned: learned)
+                      claudeModel: claudeModel, claudeScope: claudeScope, claudeBatches: claudeBatches, rankBy: rankBy, claudeFailures: claudeFailures, learned: learnedIsBuiltIn ? nil : learned,
+                      putBack: Array(putBack), learnedFilter: filterIsBuiltIn ? nil : learnedFilter,
+                      trainedSignature: trainedSignature)
         let u = url
         // One save at a time, in order, so an older snapshot can never land after a newer one.
         Library.saveQueue.async {
@@ -318,7 +368,9 @@ final class Library: ObservableObject {
         if claudeModel == "claude-sonnet-5-5" && !s.photos.contains(where: { $0.claude != nil }) && (s.claudeBatches ?? []).isEmpty {
             claudeModel = "claude-haiku-5-5"
         }
-        claudeSensitive = s.claudeSensitive ?? false
+        putBack = Set(s.putBack ?? [])
+        learnedFilter = s.learnedFilter.flatMap { $0.weights.count == Learner.featureCount ? $0 : nil }
+        trainedSignature = s.trainedSignature
         learned = s.learned.flatMap { $0.weights.count == Learner.featureCount ? $0 : nil }
         claudeScope = s.claudeScope ?? claudeScope
         claudeBatches = s.claudeBatches ?? []

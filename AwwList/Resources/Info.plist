@@ -25,9 +25,7 @@
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Aww List looks through your photos on this iPhone to find and rank your cutest moments. Your photos never leave your phone.</string>
-	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>Lets you save a photo you share from Aww List back to your library.</string>
+	<string>Aww List reads your photos to find and rank your cutest moments. It never changes or deletes anything in your library. Photos leave this iPhone only if you choose to have Claude score them in Settings.</string>
 	<key>PHPhotoLibraryPreventAutomaticLimitedAccessAlert</key>
 	<true/>
 	<key>UIBackgroundModes</key>

@@ -70,6 +70,11 @@ struct PhotoScore: Codable, Hashable, Identifiable {
     var feat: Data? = nil
     /// True once the fingerprint was attempted (so a photo whose whole-scene print fails isn't retried forever).
     var featChecked: Bool? = nil
+    /// 2 once this photo was analyzed under "Apple flags, Claude decides" (provenance-flagged photos are fully
+    /// analyzed, and held-back ones get a `soft` score for Put back). Older records of those kinds are re-read.
+    var flagVersion: Int? = nil
+    /// Why Apple flagged a photo that's still listed (water, swimwear, AI image, ...); nil when it wasn't flagged.
+    var appleFlag: String? { raw == nil && Scorer.softReasons.contains(excluded ?? "") ? excluded : nil }
 }
 
 /// One moment: photos taken less than 60 seconds apart (2 minutes at most), represented by its best shot.

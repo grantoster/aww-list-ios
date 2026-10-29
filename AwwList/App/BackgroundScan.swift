@@ -77,13 +77,30 @@ enum BackgroundScan {
         if #available(iOS 26.0, *) { return true } else { return false }
     }
 
-    @MainActor static func continueInBackground() {
-        guard #available(iOS 26.0, *), Shared.scanner.isScanning else { return }
+    /// Last reason a background request didn't go through (shown on the scan banner).
+    @MainActor static var lastError: String?
+    @MainActor private static var continuedRunning = false
+
+    /// Asks iOS to keep the running scan going after the app is left. Called from the button and automatically
+    /// whenever the app starts to close mid-scan (it has to be asked while the app is still on screen).
+    @discardableResult
+    @MainActor static func continueInBackground() -> Bool {
+        guard #available(iOS 26.0, *), Shared.scanner.isScanning, !taskOwnsScan, !continuedRunning else { return false }
         let req = BGContinuedProcessingTaskRequest(identifier: continuedID,
                                                    title: "Finding your cutest photos",
                                                    subtitle: "Scanning your library")
-        req.strategy = .fail
-        try? BGTaskScheduler.shared.submit(req)
+        req.strategy = .queue   // if iOS can't start it this second, it starts as soon as it can
+        do {
+            try BGTaskScheduler.shared.submit(req)
+            continuedRunning = true
+            // If iOS never gets to it before the scan ends, allow asking again for the next scan.
+            Shared.scanner.whenFinished { if !taskOwnsScan { continuedRunning = false } }
+            lastError = nil
+            return true
+        } catch {
+            lastError = "iOS didn't allow background scanning just now (\(error.localizedDescription)). It'll pick up overnight while charging, or when you come back."
+            return false
+        }
     }
 
     @available(iOS 26.0, *)
@@ -91,29 +108,38 @@ enum BackgroundScan {
         let scanner = Shared.scanner
         let done = Once()
         taskOwnsScan = true
+        continuedRunning = true
         if !scanner.isScanning { scanner.start(library: Shared.library) }
+        // Progress is reported every second from the photo-by-photo count: iOS ends a continued task whose
+        // progress stops moving, and the 50-photo batches (or one slow iCloud download) used to look like a stall.
+        // A follow-up scan (photos added meanwhile) starts its count over, so totals are carried across.
         let ticker = Task { @MainActor in
-            var shown: Int64 = 0
+            var base: Int64 = 0, lastLive: Int64 = 0, lastTotal: Int64 = 0
             while !Task.isCancelled && scanner.isScanning {
-                task.progress.totalUnitCount = Int64(max(1, scanner.total))
-                shown = max(shown, Int64(min(scanner.done, max(1, scanner.total))))   // never goes backwards
-                task.progress.completedUnitCount = shown
+                let live = Int64(scanner.live.value), total = Int64(scanner.total)
+                if live < lastLive { base += lastTotal }          // a new pass started
+                lastLive = live; lastTotal = max(total, live)
+                task.progress.totalUnitCount = max(1, base + lastTotal + 1)   // +1: finishing up still to come
+                task.progress.completedUnitCount = min(base + live, task.progress.totalUnitCount - 1)
                 task.updateTitle("Finding your cutest photos",
-                                 subtitle: "\(scanner.done.formatted()) of \(scanner.total.formatted()) photos")
+                                 subtitle: "\(live.formatted()) of \(total.formatted()) photos")
                 try? await Task.sleep(for: .seconds(1))
             }
+        }
+        func finish(_ ok: Bool) {
+            if done.claim() { taskOwnsScan = false; continuedRunning = false; task.setTaskCompleted(success: ok) }
         }
         task.expirationHandler = {
             Task { @MainActor in
                 ticker.cancel(); scanner.stop(); Shared.library.flush()
-                if done.claim() { taskOwnsScan = false; task.setTaskCompleted(success: false) }
+                finish(false)
             }
         }
         scanner.whenFinished {
             ticker.cancel()
             Shared.library.flush()
             task.progress.completedUnitCount = task.progress.totalUnitCount
-            if done.claim() { taskOwnsScan = false; task.setTaskCompleted(success: true) }
+            finish(true)
         }
     }
 
