@@ -10,7 +10,7 @@ final class PhotoScanner: ObservableObject {
     @Published private(set) var done = 0
     @Published private(set) var total = 0
 
-    private let queue = DispatchQueue(label: "aww.scan", qos: .utility)
+    private let queue = DispatchQueue(label: "aww.scan", qos: .userInitiated)
     private let cancelFlag = CancelFlag()
     private let changes = LibraryChangeFlag()
     private var hasScanned = false
@@ -75,79 +75,41 @@ final class PhotoScanner: ObservableObject {
             let count = todo.count
             Task { @MainActor in library.remove(gone); me.total = count; me.done = 0 }
 
-            let analyzer = Analyzer()
-            let manager = PHImageManager.default()
-            let req = PHImageRequestOptions()
-            req.deliveryMode = .highQualityFormat // one callback, at the 768 px size asked for
-            req.resizeMode = .fast
-            req.isNetworkAccessAllowed = true    // "Optimize iPhone Storage" keeps originals in iCloud; fetch a small copy
-            var batch: [PhotoScore] = []
-            var checked = 0
-
-            for asset in todo {
-                if flag.isCancelled { break }
-                let result: PhotoScore? = autoreleasepool {
-                    var signals = Signals()
-                    signals.isScreenshot = asset.mediaSubtypes.contains(.photoScreenshot)
-                    // Clearly AI-generated or face-retouched photos stay off the list (checked from the file's details).
-                    if !signals.isScreenshot, let verdict = Provenance.verdict(fileInfo(asset, manager: manager)) {
-                        return PhotoScore(id: asset.localIdentifier, date: asset.creationDate ?? .distantPast, raw: nil,
-                                          excluded: verdict, age: nil, caption: "", version: Scorer.version)
-                    }
-                    var records: [FaceRecord] = []
-                    if !signals.isScreenshot {
-                        // Wait up to 20 s per photo (an iCloud download on a slow connection), then move on.
-                        let got = LoadedImage()
-                        let sem = DispatchSemaphore(value: 0)
-                        let rid = manager.requestImage(for: asset, targetSize: CGSize(width: 768, height: 768),
-                                                       contentMode: .aspectFit, options: req) { img, _ in
-                            got.set(img)
-                            sem.signal()
-                        }
-                        if sem.wait(timeout: .now() + 20) == .timedOut {
-                            manager.cancelImageRequest(rid)
-                            return nil                 // slow, not broken: tried again on the next scan
-                        }
-                        // No image even from iCloud: remember that, so it isn't retried on every launch
-                        // (it's retried about once a day, and from Settings).
-                        guard let img = got.image, let cg = img.cgImage else {
-                            if ranked.contains(asset.localIdentifier) { return nil }
-                            return PhotoScore(id: asset.localIdentifier, date: asset.creationDate ?? .distantPast, raw: nil,
-                                              excluded: Scorer.unavailable, age: nil, caption: "", version: Scorer.version)
-                        }
-                        // Vision couldn't read it: remember that too, same retry rules.
-                        guard let measured = analyzer.analyze(cg, orientation: CGImagePropertyOrientation(img.imageOrientation)) else {
-                            if ranked.contains(asset.localIdentifier) { return nil }
-                            return PhotoScore(id: asset.localIdentifier, date: asset.creationDate ?? .distantPast, raw: nil,
-                                              excluded: Scorer.unavailable, age: nil, caption: "", version: Scorer.version)
-                        }
-                        signals = measured
-                        if Scorer.score(measured).raw != nil {
-                            records = analyzer.facePrints(cg, orientation: CGImagePropertyOrientation(img.imageOrientation),
-                                                          faces: measured.faces)
-                        }
-                    }
-                    // Undated photos can't be placed in a year or grouped into moments, so they stay off the list.
-                    // (No fallback to the modification date: that's the edit or import date, which would misfile them.)
-                    guard let date = asset.creationDate else {
-                        return PhotoScore(id: asset.localIdentifier, date: .distantPast, raw: nil, excluded: "No date",
-                                          age: nil, caption: "", version: Scorer.version)
-                    }
-                    let (raw, excluded) = Scorer.score(signals)
-                    let age: AgeGroup? = raw == nil ? nil : (signals.babyConfidence > 0.5 ? .baby : .kid)
-                    return PhotoScore(id: asset.localIdentifier, date: date,
-                                      raw: raw, excluded: excluded, age: age, caption: Scorer.caption(signals, date: date),
-                                      version: Scorer.version, faces: signals.faces.count,
-                                      faceRecords: raw == nil ? nil : records)
-                }
-                checked += 1
-                if let result { batch.append(result) }
-                if checked % 50 == 0 {
-                    let out = batch, n = checked
-                    batch = []
+            // Several photos are analyzed at once (one worker per spare core). Photos already on the phone go first;
+            // ones stored only in iCloud ("Optimize iPhone Storage") are downloaded afterwards, two at a time.
+            let workers = min(4, max(2, ProcessInfo.processInfo.activeProcessorCount - 2))
+            let collector = Collector()
+            func post(_ r: PhotoScore?) {
+                if let ready = collector.add(r) {
+                    let (out, n) = ready
                     Task { @MainActor in library.add(out); me.done = n }
                 }
             }
+            func runPass(_ list: [PHAsset], network: Bool, lanes: Int) -> [PHAsset] {
+                let deferred = Deferred()
+                let group = DispatchGroup()
+                for lane in 0..<lanes {
+                    group.enter()
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        defer { group.leave() }
+                        let analyzer = Analyzer()
+                        let manager = PHImageManager()
+                        for k in stride(from: lane, to: list.count, by: lanes) {
+                            if flag.isCancelled { return }
+                            switch analyzePhoto(list[k], analyzer: analyzer, manager: manager, network: network, ranked: ranked) {
+                            case .done(let r): post(r)
+                            case .inCloud: deferred.add(list[k])
+                            }
+                        }
+                    }
+                }
+                group.wait()
+                return deferred.items
+            }
+            let cloudOnly = runPass(todo, network: false, lanes: workers)
+            if !flag.isCancelled && !cloudOnly.isEmpty { _ = runPass(cloudOnly, network: true, lanes: 2) }
+            let (batch, checked) = collector.drain()
+
             let out = batch, n = checked
             Task { @MainActor in
                 library.add(out); library.finishScan()
@@ -171,7 +133,7 @@ final class PhotoScanner: ObservableObject {
 /// Reads the file details that reveal AI generation or retouching: the original file name, the app that wrote
 /// it, camera make, file type, and any AI-provenance tag. Only the first 512 KB of the file is read (where those
 /// details live), and only from files already on the phone (no download).
-private func fileInfo(_ asset: PHAsset, manager: PHImageManager) -> Provenance.FileInfo {
+func fileInfo(_ asset: PHAsset, manager: PHImageManager) -> Provenance.FileInfo {
     var info = Provenance.FileInfo()
     let resources = PHAssetResource.assetResources(for: asset)
     let original = resources.first { $0.type == .photo } ?? resources.first
@@ -297,9 +259,102 @@ final class LibraryChangeFlag: NSObject, PHPhotoLibraryChangeObserver, @unchecke
 }
 
 /// Holds the result of one image request across threads.
-private final class LoadedImage: @unchecked Sendable {
+final class LoadedImage: @unchecked Sendable {
     private let lock = NSLock()
     private var value: UIImage?
-    func set(_ img: UIImage?) { lock.lock(); value = img; lock.unlock() }
+    private var cloud = false
+    func set(_ img: UIImage?, inCloud: Bool = false) { lock.lock(); value = img; cloud = inCloud; lock.unlock() }
     var image: UIImage? { lock.lock(); defer { lock.unlock() }; return value }
+    var inCloud: Bool { lock.lock(); defer { lock.unlock() }; return cloud }
+}
+
+enum PhotoOutcome { case done(PhotoScore?), inCloud }
+
+/// Analyzes one photo. With `network` off, a photo kept only in iCloud comes back as `.inCloud` for a later pass.
+func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager, network: Bool,
+                  ranked: Set<String>) -> PhotoOutcome {
+    autoreleasepool {
+        var signals = Signals()
+        signals.isScreenshot = asset.mediaSubtypes.contains(.photoScreenshot)
+        // Clearly AI-generated or face-retouched photos stay off the list (checked from the file's details).
+        if !signals.isScreenshot, let verdict = Provenance.verdict(fileInfo(asset, manager: manager)) {
+            return .done(PhotoScore(id: asset.localIdentifier, date: asset.creationDate ?? .distantPast, raw: nil,
+                                    excluded: verdict, age: nil, caption: "", version: Scorer.version))
+        }
+        var records: [FaceRecord] = []
+        if !signals.isScreenshot {
+            let req = PHImageRequestOptions()
+            req.deliveryMode = .highQualityFormat   // one callback, at the 768 px size asked for
+            req.resizeMode = .fast
+            req.isNetworkAccessAllowed = network
+            // Wait up to 20 s per photo (an iCloud download on a slow connection), then move on.
+            let got = LoadedImage()
+            let sem = DispatchSemaphore(value: 0)
+            let rid = manager.requestImage(for: asset, targetSize: CGSize(width: 768, height: 768),
+                                           contentMode: .aspectFit, options: req) { img, info in
+                got.set(img, inCloud: (info?[PHImageResultIsInCloudKey] as? Bool) ?? false)
+                sem.signal()
+            }
+            if sem.wait(timeout: .now() + 20) == .timedOut {
+                manager.cancelImageRequest(rid)
+                return .done(nil)                  // slow, not broken: tried again on the next scan
+            }
+            if got.image == nil && got.inCloud && !network { return .inCloud }
+            // No image even from iCloud: remember that, so it isn't retried on every launch
+            // (it's retried about once a day, and from Settings).
+            guard let img = got.image, let cg = img.cgImage else {
+                if ranked.contains(asset.localIdentifier) { return .done(nil) }
+                return .done(PhotoScore(id: asset.localIdentifier, date: asset.creationDate ?? .distantPast, raw: nil,
+                                        excluded: Scorer.unavailable, age: nil, caption: "", version: Scorer.version))
+            }
+            // Vision couldn't read it: remember that too, same retry rules.
+            guard let measured = analyzer.analyze(cg, orientation: CGImagePropertyOrientation(img.imageOrientation)) else {
+                if ranked.contains(asset.localIdentifier) { return .done(nil) }
+                return .done(PhotoScore(id: asset.localIdentifier, date: asset.creationDate ?? .distantPast, raw: nil,
+                                        excluded: Scorer.unavailable, age: nil, caption: "", version: Scorer.version))
+            }
+            signals = measured
+            if Scorer.score(measured).raw != nil {
+                records = analyzer.facePrints(cg, orientation: CGImagePropertyOrientation(img.imageOrientation),
+                                              faces: measured.faces)
+            }
+        }
+        // Undated photos can't be placed in a year or grouped into moments, so they stay off the list.
+        // (No fallback to the modification date: that's the edit or import date, which would misfile them.)
+        guard let date = asset.creationDate else {
+            return .done(PhotoScore(id: asset.localIdentifier, date: .distantPast, raw: nil, excluded: "No date",
+                                    age: nil, caption: "", version: Scorer.version))
+        }
+        let (raw, excluded) = Scorer.score(signals)
+        let age: AgeGroup? = raw == nil ? nil : (signals.babyConfidence > 0.5 ? .baby : .kid)
+        return .done(PhotoScore(id: asset.localIdentifier, date: date,
+                                raw: raw, excluded: excluded, age: age, caption: Scorer.caption(signals, date: date),
+                                version: Scorer.version, faces: signals.faces.count,
+                                faceRecords: raw == nil ? nil : records))
+    }
+}
+
+/// Gathers results from the workers and hands them to the library 50 at a time.
+final class Collector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var batch: [PhotoScore] = []
+    private var checked = 0
+    /// Adds one result; returns a batch to post every 50 photos.
+    func add(_ r: PhotoScore?) -> ([PhotoScore], Int)? {
+        lock.lock(); defer { lock.unlock() }
+        checked += 1
+        if let r { batch.append(r) }
+        guard checked % 50 == 0 else { return nil }
+        let out = batch; batch = []
+        return (out, checked)
+    }
+    func drain() -> ([PhotoScore], Int) { lock.lock(); defer { lock.unlock() }; let out = batch; batch = []; return (out, checked) }
+}
+
+/// Photos set aside for the iCloud pass.
+final class Deferred: @unchecked Sendable {
+    private let lock = NSLock()
+    private var list: [PHAsset] = []
+    func add(_ a: PHAsset) { lock.lock(); list.append(a); lock.unlock() }
+    var items: [PHAsset] { lock.lock(); defer { lock.unlock() }; return list }
 }

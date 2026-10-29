@@ -45,7 +45,7 @@ final class Library: ObservableObject {
             photos[p.id] = p
         }
         unsaved += new.count
-        if Date().timeIntervalSince(lastRebuild) > 2 { rebuild() }
+        if Date().timeIntervalSince(lastRebuild) > 6 { rebuild() }   // re-ranking everything is costly; keep it occasional while scanning
         if unsaved >= 200 { save() }
     }
 

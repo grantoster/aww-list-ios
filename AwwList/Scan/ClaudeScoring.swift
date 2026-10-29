@@ -265,9 +265,18 @@ final class ClaudeService: ObservableObject {
             try await checkKey()
             for chunk in stride(from: 0, to: list.count, by: 25).map({ Array(list[$0..<min($0 + 25, list.count)]) }) {
                 var reqs: [[String: Any]] = [], map: [String: String] = [:]
+                status = "Preparing photos \((sent + 1).formatted())–\((sent + chunk.count).formatted()) of \(toSend.formatted())…"
+                // Load and shrink several photos at once.
+                let ids = chunk.map(\.best.id)
+                let jpegs: [Int: Data] = await withTaskGroup(of: (Int, Data?).self) { group in
+                    var out: [Int: Data] = [:], next = 0
+                    func addNext() { if next < ids.count { let k = next, id = ids[k]; next += 1; group.addTask { (k, await ClaudeService.jpeg(id)) } } }
+                    for _ in 0..<min(6, ids.count) { addNext() }
+                    for await (k, d) in group { if let d { out[k] = d }; addNext() }
+                    return out
+                }
                 for (i, m) in chunk.enumerated() {
-                    status = "Preparing photo \((sent + i + 1).formatted()) of \(toSend.formatted())…"
-                    guard let jpeg = await Self.jpeg(m.best.id) else { continue }
+                    guard let jpeg = jpegs[i] else { continue }
                     let cid = "p\(sent + i)_\(Int(Date().timeIntervalSince1970))"
                     map[cid] = m.best.id
                     reqs.append(["custom_id": cid, "params": [
@@ -372,7 +381,7 @@ final class ClaudeService: ObservableObject {
     }
 
     /// The photo upright, at most 768 px on its long side, as JPEG. Redrawing drops location and other file details.
-    static func jpeg(_ id: String) async -> Data? {
+    nonisolated static func jpeg(_ id: String) async -> Data? {
         guard let img = await AssetImage.load(id: id, size: CGSize(width: 768, height: 768), mode: .aspectFit) else { return nil }
         let k = min(1, 768 / max(img.size.width, img.size.height))
         let size = CGSize(width: (img.size.width * k).rounded(), height: (img.size.height * k).rounded())
