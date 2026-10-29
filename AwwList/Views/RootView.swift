@@ -240,6 +240,7 @@ struct ClaudeSection: View {
             if library.claudeScored > 0 {
                 LabeledContent("Scored by Claude", value: library.claudeScored.formatted())
                 Button("Go back to on-device scores only", role: .destructive) { library.clearClaude() }
+                    .disabled(claude.busy || !library.claudeBatches.isEmpty)   // not while photos are out being scored
             }
         } header: {
             Text("Score with Claude")

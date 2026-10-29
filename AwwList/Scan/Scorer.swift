@@ -52,6 +52,22 @@ enum Scorer {
     /// can't claim a full year's share of 9s and 10s).
     static let fullYear = 200.0
 
+    /// A bare chest that isn't a baby's (babies in just a diaper are fine).
+    /// At most one bare chest is exempt: the smallest bare-chested face, and only when the photo reads as a baby
+    /// photo and that person's own crop does too (or, if no crop was measured, by being the smallest face).
+    static func hasBareChest(_ s: Signals) -> Bool {
+        let bareIdx = s.faces.indices.filter { s.faces[$0].bareTorso >= bareTorsoLimit }
+        let anyMeasured = s.faces.contains { $0.baby != nil }
+        let smallestBare = bareIdx.min { s.faces[$0].area < s.faces[$1].area }
+        let smallestFace = s.faces.indices.min { s.faces[$0].area < s.faces[$1].area }
+        var exempt: Int? = nil
+        if s.babyConfidence > 0.5, let i = smallestBare {
+            if let b = s.faces[i].baby { if b > 0.5 { exempt = i } }
+            else if !anyMeasured && i == smallestFace { exempt = i }
+        }
+        return bareIdx.contains { $0 != exempt }
+    }
+
     /// Returns (raw 0...1, excluded reason). Mirrors the Aww List rubric:
     /// the child's own expression counts most, then real closeness, then the moment; blur pulls everything down.
     static func score(_ s: Signals) -> (raw: Double?, excluded: String?) {
@@ -62,16 +78,7 @@ enum Scorer {
         // hides the burst around them.
         // At most one bare chest is exempt: the smallest bare-chested face, and only when the photo reads as a baby
         // photo and that person's own crop does too (or, if no crop was measured, by being the smallest face).
-        let bareIdx = s.faces.indices.filter { s.faces[$0].bareTorso >= bareTorsoLimit }
-        let anyMeasured = s.faces.contains { $0.baby != nil }
-        let smallestBare = bareIdx.min { s.faces[$0].area < s.faces[$1].area }
-        let smallestFace = s.faces.indices.min { s.faces[$0].area < s.faces[$1].area }
-        var exempt: Int? = nil
-        if s.babyConfidence > 0.5, let i = smallestBare {
-            if let b = s.faces[i].baby { if b > 0.5 { exempt = i } }
-            else if !anyMeasured && i == smallestFace { exempt = i }
-        }
-        let bare = bareIdx.contains { $0 != exempt }
+        let bare = hasBareChest(s)
         if bare && (s.childPrecise || s.childConfidence >= 0.15) { return (nil, "Shirtless") }
         guard s.childPrecise || s.childConfidence >= childThreshold else { return (nil, "No child") }
         if s.waterScene { return (nil, "Water") }
@@ -196,7 +203,7 @@ enum Scorer {
 
     /// The score a photo with faces but no child label would have if a child were in it (nil without a face).
     static func poolScore(_ s: Signals) -> Double? {
-        if s.isScreenshot || s.blockedLabel != nil || s.faces.isEmpty { return nil }
+        if s.isScreenshot || s.blockedLabel != nil || s.faces.isEmpty || hasBareChest(s) { return nil }
         var t = s
         t.waterScene = false; t.childPrecise = true
         for i in t.faces.indices { t.faces[i].bareTorso = 0 }
@@ -206,6 +213,7 @@ enum Scorer {
     /// The value a photo is listed with: its score, or for a flagged photo the score it would have had.
     /// Held-back photos count only once the user puts them back.
     static func listedValue(_ p: PhotoScore, putBack: Set<String> = [], includePoolOnly: Bool = false) -> Double? {
+        if p.hiddenAlbum == true { return nil }
         if let r = p.raw { return r }
         guard let e = p.excluded else { return nil }
         if includePoolOnly && poolOnly.contains(e) { return p.soft }
@@ -218,6 +226,9 @@ enum Scorer {
     static func softScore(_ s: Signals) -> Double? {
         if s.isScreenshot || s.blockedLabel == "document" || s.blockedLabel == "screenshot" { return nil }
         guard s.childConfidence >= 0.10 else { return nil }   // some hint of a child, so grown-up photos don't flood the pool
+        // A bare chest the shirtless check skipped only because the child label was weak: keep it off the list
+        // (it would otherwise be listed, and sent, as plain "No child" without the shirtless safeguards).
+        if score(s).excluded == "No child" && hasBareChest(s) { return nil }
         var t = s
         t.blockedLabel = nil; t.waterScene = false; t.childPrecise = true
         for i in t.faces.indices { t.faces[i].bareTorso = 0 }

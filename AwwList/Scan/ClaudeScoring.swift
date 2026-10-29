@@ -243,7 +243,7 @@ final class ClaudeService: ObservableObject {
     /// photos Claude already scored (with this model, kept or removed) use up the budget, so re-ranking
     /// (for example by the learned score) never sends more than the chosen number. Within the budget, the best
     /// candidates go first: by the learned score once there is one, otherwise by Apple's.
-    func candidates(_ library: Library) -> [Moment] {
+    func candidates(_ library: Library, skipping skip: Set<String> = []) -> [Moment] {
         let model = library.claudeModel, n = library.claudeScope
         let pending = Set(library.claudeBatches.flatMap { $0.photos.values })
         let sentToModel = library.claudeSent[model] ?? []
@@ -259,7 +259,7 @@ final class ClaudeService: ObservableObject {
         let forbidden = library.neverSend
         // A burst Claude removed (with any model) is never sent again, so switching models can't re-send it.
         func open(_ m: Moment) -> Bool {
-            !m.memberIDs.contains { id in
+            !skip.contains(m.best.id) && !m.memberIDs.contains { id in
                 forbidden.contains(id) || library.photos[id].map(used) == true || library.photos[id]?.claude?.exclude != nil
                     || library.claudeRemoved[id] != nil
             }
@@ -274,13 +274,19 @@ final class ClaudeService: ObservableObject {
             // candidates; a fifth of what's left is spread evenly over the rest of the year, so Claude also sees
             // photos Apple ranked low (and the app learns where Apple was wrong).
             let left = max(0, n + max(1, n / 5) - (spent[year] ?? 0))
-            let spread = min(left, max(1, n / 5)), top = left - spread
-            out += list.prefix(top)
-            let rest = Array(list.dropFirst(top))
-            if spread > 0 && !rest.isEmpty {
-                let step = Double(rest.count) / Double(spread)
+            // Photos with faces but no child label (often grown-ups) only compete for the spread, never the top.
+            let top = left - min(left, max(1, n / 5))
+            let isPool = { (m: Moment) in Scorer.poolOnly.contains(m.best.excluded ?? "") }
+            let pool = list.filter { !(isPool($0) && library.learnedRemoves($0.best)) }
+            let topPicks = Array(pool.filter { !isPool($0) }.prefix(top))
+            out += topPicks
+            let taken = Set(topPicks.map(\.best.id))
+            let rest = pool.filter { !taken.contains($0.best.id) }
+            let spreadCount = left - topPicks.count   // unused top slots (too few listed photos) go to the spread
+            if spreadCount > 0 && !rest.isEmpty {
+                let step = Double(rest.count) / Double(spreadCount)
                 var picked = Set<Int>()
-                for k in 0..<spread {
+                for k in 0..<spreadCount {
                     let i = min(rest.count - 1, Int((Double(k) + 0.5) * step))
                     if picked.insert(i).inserted { out.append(rest[i]) }
                 }
@@ -295,7 +301,9 @@ final class ClaudeService: ObservableObject {
     /// no photo within 2 minutes may be one Claude removed (the same burst, however it's grouped now).
     /// Photos outside a Limited Access selection can't be seen, so they can't be checked.
     static func sendable(_ m: Moment, _ library: Library) -> Bool {
-        let dates = m.memberIDs.compactMap { library.photos[$0]?.date }
+        let live = PHAsset.fetchAssets(withLocalIdentifiers: m.memberIDs, options: nil)
+        var dates: [Date] = []
+        live.enumerateObjects { a, _, _ in if let d = a.creationDate { dates.append(d) } }
         guard dates.count == m.memberIDs.count, let lo = dates.min(), let hi = dates.max() else { return false }
         let o = PHFetchOptions()
         o.includeHiddenAssets = true
@@ -304,14 +312,16 @@ final class ClaudeService: ObservableObject {
                                   hi.addingTimeInterval(600) as NSDate)
         var near: [PhotoScore] = [], allChecked = true
         PHAsset.fetchAssets(with: o).enumerateObjects { a, _, stop in
-            guard let p = library.photos[a.localIdentifier], p.version == Scorer.version,
+            guard var p = library.photos[a.localIdentifier], p.version == Scorer.version,
                   p.excluded != Scorer.unavailable else { allChecked = false; stop.pointee = true; return }
+            if let d = a.creationDate { p.date = d }   // the photo's date now (it may have been changed in Photos)
             near.append(p)
         }
         guard allChecked else { return false }
         let blocked = Scorer.neverSend(near, allowSwimShirtless: library.claudeSensitive, removed: library.claudeRemoved)
         if m.memberIDs.contains(where: blocked.contains) { return false }
-        for p in near where p.claude?.exclude != nil || library.claudeRemoved[p.id] != nil {
+        let sensitive: Set<String> = ["bath", "undressed", "swimwear"]
+        for p in near where sensitive.contains(p.claude?.exclude ?? library.claudeRemoved[p.id] ?? "") {
             if dates.contains(where: { abs($0.timeIntervalSince(p.date)) <= 120 }) { return false }
         }
         return true
@@ -337,7 +347,12 @@ final class ClaudeService: ObservableObject {
         do {
             status = "Checking your API key…"
             try await checkKey()
-            for chunk in stride(from: 0, to: list.count, by: 25).map({ Array(list[$0..<min($0 + 25, list.count)]) }) {
+            // Photos the final check holds back free their slot for the next candidates (a few rounds at most).
+            var held = Set<String>(), queue = list, round = 0
+            while !queue.isEmpty && !paused && round < 4 {
+            round += 1
+            toSend = sent + queue.count
+            for chunk in stride(from: 0, to: queue.count, by: 25).map({ Array(queue[$0..<min($0 + 25, queue.count)]) }) {
                 // A scan that started meanwhile (new photos) may find a bath photo next to these: stop, send later.
                 if Shared.scanner.isScanning { paused = true; break }
                 let blocked = library.neverSend
@@ -358,6 +373,7 @@ final class ClaudeService: ObservableObject {
                 // checked, and none may be (or be near) a possible bath photo.
                 if Shared.scanner.isScanning { paused = true; break }
                 let cleared = Set(chunk.filter { Self.sendable($0, library) }.map(\.best.id))
+                held.formUnion(chunk.map(\.best.id).filter { !cleared.contains($0) })
                 for (i, m) in chunk.enumerated() {
                     guard let jpeg = jpegs[i], cleared.contains(m.best.id) else { continue }
                     let cid = "p\(sent + i)_\(Int(Date().timeIntervalSince1970))"
@@ -385,7 +401,13 @@ final class ClaudeService: ObservableObject {
                 // Upload; if the connection drops, check whether the batch was created before trying again.
                 let started = Date()
                 var id: String?
+                var aborted = false
                 for attempt in 1...3 where id == nil {
+                    // Before a retry (which can come minutes later), check again: new photos may have arrived.
+                    if attempt > 1 && (Shared.scanner.isScanning || Shared.scanner.needsScan
+                                       || chunk.contains(where: { cleared.contains($0.best.id) && !Self.sendable($0, library) })) {
+                        aborted = true; break
+                    }
                     do {
                         let (data, resp) = try await session.data(for: request(endpoint, method: "POST", body: body))
                         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
@@ -403,14 +425,20 @@ final class ClaudeService: ObservableObject {
                         try await Task.sleep(nanoseconds: UInt64(attempt * 3) * 1_000_000_000)
                     }
                 }
+                if aborted { paused = true; break }
                 guard let id else { throw URLError(.networkConnectionLost) }
                 library.addClaudeBatch(ClaudeBatch(id: id, model: model, photos: map, sent: Date()))
                 sent += reqs.count
             }
+            queue = held.isEmpty ? [] : candidates(library, skipping: held)
+            }
             let before = status
             await collect(library)
             if paused {
-                status = "Sent \(sent.formatted()) photos, then paused: new photos are being checked. Send again when the scan finishes."
+                status = sent == 0 ? "Paused before sending: new photos are being checked. Send again when the scan finishes."
+                    : "Sent \(sent.formatted()) photos, then paused: new photos are being checked. Send again when the scan finishes."
+            } else if sent == 0 {
+                status = "Nothing could be sent yet: photos taken near the chosen ones aren't all checked yet, or are near possible bath photos or ones Claude removed."
             } else if sent > 0 && status == before {
                 status = "Sent \(sent.formatted()) photos. Claude's scores usually arrive within an hour; they're picked up when you open the app."
             }
@@ -427,7 +455,7 @@ final class ClaudeService: ObservableObject {
         for b in library.claudeBatches {
             do {
                 let (data, code) = try await fetch(request(endpoint.appendingPathComponent(b.id)))
-                if code == 404 { library.removeClaudeBatch(b.id); status = "A batch was no longer on Anthropic's side; those photos can be sent again."; continue }
+                if code == 404 { library.unsend(model: b.model, Array(b.photos.values)); library.removeClaudeBatch(b.id); status = "A batch was no longer on Anthropic's side; those photos can be sent again."; continue }
                 guard code == 200, let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                     throw ClaudeError.http(code, code == 429 || code >= 500 ? "Claude is busy; try again in a few minutes." : "")
                 }
@@ -438,7 +466,7 @@ final class ClaudeService: ObservableObject {
                     continue
                 }
                 guard let urlString = obj["results_url"] as? String, let url = URL(string: urlString) else {
-                    library.removeClaudeBatch(b.id); continue
+                    library.unsend(model: b.model, Array(b.photos.values)); library.removeClaudeBatch(b.id); continue
                 }
                 let (results, rcode) = try await fetch(request(url))
                 guard rcode == 200 else { throw ClaudeError.http(rcode, "Couldn't download the results yet; they'll be retried.") }
@@ -458,6 +486,7 @@ final class ClaudeService: ObservableObject {
                 }
                 library.applyClaude(verdicts)
                 library.noteClaudeFailures(failed)
+                library.unsend(model: b.model, failed)   // can be tried again (up to twice in all)
                 library.removeClaudeBatch(b.id)
                 status = "Claude scored \(verdicts.count.formatted()) photos." +
                     (failed.isEmpty ? "" : " \(failed.count.formatted()) couldn't be scored" + (firstError.isEmpty ? "." : ": \(firstError)"))

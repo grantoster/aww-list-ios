@@ -86,6 +86,7 @@ final class PhotoScanner: ObservableObject {
             let opts = PHFetchOptions()
             opts.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
             opts.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
+            opts.includeHiddenAssets = true   // checked (never listed or sent) so a hidden bath photo still guards its neighbors
             let assets = PHAsset.fetchAssets(with: opts)
             changes.watch(assets)
             var todo: [PHAsset] = []
@@ -380,6 +381,7 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
         }
         p.softChecked = true
         p.flagVersion = 3
+        if asset.isHidden { p.hiddenAlbum = true }
         p.featChecked = true
         if let base = raw ?? p.soft, !signals.scenePrint.isEmpty {
             p.feat = Learner.encode(signals: Learner.signals(signals, apple: base),

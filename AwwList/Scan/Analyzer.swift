@@ -57,6 +57,8 @@ final class Analyzer {
     }
 
     /// Nil when Vision failed, so the caller stores nothing and the photo is tried again on the next scan.
+    private func reason(for id: String) -> String? { blocked[id] }
+
     static func severity(_ reason: String?) -> Int {
         switch reason { case "bath", "undressed": 3; case "swimwear": 2; case .some: 1; case nil: 0 }
     }
@@ -73,8 +75,11 @@ final class Analyzer {
             let id = obs.identifier
             // The most serious match wins (bath or undressed over swimwear over document or screenshot),
             // whatever order Vision lists them in.
+            // Documents and screenshots need a confident label (a kid holding a drawing isn't a document);
+            // the privacy labels keep the loose, high-recall bar.
+            let loose = reason(for: id).map { $0 != "document" && $0 != "screenshot" } ?? false
             if let reason = blocked[id],
-               obs.confidence > 0.5 || (obs.hasPrecisionRecallCurve && obs.hasMinimumPrecision(0.1, forRecall: 0.9)),
+               obs.confidence > 0.5 || (loose && obs.hasPrecisionRecallCurve && obs.hasMinimumPrecision(0.1, forRecall: 0.9)),
                Self.severity(reason) > Self.severity(s.blockedLabel) {
                 s.blockedLabel = reason
             }

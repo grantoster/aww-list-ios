@@ -99,6 +99,12 @@ final class Library: ObservableObject {
         save()
     }
     func setRankBy(_ v: String) { rankBy = v; rebuild(); save() }
+    /// Photos Claude never returned a score for (batch lost, expired or errored): they can be sent again.
+    func unsend(model: String, _ ids: [String]) {
+        guard !ids.isEmpty else { return }
+        claudeSent[model]?.subtract(ids)
+        save()
+    }
     func addClaudeBatch(_ b: ClaudeBatch) {
         claudeBatches.append(b)
         claudeSent[b.model, default: []].formUnion(b.photos.values)
@@ -368,17 +374,23 @@ final class Library: ObservableObject {
         for p in photos.values where !shown.contains(p.id) {
             let why: String
             if hidden.contains(p.id) { why = "Removed by you" }
-            else if p.version != Scorer.version { why = "Waiting to be checked again" }
+            else if p.hiddenAlbum == true { why = "In your Hidden album" }
+            else if p.version != Scorer.version || (p.excluded == "No child" && (p.faces ?? 0) > 0 && (p.flagVersion ?? 0) < 3) {
+                why = "Waiting to be checked again"
+            }
             else if filteredIDs.contains(p.id) { why = "Hidden by the learned filter" }
             else if p.claude?.exclude != nil || claudeRemoved[p.id] != nil || listedIDs.contains(p.id) { why = "Removed by Claude" }
             else if Scorer.listedValue(p, putBack: pb) != nil { why = "Within 10 minutes of a possible bath photo" }
             else if let e = p.excluded {
                 switch e {
-                case "No child seen": why = "Faces but no child label (Claude can still check these)"
+                case "No child seen":
+                    why = forbidden.contains(p.id) ? "Near a possible bath photo (never sent)"
+                        : p.claude != nil ? "Faces but no child label (Claude checked)"
+                        : "Faces but no child label (Claude can still check these)"
                 case "No child": why = "No child and no face"
                 case "Bath", "Undressed": why = "Possible bath or undressed"
                 case Scorer.unavailable: why = "Couldn't be loaded (iCloud)"
-                default: why = e
+                default: why = Scorer.softReasons.contains(e) ? "\(e), and no sign of a child" : e
                 }
             } else { why = "Other" }
             counts[why, default: 0] += 1
@@ -453,16 +465,16 @@ final class Library: ObservableObject {
         // Saves from before these ledgers: fill them from the verdicts and pending batches on hand.
         for p in photos.values {
             if let c = p.claude {
-                claudeSent[c.model, default: []].insert(p.id)
+                if c.rubric == Claude.rubric { claudeSent[c.model, default: []].insert(p.id) }
                 if let e = c.exclude { claudeRemoved[p.id] = e }
             }
         }
-        for b in claudeBatches { claudeSent[b.model, default: []].formUnion(b.photos.values) }
         // A filter saved before its check counted removals would stay switched off: learn again once.
         if let f = learnedFilter, f.testRemovals == nil { trainedSignature = nil }
         learned = s.learned.flatMap { $0.weights.count == Learner.featureCount ? $0 : nil }
         claudeScope = s.claudeScope ?? claudeScope
         claudeBatches = s.claudeBatches ?? []
+        if s.claudeSent == nil { for b in claudeBatches { claudeSent[b.model, default: []].formUnion(b.photos.values) } }
         rankBy = s.rankBy ?? "claude"
         claudeFailures = s.claudeFailures ?? [:]
         rebuild()

@@ -162,6 +162,16 @@ final class PoolTests: XCTestCase {
         XCTAssertTrue(Scorer.moments(from: [p]).isEmpty)
         XCTAssertEqual(Scorer.moments(from: [p], includePoolOnly: true).count, 1)
         XCTAssertEqual(Scorer.neverSend([p], allowSwimShirtless: false, removed: ["g": "bath"]), ["g"])
+        // A bare chest with a weak child label is never offered or listed (the shirtless safeguard can't see it).
+        var bare = s; bare.faces[0].bareTorso = 0.9
+        XCTAssertNil(Scorer.poolScore(bare))
+        var band = bare; band.childConfidence = 0.12
+        XCTAssertEqual(Scorer.score(band).excluded, "No child")
+        XCTAssertNil(Scorer.softScore(band))
+        // Photos in the iOS Hidden album are never listed.
+        var h = PhotoScore(id: "h", date: t, raw: 0.8, excluded: nil, age: .kid, caption: "", version: Scorer.version)
+        h.hiddenAlbum = true
+        XCTAssertTrue(Scorer.moments(from: [h]).isEmpty)
     }
 }
 
