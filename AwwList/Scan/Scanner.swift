@@ -68,7 +68,7 @@ final class PhotoScanner: ObservableObject {
                      && ($0.flagVersion ?? 0) < 2)
                 // photos with faces but no child label get a score so Claude can be offered them
                 && !($0.excluded == "No child" && $0.soft == nil && ($0.faces ?? 0) > 0 && ($0.flagVersion ?? 0) < 3)
-                && !Scorer.needsShirtlessRecheck($0)
+                && !Scorer.needsShirtlessRecheck($0) && !Scorer.needsLabelRecheck($0)
         }.map(\.id))
         // Photos already on the list keep their score if they can't be re-read this time.
         // Photos that already have a record keep it if they can't be re-read this time (a scored photo keeps its
@@ -79,7 +79,7 @@ final class PhotoScanner: ObservableObject {
         let restamp = library.photos.filter { _, p in
             ((Scorer.provenanceReasons.contains(p.excluded ?? "") || Scorer.heldBack.contains(p.excluded ?? "")) && (p.flagVersion ?? 0) < 2)
                 || (p.excluded == "No child" && p.soft == nil && (p.faces ?? 0) > 0 && (p.flagVersion ?? 0) < 3)
-                || Scorer.needsShirtlessRecheck(p)
+                || Scorer.needsShirtlessRecheck(p) || Scorer.needsLabelRecheck(p)
         }
         let flag = cancelFlag
         let changes = self.changes
@@ -314,7 +314,7 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
             return .done(PhotoScore(id: old.id, date: old.date, raw: nil, excluded: Scorer.unavailable, age: nil,
                                     caption: "", version: Scorer.version))
         }
-        old.flagVersion = 4
+        old.flagVersion = 5
         old.version = Scorer.version   // its held-back or flagged reason stands; just don't keep re-reading it
         return .done(old)
     }
@@ -390,7 +390,7 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
             p.age = signals.babyConfidence > 0.5 ? .baby : .kid
         }
         p.softChecked = true
-        p.flagVersion = 4
+        p.flagVersion = 5
         p.featChecked = true
         if let base = raw ?? p.soft, !signals.scenePrint.isEmpty {
             p.feat = Learner.encode(signals: Learner.signals(signals, apple: base),

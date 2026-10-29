@@ -44,6 +44,11 @@ enum Scorer {
     static let heldBack: Set<String> = ["Bath", "Undressed"]
     /// Records of these kinds from before the any-bare-chest-is-Shirtless rule (flagVersion < 4) are re-read once,
     /// and count as not yet checked when deciding what may be sent.
+    /// Bath, undressed, swimwear, document and screenshot flags from before the labels needed real confidence
+    /// (flagVersion < 5) are re-read once.
+    static func needsLabelRecheck(_ p: PhotoScore) -> Bool {
+        ["Bath", "Undressed", "Swimwear", "Document", "Screenshot"].contains(p.excluded ?? "") && (p.flagVersion ?? 0) < 5
+    }
     static func needsShirtlessRecheck(_ p: PhotoScore) -> Bool {
         (p.excluded == "No child" || p.excluded == "No child seen") && (p.faces ?? 0) > 0 && (p.flagVersion ?? 0) < 4
     }

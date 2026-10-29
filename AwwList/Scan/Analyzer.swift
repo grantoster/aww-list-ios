@@ -56,7 +56,12 @@ final class Analyzer {
         if !ids.isEmpty && !missing.isEmpty { NSLog("Aww List: classifier labels not on this iOS (fragments still apply): \(missing.sorted())") }
     }
 
-    private func reason(for id: String) -> String? { blocked[id] }
+    /// Labels that mean an actual bath or shower (not just a bathroom or a bathrobe).
+    static func isActualBath(_ id: String) -> Bool {
+        let l = id.lowercased()
+        return l == "bath" || l == "bathing" || ["bathtub", "bath_tub", "shower", "jacuzzi", "hot_tub", "hottub", "bubble_bath"]
+            .contains { l.contains($0) }
+    }
 
     static func severity(_ reason: String?) -> Int {
         switch reason { case "bath", "undressed": 3; case "swimwear": 2; case .some: 1; case nil: 0 }
@@ -71,17 +76,22 @@ final class Analyzer {
         let handler = VNImageRequestHandler(cgImage: image, orientation: orientation, options: [:])
         do { try handler.perform([classify, faces]) } catch { return nil }
 
+        var bathroomRoom = false
         for obs in classify.results ?? [] {
             let id = obs.identifier
             // The most serious match wins (bath or undressed over swimwear over document or screenshot),
-            // whatever order Vision lists them in.
-            // Documents and screenshots need a confident label (a kid holding a drawing isn't a document);
-            // the privacy labels keep the loose, high-recall bar.
-            let loose = reason(for: id).map { $0 != "document" && $0 != "screenshot" } ?? false
-            if let reason = blocked[id],
-               obs.confidence > 0.5 || (loose && obs.hasPrecisionRecallCurve && obs.hasMinimumPrecision(0.1, forRecall: 0.9)),
-               Self.severity(reason) > Self.severity(s.blockedLabel) {
-                s.blockedLabel = reason
+            // whatever order Vision lists them in. Each needs a real level of confidence: the old "loose" bar
+            // (10% precision) flagged fully clothed kids in hallways, classrooms and kitchens as bath photos.
+            if let reason = blocked[id] {
+                let need: Float
+                if reason == "bath" && !Self.isActualBath(id) {
+                    // A bathroom or bathrobe label alone isn't a bath: it only counts with a bare chest (checked below).
+                    if obs.confidence > 0.5 { bathroomRoom = true }
+                    need = 2
+                } else {
+                    need = reason == "bath" || reason == "undressed" ? 0.3 : 0.5
+                }
+                if obs.confidence > need, Self.severity(reason) > Self.severity(s.blockedLabel) { s.blockedLabel = reason }
             }
             if obs.confidence > 0.6, Describe.sceneLabels.contains(id) { s.labels.append(id) }
             if s.waterScene == false, Self.waterScenes.contains(id), obs.confidence > 0.5 { s.waterScene = true }
@@ -129,6 +139,8 @@ final class Analyzer {
             s.faces.append(face)
         }
         s.sharpness = sharpness(ci, box: subjectBox)
+        // A confident bathroom scene plus a bare chest (not a baby's) counts as a possible bath photo.
+        if bathroomRoom && Self.severity("bath") > Self.severity(s.blockedLabel) && Scorer.hasBareChest(s) { s.blockedLabel = "bath" }
         return s
     }
 
