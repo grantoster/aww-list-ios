@@ -49,12 +49,8 @@ jobs:
       ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
       AWW_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       AWW_BUNDLE_ID: ${{ secrets.BUNDLE_ID }}
-      BUILTIN_LEARNING: ${{ secrets.BUILTIN_LEARNING }}
     steps:
       - uses: actions/checkout@v4
-      - name: Add the built-in learning (kept in a secret, never in the public repo)
-        run: |
-          if [ -n "$BUILTIN_LEARNING" ]; then printf '%s' "$BUILTIN_LEARNING" > AwwList/Resources/BuiltInLearning.json; echo "Built-in learning added ($(wc -c < AwwList/Resources/BuiltInLearning.json) bytes)"; else echo "No built-in learning set"; fi
       - name: Select newest Xcode 26 (App Store uploads need the iOS 26 SDK)
         run: |
           X=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
