@@ -448,6 +448,7 @@ final class ClaudeService: ObservableObject {
             }
             let before = status
             await collect(library)
+            if paused && !Shared.scanner.isScanning { Shared.scanner.startIfNeeded(library: library) }   // check the changes now
             if paused {
                 let why = "your photo library changed while sending (new, changed or still-unchecked photos). Send again; the app checks them first."
                 status = sent == 0 ? "Paused before sending: " + why : "Sent \(sent.formatted()) photos, then paused: " + why

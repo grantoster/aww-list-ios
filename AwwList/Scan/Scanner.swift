@@ -70,12 +70,12 @@ final class PhotoScanner: ObservableObject {
                 && !($0.excluded == "No child" && $0.soft == nil && ($0.faces ?? 0) > 0 && ($0.flagVersion ?? 0) < 3)
                 && !Scorer.needsShirtlessRecheck($0) && !Scorer.needsLabelRecheck($0)
         }.map(\.id))
-        // Photos already on the list keep their score if they can't be re-read this time.
         // Photos that already have a record keep it if they can't be re-read this time (a scored photo keeps its
         // score; a bath photo keeps its exclusion and the quarantine around it).
         let ranked = Set(library.photos.keys)
-        // Older flagged or held-back records being re-read under the new rules: if the photo can't be read again,
-        // the old record is kept but marked as done, so it isn't retried on every scan.
+        // Older records being re-read under new rules: if the photo can't be read again, the old record is kept but
+        // marked as done (so it isn't retried every scan), except ones needing the shirtless re-check, which become
+        // Unavailable (they guard their neighbors and are retried about once a day).
         let restamp = library.photos.filter { _, p in
             ((Scorer.provenanceReasons.contains(p.excluded ?? "") || Scorer.heldBack.contains(p.excluded ?? "")) && (p.flagVersion ?? 0) < 2)
                 || (p.excluded == "No child" && p.soft == nil && (p.faces ?? 0) > 0 && (p.flagVersion ?? 0) < 3)
