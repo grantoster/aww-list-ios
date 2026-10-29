@@ -70,17 +70,20 @@ final class Library: ObservableObject {
         var claudeFailures: [String: Int]?; var learned: LearnedModel?; var claudeSensitive: Bool?
         var putBack: [String]?; var keptOut: [String]?; var learnedFilter: LearnedFilter?; var trainedSignature: UInt64?
         var useBuiltInLearning: Bool?
+        var learnedWho: [String: [String]]?
         var claudeRemoved: [String: String]?; var claudeSent: [String: [String]]?; var claudeSentYear: [String: Int]?
     }
 
     init() {
         load()
         if !loaded { applyLearning(); rebuild() }   // a fresh install (load already did this otherwise)
+        learnPeople()
     }
 
     /// New results from the scanner. The list is rebuilt at most every 2 seconds while scanning.
     func add(_ new: [PhotoScore]) {
         guard !new.isEmpty else { return }
+        for p in new { whoCache[p.id] = nil }
         for var p in new {
             if p.claude == nil { p.claude = photos[p.id]?.claude }   // a rescan never throws away Claude's verdict
             if p.feat == nil { p.feat = photos[p.id]?.feat }
@@ -94,7 +97,7 @@ final class Library: ObservableObject {
         if unsaved >= 200 { save() }
     }
 
-    func finishScan() { rebuild(); save(); retrain() }
+    func finishScan() { rebuild(); save(); retrain(); learnPeople() }
 
     /// Removes a whole moment (every shot in its burst) from the list.
     func hide(_ m: Moment) { hidden.formUnion(m.memberIDs); rebuild(); save() }
@@ -303,7 +306,59 @@ final class Library: ObservableObject {
     // MARK: Who's Who
 
     var threshold: Float { People.threshold(strictness: strictness) }
-    func setStrictness(_ v: Int) { strictness = v; rebuild(); save() }
+    func setStrictness(_ v: Int) { strictness = v; learnedWho = [:]; whoCache = [:]; rebuild(); save(); learnPeople() }
+
+    /// Who the app learned is in each photo (photo id → people), from the faces you named. See People.learn.
+    private(set) var learnedWho: [String: Set<UUID>] = [:]
+    /// Who's in each photo, cached between rebuilds (cleared whenever names or learning change).
+    private var whoCache: [String: Set<UUID>] = [:]
+    /// Faces (photo id # face number) the app has learned, so Who's Who doesn't ask about them.
+    private var learnedFaces = Set<String>()
+    @Published private(set) var learningPeople = false
+    private var peopleGeneration = 0
+
+    /// Learns who the rest of the faces are from the ones you named (off the main thread), then updates the list.
+    func learnPeople() {
+        peopleGeneration += 1
+        guard !people.isEmpty else { learnedWho = [:]; learnedFaces = []; whoCache = [:]; learningPeople = false; return }
+        let gen = peopleGeneration
+        var faces: [[Float]] = [], raw: [Data] = [], owners: [String] = [], keys: [String] = []
+        for p in photos.values {
+            for (j, f) in (p.faceRecords ?? []).enumerated() where f.vec.count == People.dim {
+                faces.append(People.floats(f.vec)); raw.append(f.vec); owners.append(p.id); keys.append(p.id + "#\(j)")
+            }
+        }
+        // Learn from the faces you named only (not last run's guesses), so mistakes can't snowball.
+        let named = people.map { p -> Person in
+            var p = p; p.examples = Array((p.examples ?? []).prefix(p.namedExamples ?? 0)); return p
+        }
+        let t = threshold
+        let allFaces = faces, rawVecs = raw, photoOf = owners, faceKey = keys
+        learningPeople = true
+        Task.detached(priority: .utility) {
+            let learned = People.learn(allFaces, people: named, threshold: t)
+            await MainActor.run {
+                guard gen == self.peopleGeneration else { return }   // names changed meanwhile: a newer run is coming
+                var who: [String: Set<UUID>] = [:], done = Set<String>()
+                for k in self.people.indices {
+                    self.people[k].examples = Array((self.people[k].examples ?? []).prefix(self.people[k].namedExamples ?? 0))
+                    self.people[k].learnedCount = 0
+                }
+                for (id, idx) in learned {
+                    for i in idx { who[photoOf[i], default: []].insert(id); done.insert(faceKey[i]) }
+                    if let k = self.people.firstIndex(where: { $0.id == id }) {
+                        self.people[k].examples = (self.people[k].examples ?? []) + People.spread(idx, to: 40).map { rawVecs[$0] }
+                        self.people[k].learnedCount = idx.count
+                    }
+                }
+                self.learnedWho = who
+                self.learnedFaces = done
+                self.whoCache = [:]
+                self.learningPeople = false
+                self.rebuild(); self.save()
+            }
+        }
+    }
 
     /// Names a group of faces. Using a name that already exists adds the faces to that person.
     func name(_ faces: [(photo: String, face: FaceRecord)], as rawName: String, birthday: Date?) {
@@ -312,30 +367,44 @@ final class Library: ObservableObject {
         let faces = faces.filter { $0.face.vec.count == People.dim }
         guard !faces.isEmpty else { return }
         let vecs = faces.map { People.floats($0.face.vec) }
+        let newExamples = People.spread(faces.map(\.face.vec), to: 40)
         if let i = people.firstIndex(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
             people[i].centroid = People.merged(people[i].centroid, count: people[i].count, adding: vecs)
             people[i].count += vecs.count
             if let birthday { people[i].birthday = birthday }
+            let named = Array((people[i].examples ?? []).prefix(people[i].namedExamples ?? 0)) + newExamples
+            people[i].examples = People.spread(named, to: 80)
+            people[i].namedExamples = people[i].examples?.count
         } else {
-            people.append(Person(name: name, birthday: birthday, centroid: People.merged([], count: 0, adding: vecs),
-                                 count: vecs.count, samplePhoto: first.photo, sampleBox: first.face.box))
+            var p = Person(name: name, birthday: birthday, centroid: People.merged([], count: 0, adding: vecs),
+                           count: vecs.count, samplePhoto: first.photo, sampleBox: first.face.box)
+            p.examples = newExamples; p.namedExamples = newExamples.count
+            people.append(p)
         }
+        whoCache = [:]
         rebuild(); save()
+        learnPeople()
     }
 
     func update(_ person: Person) {
         guard let i = people.firstIndex(where: { $0.id == person.id }) else { return }
-        people[i] = person; rebuild(); save()
+        people[i] = person; whoCache = [:]; rebuild(); save()
     }
 
-    func forget(_ person: Person) { people.removeAll { $0.id == person.id }; rebuild(); save() }
+    func forget(_ person: Person) {
+        people.removeAll { $0.id == person.id }
+        for k in learnedWho.keys { learnedWho[k]?.remove(person.id) }
+        whoCache = [:]; rebuild(); save(); learnPeople()
+    }
 
     /// Faces in ranked photos that don't match anyone named yet (largest faces of the best moments first).
     func unnamedFaces(limit: Int = 2500) -> [(photo: String, face: FaceRecord)] {
         var out: [(photo: String, face: FaceRecord)] = []
         let t = threshold
+        let matcher = People.Matcher(people)
         for m in moments {
-            for f in m.best.faceRecords ?? [] where f.vec.count == People.dim && People.match(People.floats(f.vec), people: people, threshold: t) == nil {
+            for (j, f) in (m.best.faceRecords ?? []).enumerated() where f.vec.count == People.dim
+                && !learnedFaces.contains(m.best.id + "#\(j)") && matcher.match(People.floats(f.vec), threshold: t) == nil {
                 out.append((m.best.id, f))
                 if out.count >= limit { return out }
             }
@@ -363,13 +432,19 @@ final class Library: ObservableObject {
         let scores = Scorer.calibrate(groups.map { Scorer.listedValue($0.best, putBack: pb) ?? 0 },
                                       years: groups.map { cal.component(.year, from: $0.best.date) })
         let named = people, t = threshold
+        let matcher = People.Matcher(named)
         let gregorian = Calendar(identifier: .gregorian)
         // A named person's birthday only sorts photos while they're a child (grown-ups named in Who's Who don't count).
         func childAt(_ birth: Date, _ date: Date) -> Bool {
             birth <= date && (gregorian.dateComponents([.year], from: birth, to: date).year ?? 0) < 13
         }
         func makeMoment(_ g: (best: PhotoScore, shots: Int, ids: [String]), _ s: Int) -> Moment {
-            let who = Set((g.best.faceRecords ?? []).compactMap { People.match(People.floats($0.vec), people: named, threshold: t) })
+            let who: Set<UUID>
+            if let cached = whoCache[g.best.id] { who = cached } else {
+                who = Set((g.best.faceRecords ?? []).compactMap { matcher.match(People.floats($0.vec), threshold: t) })
+                    .union(learnedWho[g.best.id] ?? [])
+                whoCache[g.best.id] = who
+            }
             // Named people with birthdays give exact ages; otherwise ages come from the birthdays and the photo.
             let date = g.best.date
             let known = named.filter { who.contains($0.id) }.compactMap(\.birthday).filter { childAt($0, date) }
@@ -525,6 +600,7 @@ final class Library: ObservableObject {
                       claudeModel: claudeModel, claudeScope: claudeScope, claudeBatches: claudeBatches, rankBy: rankBy, claudeFailures: claudeFailures, learned: ownModel, claudeSensitive: claudeSensitive,
                       putBack: nil, keptOut: Array(keptOut), learnedFilter: ownFilter,
                       trainedSignature: trainedSignature, useBuiltInLearning: useBuiltInLearning,
+                      learnedWho: learnedWho.mapValues { $0.map(\.uuidString) },
                       claudeRemoved: claudeRemoved, claudeSent: claudeSent.mapValues { Array($0) },
                       claudeSentYear: claudeSentYear)
         let u = url
@@ -549,6 +625,7 @@ final class Library: ObservableObject {
             return p
         }
         strictness = s.strictness ?? 1
+        learnedWho = (s.learnedWho ?? [:]).mapValues { Set($0.compactMap(UUID.init(uuidString:))) }
         claudeModel = s.claudeModel ?? claudeModel
         // Haiku is the default; switch earlier saves that were on the old default and never sent anything.
         if claudeModel == "claude-sonnet-5-5" && !s.photos.contains(where: { $0.claude != nil }) && (s.claudeBatches ?? []).isEmpty {

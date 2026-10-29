@@ -47,6 +47,15 @@ struct WhoView: View {
     @State private var naming: NamingGroup?
     @State private var editing: Person?
     @State private var generation = 0
+    /// Groups that look like someone already named: "Is this Maya?"
+    @State private var suggestions: [Suggestion] = []
+    @State private var declined = Set<String>()
+
+    struct Suggestion: Identifiable {
+        let id: String
+        let person: Person
+        let faces: [(photo: String, face: FaceRecord)]
+    }
 
     struct NamingGroup: Identifiable {
         let id = UUID()
@@ -72,7 +81,42 @@ struct WhoView: View {
                         }
                     }
                 }
+                let open = suggestions.filter { !declined.contains($0.id) }
+                if !open.isEmpty {
+                    Section {
+                        ForEach(open) { s in
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack(spacing: -10) {
+                                    ForEach(Array(s.faces.prefix(4).enumerated()), id: \.offset) { _, f in
+                                        FaceThumb(photo: f.photo, box: f.face.box, size: 48)
+                                            .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2))
+                                    }
+                                    Spacer(minLength: 16)
+                                    Text("\(s.faces.count) photos").font(.subheadline).foregroundStyle(.secondary)
+                                }
+                                HStack {
+                                    Text("Is this \(s.person.name)?").font(.headline)
+                                    Spacer()
+                                    Button("No") { declined.insert(s.id) }.buttonStyle(.bordered)
+                                    Button("Yes") {
+                                        library.name(s.faces, as: s.person.name, birthday: nil)
+                                        declined.insert(s.id)
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                }
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    } header: {
+                        Text("Quick check")
+                    } footer: {
+                        Text("These look like people you've named. Each yes teaches the app more of their faces.")
+                    }
+                }
                 Section {
+                    if library.learningPeople {
+                        HStack { ProgressView(); Text("Learning the rest of the faces…").foregroundStyle(.secondary) }
+                    }
                     if loading {
                         HStack { ProgressView(); Text("Finding faces…").foregroundStyle(.secondary) }
                     } else if groups.isEmpty {
@@ -80,7 +124,7 @@ struct WhoView: View {
                                                      : "Everyone who shows up often has a name.")
                             .foregroundStyle(.secondary)
                     }
-                    ForEach(Array(groups.prefix(30).enumerated()), id: \.offset) { _, g in
+                    ForEach(Array(groups.enumerated()), id: \.offset) { _, g in
                         Button { naming = NamingGroup(faces: g) } label: {
                             HStack(spacing: -10) {
                                 ForEach(Array(g.prefix(4).enumerated()), id: \.offset) { _, f in
@@ -97,7 +141,7 @@ struct WhoView: View {
                 } header: {
                     Text("Who is this?")
                 } footer: {
-                    Text("Faces that look alike are grouped. Name a group, and giving two groups the same name joins them. Everything stays on this iPhone.")
+                    Text("Only the biggest groups are shown. Name a few and the app learns the rest of that person's faces on its own, so the list shrinks as you go. Giving two groups the same name joins them. Everything stays on this iPhone.")
                 }
                 Section {
                     Picker("Grouping", selection: Binding(get: { library.strictness }, set: { library.setStrictness($0); regroup() })) {
@@ -107,7 +151,7 @@ struct WhoView: View {
                     }
                     .pickerStyle(.segmented)
                 } footer: {
-                    Text("Stricter if groups mix different people; looser if one person is split across many groups. Kids' faces change a lot, so you may need to name a child a few times across the years.")
+                    Text("Stricter if groups mix different people; looser if one person is split across many groups. Kids' faces change a lot, so naming a child once or twice per year or so helps the app follow them.")
                 }
             }
             .navigationTitle("Who's Who")
@@ -115,29 +159,47 @@ struct WhoView: View {
             .sheet(item: $naming, onDismiss: regroup) { g in NameSheet(faces: g.faces) }
             .sheet(item: $editing, onDismiss: regroup) { p in PersonSheet(person: p) }
             .task { regroup() }
+            .onChange(of: library.learningPeople) { _, busy in if !busy { regroup() } }
         }
     }
 
     private func summary(_ p: Person) -> String {
         let n = library.moments.filter { $0.people.contains(p.id) }.count
         var s = "\(n) moment\(n == 1 ? "" : "s")"
+        if let l = p.learnedCount, l > 0 { s += " · \(l) faces learned" }
         if let b = p.birthday { s += " · born " + b.formatted(date: .abbreviated, time: .omitted) }
         return s
     }
 
-    /// Groups the unnamed faces off the main thread; groups of at least 3 photos are shown.
+    /// Groups the unnamed faces off the main thread. Groups that look like someone named become quick yes/no
+    /// checks; otherwise only the biggest groups are shown (5+ photos, the 12 largest), since naming those teaches
+    /// the app the most. Smaller groups usually get learned once their person is named.
     private func regroup() {
         loading = true
         generation += 1
         let gen = generation
         let faces = library.unnamedFaces()
         let t = library.threshold
+        let named = library.people
         Task.detached(priority: .userInitiated) {
             let vecs = faces.map { People.floats($0.face.vec) }
-            let clusters = People.cluster(vecs, threshold: t).filter { $0.count >= 3 }.map { $0.map { faces[$0] } }
+            let matcher = People.Matcher(named)
+            var all = People.cluster(vecs, threshold: t).filter { $0.count >= 3 }.sorted { $0.count > $1.count }
+            var asks: [Suggestion] = []
+            all.removeAll { c in
+                guard asks.count < 8 else { return false }
+                let center = People.merged([], count: 0, adding: c.map { vecs[$0] })
+                guard let b = matcher.best(center), b.sim >= t - 0.07,
+                      let p = named.first(where: { $0.id == b.id }) else { return false }
+                let key = p.id.uuidString + ":" + c.map { faces[$0].photo }.sorted().joined()
+                asks.append(Suggestion(id: key, person: p, faces: c.map { faces[$0] }))
+                return true
+            }
+            let big = all.filter { $0.count >= 5 }
+            let shown = (big.isEmpty ? all : big).prefix(12).map { $0.map { faces[$0] } }
             await MainActor.run {
                 guard gen == generation else { return }     // a newer grouping is on its way
-                groups = clusters; loading = false
+                groups = Array(shown); suggestions = asks; loading = false
             }
         }
     }

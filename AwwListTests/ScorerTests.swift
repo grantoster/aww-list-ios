@@ -314,6 +314,26 @@ final class PeopleTests: XCTestCase {
         XCTAssertEqual(People.match(faces[2], people: [daniel], threshold: 0.84), daniel.id)
         XCTAssertNil(People.match(faces[7], people: [daniel], threshold: 0.84))
     }
+
+    func testLearnsTheRestFromAFewNamedFaces() {
+        // A child's face drifting from baby (a) to kid (c), plus someone else (b) nearby in time.
+        let a = (0..<768).map { Float(sin(Double($0))) }, c = (0..<768).map { Float(sin(Double($0) * 2.7 + 1)) }
+        let b = (0..<768).map { Float(cos(Double($0) * 1.3)) }
+        func mix(_ t: Float) -> [Float] { zip(a, c).map { $0 * (1 - t) + $1 * t } }
+        let path = (0...20).map { People.floats(People.embed(mix(Float($0) / 20))) }
+        let other = (0..<4).map { People.floats(People.embed(noisy(b, $0))) }
+        let t = People.threshold(strictness: 1)
+        // Named: only the first two baby faces.
+        var maya = Person(name: "Maya", centroid: People.merged([], count: 0, adding: Array(path[0..<2])), count: 2,
+                          samplePhoto: "x", sampleBox: [0, 0, 1, 1])
+        maya.examples = path[0..<2].map { People.embed($0) }
+        XCTAssertNil(People.match(path[20], people: [maya], threshold: t))     // too far for plain matching
+        let learned = People.learn(path + other, people: [maya], threshold: t)[maya.id] ?? []
+        XCTAssertTrue(Set(learned).isSuperset(of: Set(2...20)), "learned \(learned.sorted())")
+        XCTAssertTrue(Set(learned).isDisjoint(with: Set(21..<25)))            // the other person stays unnamed
+        XCTAssertEqual(People.spread(Array(0..<100), to: 4), [0, 25, 50, 75])
+        XCTAssertEqual(People.spread([1, 2], to: 4), [1, 2])
+    }
 }
 
 final class LearnerTests: XCTestCase {

@@ -19,6 +19,13 @@ struct Person: Codable, Identifiable, Hashable {
     /// A face to show for them: photo id and box.
     var samplePhoto: String
     var sampleBox: [Float]
+    /// Example faces (256-byte fingerprints): the ones you named first, then ones the app learned are this person.
+    /// Matching against all of them (not just the average) recognizes a child across the years.
+    var examples: [Data]? = nil
+    /// How many of `examples` you named yourself (the rest were learned).
+    var namedExamples: Int? = nil
+    /// Faces the app learned are this person (not counting the ones you named).
+    var learnedCount: Int? = nil
 }
 
 /// Face grouping for Who's Who. Apple doesn't let apps read the Photos People & Pets names, so faces are
@@ -124,12 +131,73 @@ enum People {
 
     /// The named person a face belongs to, if any is similar enough.
     static func match(_ v: [Float], people: [Person], threshold: Float) -> UUID? {
-        var best: UUID?, bestSim = threshold
-        for p in people where p.centroid.count == v.count {
-            let s = cosine(v, p.centroid)
-            if s >= bestSim { bestSim = s; best = p.id }
+        Matcher(people).match(v, threshold: threshold)
+    }
+
+    /// Compares faces against every named person's average and example faces (built once, used for many faces).
+    struct Matcher {
+        var refs: [(id: UUID, v: [Float])] = []
+        init(_ people: [Person]) {
+            for p in people {
+                if p.centroid.count == People.dim { refs.append((p.id, p.centroid)) }
+                for e in p.examples ?? [] where e.count == People.dim { refs.append((p.id, People.floats(e))) }
+            }
         }
-        return best
+        /// The closest person and how close (cosine), if any.
+        func best(_ v: [Float]) -> (id: UUID, sim: Float)? {
+            var out: (id: UUID, sim: Float)? = nil
+            for r in refs where r.v.count == v.count {
+                let s = People.cosine(v, r.v)
+                if s > (out?.sim ?? -2) { out = (r.id, s) }
+            }
+            return out
+        }
+        func match(_ v: [Float], threshold: Float) -> UUID? {
+            guard let b = best(v), b.sim >= threshold else { return nil }
+            return b.id
+        }
+        mutating func add(_ id: UUID, _ v: [Float]) { refs.append((id, v)) }
+    }
+
+    /// Learns who the rest of the faces are from the ones you named: a face very close to someone's example faces
+    /// (a bit stricter than ordinary matching) is taken as that person, and becomes an example itself, so the next
+    /// round can reach a little further (a toddler photo bridging a baby photo and a kid photo). Returns, per person,
+    /// the indices of the faces learned. A face close to two different people is left alone.
+    static func learn(_ faces: [[Float]], people: [Person], threshold: Float, rounds: Int = 4) -> [UUID: [Int]] {
+        var matcher = Matcher(people)
+        var assigned = [Int: UUID]()
+        let bar = threshold + 0.03
+        for _ in 0..<rounds {
+            var added: [(Int, UUID)] = []
+            for (i, v) in faces.enumerated() where assigned[i] == nil {
+                // Best and runner-up among different people.
+                var best: (id: UUID, sim: Float)? = nil, second: Float = -2
+                for r in matcher.refs where r.v.count == v.count {
+                    let s = cosine(v, r.v)
+                    if s > (best?.sim ?? -2) {
+                        if let b = best, b.id != r.id { second = max(second, b.sim) }
+                        best = (r.id, s)
+                    } else if r.id != best?.id { second = max(second, s) }
+                }
+                if let b = best, b.sim >= bar, second < b.sim - 0.03 { added.append((i, b.id)) }
+            }
+            if added.isEmpty { break }
+            for (i, id) in added { assigned[i] = id }
+            // A sample of each person's new faces joins the references (enough to reach further, not so many it's slow).
+            for (id, idx) in Dictionary(grouping: added, by: \.1) {
+                for (i, _) in spread(idx, to: 30) { matcher.add(id, faces[i]) }
+            }
+        }
+        var out: [UUID: [Int]] = [:]
+        for (i, id) in assigned { out[id, default: []].append(i) }
+        return out
+    }
+
+    /// Keeps at most `n` items, spread evenly.
+    static func spread<T>(_ items: [T], to n: Int) -> [T] {
+        guard items.count > n, n > 0 else { return items }
+        let step = Double(items.count) / Double(n)
+        return (0..<n).map { items[Int(Double($0) * step)] }
     }
 
     /// Adds faces to a person's average (or starts it).

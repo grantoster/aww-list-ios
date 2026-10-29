@@ -24,7 +24,7 @@ struct HomeView: View {
             return true
         }
     }
-    private var top: [Moment] { Array(pool.prefix(20)) }
+    private var top: [Moment] { Array(pool.prefix(30)) }
     private var listed: [Moment] { sortByDate ? pool.sorted { $0.best.date > $1.best.date } : pool }
 
     var body: some View {
@@ -146,7 +146,7 @@ struct HomeView: View {
 
     private var topSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(scopeTitle + " top 20").font(Theme.display(26)).lineLimit(1).minimumScaleFactor(0.7)
+            Text(scopeTitle + " top 30").font(Theme.display(26)).lineLimit(1).minimumScaleFactor(0.7)
             Text("\(pool.count.formatted()) moments ranked").font(.subheadline).foregroundStyle(.secondary)
             if let first = top.first {
                 Card(moment: first, rank: 1, height: 380) { open(top, 0) }
