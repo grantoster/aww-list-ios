@@ -20,7 +20,7 @@ final class PhotoScanner: ObservableObject {
     private var hasScanned = false
     private var finishHandlers: [() -> Void] = []
     /// True when the last scan was stopped early (for example by iOS in the background), so the next visit resumes it.
-    private var stoppedEarly = false
+    private(set) var stoppedEarly = false
 
     /// Runs `handler` when the current scan (and any follow-up for photos added meanwhile) is done,
     /// or right away when nothing is scanning.
@@ -71,6 +71,11 @@ final class PhotoScanner: ObservableObject {
         // Photos that already have a record keep it if they can't be re-read this time (a scored photo keeps its
         // score; a bath photo keeps its exclusion and the quarantine around it).
         let ranked = Set(library.photos.keys)
+        // Older flagged or held-back records being re-read under the new rules: if the photo can't be read again,
+        // the old record is kept but marked as done, so it isn't retried on every scan.
+        let restamp = library.photos.filter { _, p in
+            (Scorer.provenanceReasons.contains(p.excluded ?? "") || Scorer.heldBack.contains(p.excluded ?? "")) && p.flagVersion != 2
+        }
         let flag = cancelFlag
         let changes = self.changes
         let me = self
@@ -113,7 +118,7 @@ final class PhotoScanner: ObservableObject {
                         let manager = PHImageManager()
                         for k in stride(from: lane, to: list.count, by: lanes) {
                             if flag.isCancelled { return }
-                            switch analyzePhoto(list[k], analyzer: analyzer, manager: manager, network: network, ranked: ranked) {
+                            switch analyzePhoto(list[k], analyzer: analyzer, manager: manager, network: network, ranked: ranked, restamp: restamp) {
                             case .done(let r): post(r)
                             case .inCloud: deferred.add(list[k])
                             }
@@ -289,8 +294,13 @@ enum PhotoOutcome { case done(PhotoScore?), inCloud }
 
 /// Analyzes one photo. With `network` off, a photo kept only in iCloud comes back as `.inCloud` for a later pass.
 func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager, network: Bool,
-                  ranked: Set<String>) -> PhotoOutcome {
-    autoreleasepool {
+                  ranked: Set<String>, restamp: [String: PhotoScore] = [:]) -> PhotoOutcome {
+    func keepOld() -> PhotoOutcome? {
+        guard var old = restamp[asset.localIdentifier] else { return nil }
+        old.flagVersion = 2
+        return .done(old)
+    }
+    return autoreleasepool {
         var signals = Signals()
         signals.isScreenshot = asset.mediaSubtypes.contains(.photoScreenshot)
         // Photos that look AI-generated or face-retouched (from the file's details) are flagged, not dropped:
@@ -318,12 +328,14 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
             // No image even from iCloud: remember that, so it isn't retried on every launch
             // (it's retried about once a day, and from Settings).
             guard let img = got.image, let cg = img.cgImage else {
+                if let kept = keepOld() { return kept }
                 if ranked.contains(asset.localIdentifier) { return .done(nil) }
                 return .done(PhotoScore(id: asset.localIdentifier, date: asset.creationDate ?? .distantPast, raw: nil,
                                         excluded: Scorer.unavailable, age: nil, caption: "", version: Scorer.version))
             }
             // Vision couldn't read it: remember that too, same retry rules.
             guard let measured = analyzer.analyze(cg, orientation: CGImagePropertyOrientation(img.imageOrientation)) else {
+                if let kept = keepOld() { return kept }
                 if ranked.contains(asset.localIdentifier) { return .done(nil) }
                 return .done(PhotoScore(id: asset.localIdentifier, date: asset.creationDate ?? .distantPast, raw: nil,
                                         excluded: Scorer.unavailable, age: nil, caption: "", version: Scorer.version))

@@ -216,7 +216,8 @@ enum Scorer {
     static func moments(from photos: [PhotoScore], hidden: Set<String> = [], version: Int? = nil,
                         putBack: Set<String> = []) -> [(best: PhotoScore, shots: Int, ids: [String])] {
         func value(_ p: PhotoScore) -> Double? { listedValue(p, putBack: putBack) }
-        let hot = photos.filter { !putBack.contains($0.id) }
+        // A put-back photo stops holding back its neighbors only when it can actually be listed (has a score).
+        let hot = photos.filter { !(putBack.contains($0.id) && value($0) != nil) }
             .compactMap { p in quarantineWindow[p.excluded ?? ""].map { (date: p.date, window: $0) } }
             .sorted { $0.date < $1.date }
         func quarantined(_ d: Date) -> Bool {
@@ -248,4 +249,23 @@ enum Scorer {
     }
 
     static func caption(_ s: Signals, date: Date? = nil) -> String { Describe.caption(s, date: date) }
+
+    /// Photos that must never be sent to Claude, whatever the user puts back: every possible bath or undressed
+    /// photo and every shot within 10 minutes of one, plus, unless the user allows it, possible swimwear photos
+    /// (with the 10 minutes around them) and shirtless ones (with the 2 minutes around them).
+    static func neverSend(_ photos: [PhotoScore], allowSwimShirtless: Bool) -> Set<String> {
+        var windows: [String: TimeInterval] = ["Bath": 600, "Undressed": 600]
+        if !allowSwimShirtless { windows["Swimwear"] = 600; windows["Shirtless"] = 120 }
+        let sorted = photos.sorted { $0.date < $1.date }
+        var out = Set<String>()
+        for (i, p) in sorted.enumerated() {
+            guard let w = windows[p.excluded ?? ""] else { continue }
+            out.insert(p.id)
+            var j = i - 1
+            while j >= 0 && p.date.timeIntervalSince(sorted[j].date) <= w { out.insert(sorted[j].id); j -= 1 }
+            j = i + 1
+            while j < sorted.count && sorted[j].date.timeIntervalSince(p.date) <= w { out.insert(sorted[j].id); j += 1 }
+        }
+        return out
+    }
 }

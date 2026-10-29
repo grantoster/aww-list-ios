@@ -255,7 +255,7 @@ struct Tile: View {
 
 struct ScanBanner: View {
     @EnvironmentObject var scanner: PhotoScanner
-    @State private var asked = false
+    @State private var asked = BackgroundScan.autoContinue
     @State private var failed: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -265,7 +265,7 @@ struct ScanBanner: View {
                 .font(.caption).foregroundStyle(.secondary)
             if BackgroundScan.canContinueInBackground {
                 Button(asked ? "It'll keep going after you leave" : "Keep scanning in the background") {
-                    asked = BackgroundScan.continueInBackground()
+                    asked = BackgroundScan.continueInBackground(userTapped: true)
                     if !asked { failed = BackgroundScan.lastError }
                 }
                 .buttonStyle(.bordered).font(.subheadline).disabled(asked)

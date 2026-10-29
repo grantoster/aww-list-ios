@@ -81,6 +81,17 @@ final class ClaudeTests: XCTestCase {
         XCTAssertEqual(Scorer.moments(from: [undressed], putBack: ["u"]).count, 0)     // nothing to score it by
         let doc = PhotoScore(id: "d", date: t, raw: nil, excluded: "Document", age: nil, caption: "", version: Scorer.version)
         XCTAssertNil(Scorer.listedValue(doc))
+        // Putting a bath photo back lists it, but it and its whole session still never go to Claude.
+        let burst = PhotoScore(id: "burst", date: t.addingTimeInterval(10), raw: 0.7, excluded: nil, age: .kid, caption: "", version: Scorer.version)
+        let never = Scorer.neverSend([bath, burst, ok], allowSwimShirtless: false)
+        XCTAssertEqual(never, ["bath", "burst", "ok"])   // ok is 400 s later, inside the 10 minutes
+        XCTAssertEqual(Set(Scorer.moments(from: [bath, burst, ok], putBack: ["bath"]).flatMap(\.ids)), ["bath", "burst", "ok"])
+        // A put-back photo with no score doesn't free its neighbors.
+        XCTAssertTrue(Scorer.moments(from: [undressed, ok.withDate(t.addingTimeInterval(60))], putBack: ["u"]).isEmpty)
+        // Swimwear: listed, but not sent (nor the 10 minutes around it) unless allowed.
+        let swim = flagged("swim", "Swimwear", 0)
+        XCTAssertEqual(Scorer.neverSend([swim, burst, ok], allowSwimShirtless: false), ["swim", "burst", "ok"])
+        XCTAssertTrue(Scorer.neverSend([swim, burst, ok], allowSwimShirtless: true).isEmpty)
     }
 
     func testFilterLearnsClaudesRemovals() {
@@ -102,6 +113,8 @@ final class ClaudeTests: XCTestCase {
         XCTAssertGreaterThan(f.accuracy, f.baselineAccuracy)
         XCTAssertGreaterThan(f.caught ?? 0, 0.8)
         XCTAssertNil(Learner.trainFilter(ex.map { ($0.date, $0.x, false) }))   // no removals: nothing to learn
+        var few = f; few.testRemovals = 4
+        XCTAssertFalse(few.useful)                                              // too few removals in the check
     }
 }
 
@@ -125,5 +138,12 @@ final class LearningPackTests: XCTestCase {
         XCTAssertEqual(back.filter?.std.last ?? 0, f.std.last!, accuracy: 1e-5)
         XCTAssertNil(LearningPack.read("not a pack").model)
         XCTAssertNil(LearningPack.read(LearningPack(model: nil, filter: f).text()).model)
+    }
+}
+
+private extension PhotoScore {
+    func withDate(_ d: Date) -> PhotoScore {
+        var p = PhotoScore(id: id, date: d, raw: raw, excluded: excluded, age: age, caption: caption, version: version)
+        p.soft = soft; return p
     }
 }

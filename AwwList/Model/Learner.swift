@@ -38,8 +38,10 @@ struct LearnedFilter: Codable, Equatable {
     var caught: Double?            // share of Claude's held-back removals it also removes (nil: none held back)
     var wronglyRemoved: Double?    // share of the photos Claude kept that it would remove (nil: none held back)
     var date: Date
-    /// Only used when it beats keeping everything on the held-back photos.
-    var useful: Bool { accuracy > baselineAccuracy }
+    var testRemovals: Int? = nil   // Claude's removals among the held-back photos
+    /// Only used when the check had enough of Claude's removals to mean something and it beat keeping everything
+    /// by at least 2 points (so one lucky photo can't switch it on).
+    var useful: Bool { (testRemovals ?? 0) >= Learner.minimumTestRemovals && accuracy >= baselineAccuracy + 0.02 }
 }
 
 /// Turns photos into fingerprints and learns Claude's scoring from them. Pure math, so it's unit tested.
@@ -193,6 +195,7 @@ enum Learner {
     }
     static let removeAt = 0.5
     static let minimumRemovals = 10
+    static let minimumTestRemovals = 5
 
     /// Learns Claude's removals from (photo date, fingerprint, removed?), with the same day-grouped held-back
     /// fifth and 4-fold choice of regularization as the learned score. Nil until there are enough verdicts
@@ -229,7 +232,7 @@ enum Learner {
                              accuracy: agree, baselineAccuracy: keepAll,
                              caught: removed.isEmpty ? nil : Double(removed.filter(\.says).count) / Double(removed.count),
                              wronglyRemoved: kept.isEmpty ? nil : Double(kept.filter(\.says).count) / Double(kept.count),
-                             date: Date())
+                             date: Date(), testRemovals: removed.count)
     }
 
     /// Learns from (photo date, fingerprint, Claude's score):

@@ -240,27 +240,34 @@ final class ClaudeService: ObservableObject {
     }
 
     /// The moments still to send. Each year gets a fixed budget of N plus a fifth of N, flagged photos included;
-    /// photos Claude already scored (with this model) use up the budget, so re-ranking
+    /// photos Claude already scored (with this model, kept or removed) use up the budget, so re-ranking
     /// (for example by the learned score) never sends more than the chosen number. Within the budget, the best
     /// candidates go first: by the learned score once there is one, otherwise by Apple's.
     func candidates(_ library: Library) -> [Moment] {
         let model = library.claudeModel, n = library.claudeScope
         let pending = Set(library.claudeBatches.flatMap { $0.photos.values })
-        var isDone: Set<String> = []
-        for m in library.claudePool where pending.contains(m.best.id) || (library.claudeFailures[m.best.id] ?? 0) >= 2
-            || (m.best.claude.map { $0.model == model && $0.rubric == Claude.rubric } ?? false) { isDone.insert(m.best.id) }
+        func used(_ p: PhotoScore) -> Bool {
+            pending.contains(p.id) || (library.claudeFailures[p.id] ?? 0) >= 2
+                || (p.claude.map { $0.model == model && $0.rubric == Claude.rubric } ?? false)
+        }
+        // The budget is counted over every photo Claude has scored (or is scoring) that year, removed, hidden or
+        // no longer a burst's best included, so nothing can free up a slot that was already paid for.
+        let cal = Calendar.current
+        var spent: [Int: Int] = [:]
+        for p in library.photos.values where used(p) { spent[cal.component(.year, from: p.date), default: 0] += 1 }
+        let forbidden = library.neverSend
+        func open(_ m: Moment) -> Bool {
+            !m.memberIDs.contains { id in forbidden.contains(id) || library.photos[id].map(used) == true }
+        }
         var byYear: [Int: [Moment]] = [:]
         for m in library.claudePool { byYear[m.year, default: []].append(m) }   // cached at each rebuild
         var out: [Moment] = []
-        for list in byYear.values {
-            // Possible bath or undressed photos are never sent, even after the user puts them back.
-            let list = list.filter { !Scorer.heldBack.contains($0.best.excluded ?? "") }
-            if n <= 0 { out += list.filter { !isDone.contains($0.best.id) }; continue }
-            // One budget for everything listed, flagged or not (the same total as before: N plus a fifth),
-            // best candidates first, so Apple's flags don't decide what Claude gets to see.
-            let budget = n + max(1, n / 5)
-            let left = max(0, budget - list.filter { isDone.contains($0.best.id) }.count)
-            out += list.filter { !isDone.contains($0.best.id) }.prefix(left)
+        for (year, list) in byYear {
+            let list = list.filter(open)
+            if n <= 0 { out += list; continue }
+            // One budget for everything listed, flagged or not (N plus a fifth), best candidates first,
+            // so Apple's flags don't decide what Claude gets to see.
+            out += list.prefix(max(0, n + max(1, n / 5) - (spent[year] ?? 0)))
         }
         return out
     }

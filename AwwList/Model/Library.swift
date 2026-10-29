@@ -18,6 +18,13 @@ final class Library: ObservableObject {
     @Published private(set) var claudeBatches: [ClaudeBatch] = []
     /// Which score orders the lists once Claude has scored something: "claude" or "apple".
     @Published private(set) var rankBy = "claude"
+    /// Off unless the user turns it on: also send Claude photos Apple flagged as possible swimwear or shirtless
+    /// (and the shots right around them). Either way they stay listed; off, Claude just never sees them.
+    @Published private(set) var claudeSensitive = false
+    func setClaudeSensitive(_ v: Bool) { claudeSensitive = v; rebuild(); save() }
+    /// Photo ids that must never be sent to Claude (Scorer.neverSend), worked out at each rebuild.
+    private(set) var neverSend: Set<String> = []
+
     /// Possible bath or undressed photos the user put back on the list. They're listed, but never sent to Claude.
     @Published private(set) var putBack: Set<String> = []
     func setPutBack(_ id: String, _ on: Bool) {
@@ -43,7 +50,7 @@ final class Library: ObservableObject {
         var photos: [PhotoScore]; var hidden: [String]; var birthdays: [Date]?
         var people: [Person]?; var strictness: Int?
         var claudeModel: String?; var claudeScope: Int?; var claudeBatches: [ClaudeBatch]?; var rankBy: String?
-        var claudeFailures: [String: Int]?; var learned: LearnedModel?
+        var claudeFailures: [String: Int]?; var learned: LearnedModel?; var claudeSensitive: Bool?
         var putBack: [String]?; var learnedFilter: LearnedFilter?; var trainedSignature: UInt64?
     }
 
@@ -281,11 +288,13 @@ final class Library: ObservableObject {
             return m
         }
         let all = zip(groups, scores).map { makeMoment($0, $1) }
-        // What can be sent to Claude: everything listed except photos the user put back after Apple held them back
-        // (those are never sent). Kept even after Claude removes a photo, so a removal still uses up the budget.
+        // What can be sent to Claude: every listed moment except any that contains a photo that must never be sent
+        // (possible bath/undressed and their sessions, even after a put back; swimwear/shirtless unless allowed).
         // Once the app has learned, it picks what to send Claude by its prediction of Claude's score.
         func poolValue(_ m: Moment) -> Double { m.learnedScore ?? 10 * (Scorer.listedValue(m.best, putBack: pb) ?? 0) }
-        claudePool = all.filter { !Scorer.heldBack.contains($0.best.excluded ?? "") }.sorted { a, b in
+        let forbidden = Scorer.neverSend(Array(photos.values), allowSwimShirtless: claudeSensitive)
+        neverSend = forbidden
+        claudePool = all.filter { !$0.memberIDs.contains(where: forbidden.contains) }.sorted { a, b in
             let va = poolValue(a), vb = poolValue(b)
             return va != vb ? va > vb : a.best.date < b.best.date
         }
@@ -300,7 +309,8 @@ final class Library: ObservableObject {
         var filtered = 0
         moments = all.compactMap { m in
             var m = m
-            if m.best.claude?.exclude != nil { return nil }
+            // Claude's removal sticks to the whole burst, even if a different shot becomes its best later.
+            if m.memberIDs.contains(where: { photos[$0]?.claude?.exclude != nil }) { return nil }
             if (useClaude || useLearned) && m.best.claude == nil && learnedRemoves(m.best) { filtered += 1; return nil }
             if useClaude {
                 // learned scores top out at 8 here, so Claude's own 9s and 10s stay Claude's
@@ -340,7 +350,7 @@ final class Library: ObservableObject {
         unsaved = 0
         let s = Saved(photos: Array(photos.values), hidden: Array(hidden), birthdays: birthdays,
                       people: people, strictness: strictness,
-                      claudeModel: claudeModel, claudeScope: claudeScope, claudeBatches: claudeBatches, rankBy: rankBy, claudeFailures: claudeFailures, learned: learnedIsBuiltIn ? nil : learned,
+                      claudeModel: claudeModel, claudeScope: claudeScope, claudeBatches: claudeBatches, rankBy: rankBy, claudeFailures: claudeFailures, learned: learnedIsBuiltIn ? nil : learned, claudeSensitive: claudeSensitive,
                       putBack: Array(putBack), learnedFilter: filterIsBuiltIn ? nil : learnedFilter,
                       trainedSignature: trainedSignature)
         let u = url
@@ -369,6 +379,7 @@ final class Library: ObservableObject {
             claudeModel = "claude-haiku-5-5"
         }
         putBack = Set(s.putBack ?? [])
+        claudeSensitive = s.claudeSensitive ?? false
         learnedFilter = s.learnedFilter.flatMap { $0.weights.count == Learner.featureCount ? $0 : nil }
         trainedSignature = s.trainedSignature
         learned = s.learned.flatMap { $0.weights.count == Learner.featureCount ? $0 : nil }

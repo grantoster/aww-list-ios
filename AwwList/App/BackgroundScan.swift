@@ -83,9 +83,15 @@ enum BackgroundScan {
 
     /// Asks iOS to keep the running scan going after the app is left. Called from the button and automatically
     /// whenever the app starts to close mid-scan (it has to be asked while the app is still on screen).
+    /// Once you've tapped "Keep scanning in the background", later scans keep going on their own when you leave.
+    static let autoKey = "keepScanningWhenLeaving"
+    @MainActor static var autoContinue: Bool { UserDefaults.standard.bool(forKey: autoKey) }
+
     @discardableResult
-    @MainActor static func continueInBackground() -> Bool {
-        guard #available(iOS 26.0, *), Shared.scanner.isScanning, !taskOwnsScan, !continuedRunning else { return false }
+    @MainActor static func continueInBackground(userTapped: Bool = false) -> Bool {
+        guard #available(iOS 26.0, *), Shared.scanner.isScanning else { return false }
+        if userTapped { UserDefaults.standard.set(true, forKey: autoKey) } else if !autoContinue { return false }
+        if taskOwnsScan || continuedRunning { return true }    // already running or waiting to start
         let req = BGContinuedProcessingTaskRequest(identifier: continuedID,
                                                    title: "Finding your cutest photos",
                                                    subtitle: "Scanning your library")
@@ -93,8 +99,14 @@ enum BackgroundScan {
         do {
             try BGTaskScheduler.shared.submit(req)
             continuedRunning = true
-            // If iOS never gets to it before the scan ends, allow asking again for the next scan.
-            Shared.scanner.whenFinished { if !taskOwnsScan { continuedRunning = false } }
+            // If iOS never got to it before the scan ended, withdraw the request (so it can't start a scan out of the
+            // blue later) and allow asking again for the next scan.
+            Shared.scanner.whenFinished {
+                if !taskOwnsScan {
+                    continuedRunning = false
+                    BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: continuedID)
+                }
+            }
             lastError = nil
             return true
         } catch {
@@ -129,18 +141,32 @@ enum BackgroundScan {
         func finish(_ ok: Bool) {
             if done.claim() { taskOwnsScan = false; continuedRunning = false; task.setTaskCompleted(success: ok) }
         }
+        let expired = Once()
         task.expirationHandler = {
             Task { @MainActor in
+                _ = expired.claim()
                 ticker.cancel(); scanner.stop(); Shared.library.flush()
                 finish(false)
             }
         }
-        scanner.whenFinished {
-            ticker.cancel()
-            Shared.library.flush()
-            task.progress.completedUnitCount = task.progress.totalUnitCount
-            finish(true)
+        // If this task started just as the 30-second wrap-up was stopping the scan, that scan ends "stopped early":
+        // start it again rather than reporting done with photos left (a few tries at most).
+        var restarts = 0
+        func attach() {
+            scanner.whenFinished {
+                if scanner.stoppedEarly && !expired.used && restarts < 3 {
+                    restarts += 1
+                    scanner.start(library: Shared.library)
+                    attach()
+                    return
+                }
+                ticker.cancel()
+                Shared.library.flush()
+                task.progress.completedUnitCount = task.progress.totalUnitCount
+                finish(true)
+            }
         }
+        attach()
     }
 
     /// The ~30 seconds iOS allows after the app is closed: save, and let the current batch finish.
@@ -169,6 +195,7 @@ enum BackgroundScan {
 /// True the first time `claim()` is called, false after; so a task is completed exactly once.
 final class Once: @unchecked Sendable {
     private let lock = NSLock()
-    private var used = false
-    func claim() -> Bool { lock.lock(); defer { lock.unlock() }; if used { return false }; used = true; return true }
+    private var done = false
+    func claim() -> Bool { lock.lock(); defer { lock.unlock() }; if done { return false }; done = true; return true }
+    var used: Bool { lock.lock(); defer { lock.unlock() }; return done }
 }

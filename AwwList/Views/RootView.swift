@@ -54,8 +54,9 @@ struct WelcomeView: View {
             Text("Finds the cutest photos of your kids and ranks them, year by year.")
                 .font(.title3).multilineTextAlignment(.center).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 10) {
-                Label("Everything happens on this iPhone. Photos are never uploaded.", systemImage: "lock.fill")
-                Label("Screenshots, bath and swim photos are left out.", systemImage: "eye.slash")
+                Label("Scoring happens on this iPhone. Photos are only uploaded if you choose to score them with Claude.", systemImage: "lock.fill")
+                Label("Read only: it never changes or deletes anything in your library.", systemImage: "hand.raised")
+                Label("Screenshots and possible bath photos are left out.", systemImage: "eye.slash")
                 Label("Bursts count as one moment, using the best shot.", systemImage: "square.stack")
             }
             .font(.subheadline).padding().background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 14))
@@ -108,7 +109,7 @@ struct SettingsView: View {
                 }
                 HeldBackSection()
                 Section("What's left out") {
-                    Text("On the phone: screenshots, documents, photos with no sign of a child at all, and possible bath or undressed photos plus every shot within 10 minutes of one (you can put those back above).")
+                    Text("On the phone: screenshots, documents, photos with no sign of a child at all, and possible bath or undressed photos plus every shot within 10 minutes of one. You can put a held-back photo itself back above; the shots around it then come back too, but none of them is ever sent to Claude.")
                         .font(.footnote)
                     Text("Everything else Apple isn't sure about stays on the list with a flag: no child spotted, water scenes, swimwear, shirtless, and files that look AI-generated, face-retouched or not from a camera. Claude makes the call on those, and once the app has learned from Claude's calls, it hides the ones it expects Claude would remove when ranking by Claude or by the learned score. Ranking by Apple shows them all.")
                         .font(.footnote)
@@ -213,6 +214,8 @@ struct ClaudeSection: View {
             if hasKey {
                 Button("Test connection") { Task { await claude.testConnection() } }.disabled(claude.busy)
             }
+            Toggle("Also send possible swimwear or shirtless photos",
+                   isOn: Binding(get: { library.claudeSensitive }, set: { library.setClaudeSensitive($0) }))
             Toggle("Send these photos to Claude", isOn: $agreed)
             Button(claude.busy ? "Working…" : "Score with Claude") { Task { await claude.send(library) } }
                 .disabled(!hasKey || !agreed || claude.busy || n == 0)
@@ -227,7 +230,7 @@ struct ClaudeSection: View {
         } header: {
             Text("Score with Claude")
         } footer: {
-            Text("Optional. Claude decides what comes off the list. Your phone scores every photo first and only flags what it isn't sure about (no child spotted, water, swimwear, shirtless, AI or edited files); flagged photos stay listed. Each year's best photos, flagged or not, are sent to Anthropic's Claude for the final 1–10 score, a description, and the call on whether a photo belongs (bath, swimwear, shirtless, AI or edited, no child). Photos Apple flags as possible bath or undressed are never sent, even if you put them back. Photos are sent at 768 px without location or file details. It uses your own API key from console.anthropic.com; charges go to your Anthropic account. When ranking by Claude, photos Claude hasn't seen are held at 6 or below.")
+            Text("Optional. Claude decides what comes off the list. Your phone scores every photo first and only flags what it isn't sure about (no child spotted, water, swimwear, shirtless, AI or edited files); flagged photos stay listed. Each year's best photos, flagged or not, are sent to Anthropic's Claude for the final 1–10 score, a description, and the call on whether a photo belongs (bath, swimwear, shirtless, AI or edited, no child). Possible bath or undressed photos, and every shot within 10 minutes of one, are never sent, even if you put them back. Possible swimwear and shirtless photos (and the shots right around them) are sent only if you turn that on above; otherwise they stay listed and Claude just doesn't see them. Photos are sent at 768 px without location or file details. It uses your own API key from console.anthropic.com; charges go to your Anthropic account. When ranking by Claude, photos Claude hasn't seen are held at 6 or below (8 or below once there's a learned score).")
         }
     }
 }
@@ -263,9 +266,11 @@ struct LearnedSection: View {
                 LabeledContent("Just keeping everything", value: pct(f.baselineAccuracy))
                 if let c = f.caught { LabeledContent("Catches Claude's removals", value: pct(c)) }
                 if let w = f.wronglyRemoved { LabeledContent("Would wrongly remove", value: pct(w) + " of keepers") }
-                Text(f.useful
-                     ? "Checked on \(f.tested.formatted()) photos from days it didn't learn from. When ranking by Claude or by the learned score, it's hiding \(library.filteredOut.formatted()) photos Claude hasn't seen."
-                     : "Checked on \(f.tested.formatted()) photos from days it didn't learn from. It isn't better than keeping everything yet, so it isn't hiding anything.")
+                Text(!f.useful
+                     ? "Checked on \(f.tested.formatted()) photos from days it didn't learn from. It isn't clearly better than keeping everything yet (it needs at least \(Learner.minimumTestRemovals) of Claude's removals in that check, too), so it isn't hiding anything."
+                     : library.rankBy == "apple"
+                     ? "Checked on \(f.tested.formatted()) photos from days it didn't learn from. It hides photos only when ranking by Claude or by the learned score; ranking by Apple shows everything."
+                     : "Checked on \(f.tested.formatted()) photos from days it didn't learn from. It's hiding \(library.filteredOut.formatted()) photos Claude hasn't seen.")
                     .font(.footnote).foregroundStyle(.secondary)
             } else if library.learned != nil {
                 Text("Learning Claude's removals starts once Claude has removed at least \(Learner.minimumRemovals) photos (from enough days to test it fairly).")
@@ -326,8 +331,12 @@ struct HeldBackView: View {
                             .aspectRatio(1, contentMode: .fit)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                         Text(p.date.formatted(date: .abbreviated, time: .omitted)).font(.caption2).foregroundStyle(.secondary)
-                        Button(back ? "Keep out" : "Put back") { library.setPutBack(p.id, !back) }
-                            .buttonStyle(.bordered).controlSize(.small)
+                        if p.soft == nil {
+                            Text("Can't be scored").font(.caption2).foregroundStyle(.secondary)
+                        } else {
+                            Button(back ? "Keep out" : "Put back") { library.setPutBack(p.id, !back) }
+                                .buttonStyle(.bordered).controlSize(.small)
+                        }
                     }
                 }
             }

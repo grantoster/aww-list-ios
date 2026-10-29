@@ -89,7 +89,8 @@ struct ShareSheet: UIViewControllerRepresentable {
     let image: UIImage
     func makeUIViewController(context: Context) -> UIActivityViewController {
         let vc = UIActivityViewController(activityItems: [image], applicationActivities: nil)
-        vc.excludedActivityTypes = [.saveToCameraRoll]
+        // No "Save Image" and no adding to an iCloud Shared Album (both would write to the photo library).
+        vc.excludedActivityTypes = [.saveToCameraRoll, UIActivity.ActivityType("com.apple.mobileslideshow.StreamShareService")]
         return vc
     }
     func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
