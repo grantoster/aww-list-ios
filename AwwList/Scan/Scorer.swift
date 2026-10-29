@@ -9,10 +9,7 @@ struct FaceSignal: Equatable {
     var bareTorso: Double = 0     // 0...1, share of the chest below this face that matches its skin tone
     var baby: Double? = nil       // "baby" label confidence on this person's own face-and-chest crop, when measured
     var child: Double? = nil      // child/baby label confidence on this person's own head-and-shoulders, when measured
-    var childTight = false        // measured on the face alone (another face was right beside it): reads lower
-
-    /// True for a child, false for a grown-up, nil when not measured. A face-only crop reads lower, so it gets a lower bar.
-    var isKid: Bool? { child.map { $0 >= (childTight ? 0.15 : 0.3) } }
+    var childTight = false        // measured on the face box alone (another face was touching): reads lower
     var box: [Double] = []        // normalized x, y, width, height on the upright photo (bottom-left origin)
 }
 
@@ -37,9 +34,25 @@ struct Signals: Equatable {
     /// The main subject: the largest face that reads as a child (so in a selfie with a parent it's the kid, not the
     /// grown-up's bigger face), or simply the largest face when no face was checked or none reads as a child.
     var subjectIndex: Int? {
-        let kids = faces.indices.filter { faces[$0].isKid == true }
-        let pool = kids.isEmpty ? Array(faces.indices) : kids
-        return pool.max { faces[$0].area < faces[$1].area }
+        // A clear kid reading (0.3 or more) decides; failing that, the highest face-only reading of 0.15 or more;
+        // failing that, the largest face.
+        let kids = faces.indices.filter { (faces[$0].child ?? 0) >= 0.3 }
+        if !kids.isEmpty { return kids.max { faces[$0].area < faces[$1].area } }
+        let tight = faces.indices.filter { faces[$0].childTight && (faces[$0].child ?? 0) >= 0.15 }
+        if !tight.isEmpty { return tight.max { (faces[$0].child ?? 0) < (faces[$1].child ?? 0) } }
+        return faces.indices.max { faces[$0].area < faces[$1].area }
+    }
+
+    /// Whether face `i` is a grown-up (nil when not measured). Under 0.3 counts as grown-up; a face-only reading
+    /// (which reads lower) only does under 0.15, or when a smaller face next to it reads clearly as a kid.
+    func isAdult(_ i: Int) -> Bool? {
+        guard let c = faces[i].child else { return nil }
+        if !faces[i].childTight { return c < 0.3 }
+        if c < 0.15 { return true }
+        let youngerBeside = faces.indices.contains { j in
+            j != i && (faces[j].child ?? 0) >= 0.3 && faces[j].area < faces[i].area
+        }
+        return c < 0.3 && youngerBeside
     }
     var subject: FaceSignal? { subjectIndex.map { faces[$0] } }
 

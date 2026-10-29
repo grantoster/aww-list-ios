@@ -140,7 +140,7 @@ final class Analyzer {
             // Is this person a child? (Checked for the four largest faces big enough to read.)
             // Only worth it with two or more faces and some sign of a child (otherwise it can't change the subject).
             if faceObs.count >= 2 && (s.childPrecise || s.childConfidence >= 0.1)
-                && box.height >= 0.04 && boxes.filter({ $0.width * $0.height > box.width * box.height }).count < 4 {
+                && box.height >= 0.02 && boxes.filter({ $0.width * $0.height > box.width * box.height }).count < 4 {
                 let measured = childConfidence(handler, face: box, avoiding: boxes.filter { $0 != box })
                 face.child = measured?.value
                 face.childTight = measured?.tight ?? false
@@ -266,11 +266,11 @@ final class Analyzer {
         var roi = CGRect(x: b.minX - b.width * 0.3, y: b.minY - b.height * 0.5, width: b.width * 1.6, height: b.height * 1.7)
         var tight = false
         if others.contains(where: { $0.intersects(roi) }) {
-            tight = true
             roi = b.insetBy(dx: -b.width * 0.15, dy: -b.height * 0.15)
             // Still touching a smaller face: use the face box alone (face boxes of touching heads rarely overlap).
             if others.contains(where: { $0.intersects(roi) && $0.width * $0.height < b.width * b.height }) {
                 roi = b
+                tight = true
                 if others.contains(where: { $0.intersects(roi) && $0.width * $0.height < b.width * b.height }) { return nil }
             }
         }

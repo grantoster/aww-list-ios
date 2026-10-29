@@ -365,9 +365,14 @@ final class LearnerTests: XCTestCase {
         s.faces[0].child = 0.1; s.faces[1].child = 0.6          // the grown-up's face is bigger; the kid's is the subject
         XCTAssertEqual(s.subjectIndex, 1)
         XCTAssertEqual(s.mainFaceIndices, [0, 1])               // a tiny face far behind isn't part of the shot
-        s.faces[1].child = 0.2; s.faces[1].childTight = true    // a face-only crop reads lower: still a kid
-        XCTAssertEqual(s.faces[1].isKid, true)
-        XCTAssertEqual(s.faces[0].isKid, false)
+        XCTAssertEqual(s.isAdult(0), true)
+        XCTAssertEqual(s.isAdult(1), false)
+        // Cheek to cheek, both measured on the face alone: the parent's reading can't make them the subject.
+        s.faces[0].child = 0.18; s.faces[0].childTight = true
+        s.faces[1].child = 0.55; s.faces[1].childTight = true
+        XCTAssertEqual(s.subjectIndex, 1)
+        XCTAssertEqual(s.isAdult(0), true)                      // a smaller face beside it reads clearly as a kid
+        XCTAssertEqual(s.isAdult(1), false)
         XCTAssertEqual(ShotKind.of(faces: 2, adults: 1), .family)
         XCTAssertEqual(ShotKind.of(faces: 2, adults: 0), .kids)
         XCTAssertEqual(ShotKind.of(faces: 3, adults: 0), .family)

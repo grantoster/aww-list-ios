@@ -78,8 +78,9 @@ struct PhotoScore: Codable, Hashable, Identifiable {
     var privacyHold: Bool? = nil
     /// Grown-up faces found among the faces checked for being a child (0 when none were; nil: not measured yet).
     var adults: Int? = nil
-    /// Faces big enough to be part of the shot (at least 4% of the photo's height, or a quarter of the largest face),
-    /// so strangers far in the background don't make a close-up a "group". Nil: not measured yet.
+    /// Faces big enough to be part of the shot (at least a third as tall as the largest face, and 2% of the photo),
+    /// so people in the background don't make a close-up a "group". Nil: not measured yet (or a best guess, from the
+    /// face count, for an older photo that couldn't be read again).
     var mainFaces: Int? = nil
     /// Why Apple flagged a photo that's still listed (water, swimwear, AI image, ...); nil when it wasn't flagged.
     var appleFlag: String? { raw == nil && Scorer.softReasons.contains(excluded ?? "") ? excluded : nil }
