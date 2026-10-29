@@ -87,6 +87,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             List {
+                BirthdaysSection()
                 Section("Library") {
                     LabeledContent("Photos checked", value: library.photos.count.formatted())
                     LabeledContent("Moments ranked", value: library.moments.count.formatted())
@@ -97,7 +98,7 @@ struct SettingsView: View {
                         .disabled(scanner.isScanning)
                 }
                 Section("What's left out") {
-                    Text("Screenshots, documents and photos without a child. Bath, pool, beach and swimwear photos, and every shot within 10 minutes of one. Shirtless kids past the baby stage (babies in a diaper are fine). Confident lake, ocean, river and sprinkler scenes. Photos that are clearly AI-made or retouched in apps like FaceApp, Facetune or Photoshop.")
+                    Text("Screenshots, documents and photos without a child. Bath, pool, beach and swimwear photos, and every shot within 10 minutes of one. Shirtless kids past the baby stage (babies in a diaper are fine). Confident lake, ocean, river and sprinkler scenes. Photos that are clearly AI-generated (tagged by the AI tool, or saved from ChatGPT, Gemini and similar), retouched in face apps like FaceApp or Facetune or in Photoshop, or not made by a camera at all. Light edits in Photos, Lightroom or Snapseed, and AI clean-ups of real photos (removing a stranger in the background), are fine.")
                         .font(.footnote)
                 }
                 Section("How scores work") {
@@ -114,5 +115,29 @@ struct SettingsView: View {
             .navigationTitle("Settings")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
+    }
+}
+
+/// The children's birthdays: they sort photos into Baby (under 1), Toddler (1–3) and Kid (4+).
+struct BirthdaysSection: View {
+    @EnvironmentObject var library: Library
+    @State private var dates: [Date] = []
+    var body: some View {
+        Section {
+            ForEach(dates.indices, id: \.self) { i in
+                DatePicker("Child \(i + 1)", selection: Binding(get: { dates[i] }, set: { dates[i] = $0; library.setBirthdays(dates) }),
+                           in: ...Date(), displayedComponents: .date)
+            }
+            .onDelete { dates.remove(atOffsets: $0); library.setBirthdays(dates) }
+            Button("Add a child's birthday") {
+                dates.append(Calendar.current.date(byAdding: .year, value: -1, to: Date()) ?? Date())
+                library.setBirthdays(dates)
+            }
+        } header: {
+            Text("Your kids' birthdays")
+        } footer: {
+            Text("Used only on this iPhone to sort photos into Baby (under 1), Toddler (1–3) and Kid (4 and up). Swipe left to remove one.")
+        }
+        .onAppear { dates = library.birthdays }
     }
 }

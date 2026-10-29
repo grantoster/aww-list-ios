@@ -71,7 +71,7 @@ final class Analyzer {
                obs.confidence > 0.5 || (obs.hasPrecisionRecallCurve && obs.hasMinimumPrecision(0.1, forRecall: 0.9)) {
                 s.blockedLabel = reason
             }
-            if obs.confidence > 0.3, Describe.sceneLabels.contains(id) { s.labels.append(id) }
+            if obs.confidence > 0.6, Describe.sceneLabels.contains(id) { s.labels.append(id) }
             if s.waterScene == false, Self.waterScenes.contains(id), obs.confidence > 0.5 { s.waterScene = true }
             if Self.childLabels.contains(id) {
                 s.childConfidence = max(s.childConfidence, Double(obs.confidence))

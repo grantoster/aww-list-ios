@@ -15,7 +15,7 @@ struct HomeView: View {
     private var pool: [Moment] {
         library.moments.filter { m in
             if case .year(let y) = scope, m.year != y { return false }
-            if let age, m.best.age != age { return false }
+            if let age, !m.ages.contains(age) { return false }
             return true
         }
     }
@@ -29,7 +29,16 @@ struct HomeView: View {
                     if scanner.isScanning && scanner.total > 0 { ScanBanner() }
                     scopeBar
                     ageBar
-                    if pool.isEmpty {
+                    if age == .toddler && library.birthdays.isEmpty {
+                        ContentUnavailableView {
+                            Label("Add your kids' birthdays", systemImage: "birthday.cake")
+                        } description: {
+                            Text("Photos can tell a baby from an older child, but not a toddler from a kid. With birthdays, each photo is sorted by how old your kids were that day.")
+                        } actions: {
+                            Button("Add birthdays") { showSettings = true }.buttonStyle(.borderedProminent)
+                        }
+                        .padding(.top, 24)
+                    } else if pool.isEmpty {
                         ContentUnavailableView("No moments yet", systemImage: "heart.circle",
                                                description: Text(scanner.isScanning ? "Still looking through your photos." : "Nothing matched this filter."))
                             .padding(.top, 40)
@@ -173,7 +182,7 @@ struct Card: View {
                     .clipShape(RoundedRectangle(cornerRadius: 16))
                     .overlay(alignment: .topLeading) { RankBadge(rank: rank).padding(8) }
                     .overlay(alignment: .topTrailing) { ScoreBadge(score: moment.score).padding(8) }
-                Text(moment.best.caption).font(.subheadline.bold()).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                Text(moment.best.caption).font(.subheadline.bold()).lineLimit(2, reservesSpace: true)
                 Text(moment.best.date.shortDay).font(.caption).foregroundStyle(.secondary)
             }
         }

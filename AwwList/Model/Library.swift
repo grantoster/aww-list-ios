@@ -6,6 +6,8 @@ final class Library: ObservableObject {
     @Published private(set) var photos: [String: PhotoScore] = [:]
     @Published private(set) var moments: [Moment] = []
     @Published private(set) var hidden: Set<String> = []   // photos the user removed from the list
+    /// The children's birthdays, which sort photos into Baby / Toddler / Kid.
+    @Published private(set) var birthdays: [Date] = []
 
     private var lastRebuild = Date.distantPast
     private var unsaved = 0
@@ -15,7 +17,7 @@ final class Library: ObservableObject {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("scores.json")
     }()
-    private struct Saved: Codable { var photos: [PhotoScore]; var hidden: [String] }
+    private struct Saved: Codable { var photos: [PhotoScore]; var hidden: [String]; var birthdays: [Date]? }
 
     init() { load() }
 
@@ -34,6 +36,8 @@ final class Library: ObservableObject {
     func hide(_ m: Moment) { hidden.formUnion(m.memberIDs); rebuild(); save() }
     func restoreHidden() { hidden.removeAll(); rebuild(); save() }
 
+    func setBirthdays(_ dates: [Date]) { birthdays = dates.sorted(); rebuild(); save() }
+
     /// Drops scores for photos that were deleted from the library (ids found by the scanner).
     func remove(_ ids: Set<String>) {
         guard !ids.isEmpty else { return }
@@ -49,7 +53,12 @@ final class Library: ObservableObject {
         let cal = Calendar.current
         let scores = Scorer.calibrate(groups.map { $0.best.raw ?? 0 },
                                       years: groups.map { cal.component(.year, from: $0.best.date) })
-        moments = zip(groups, scores).map { g, s in Moment(best: g.best, shots: g.shots, memberIDs: g.ids, score: s) }
+        let bdays = birthdays
+        moments = zip(groups, scores).map { g, s in
+            Moment(best: g.best, shots: g.shots, memberIDs: g.ids, score: s,
+                   ages: AgeGroup.tags(date: g.best.date, birthdays: bdays,
+                                       looksLikeBaby: g.best.age == .baby, faces: g.best.faces ?? 1))
+        }
             .sorted(by: Library.ranked)
     }
 
@@ -66,7 +75,7 @@ final class Library: ObservableObject {
     /// Writes to disk off the main thread.
     func save() {
         unsaved = 0
-        let s = Saved(photos: Array(photos.values), hidden: Array(hidden))
+        let s = Saved(photos: Array(photos.values), hidden: Array(hidden), birthdays: birthdays)
         let u = url
         Task.detached(priority: .utility) {
             if let data = try? JSONEncoder().encode(s) { try? data.write(to: u, options: .atomic) }
@@ -77,6 +86,7 @@ final class Library: ObservableObject {
         guard let data = try? Data(contentsOf: url), let s = try? JSONDecoder().decode(Saved.self, from: data) else { return }
         photos = Dictionary(s.photos.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         hidden = Set(s.hidden)
+        birthdays = s.birthdays ?? []
         rebuild()
     }
 }

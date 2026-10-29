@@ -211,6 +211,11 @@ final class DescribeTests: XCTestCase {
         XCTAssertEqual(Describe.caption(s, date: t), "Baby grin up close with the birthday cake")
         s.faces[0].eyesClosed = true; s.labels = []
         XCTAssertEqual(Describe.caption(s, date: t), "Belly-laugh baby")
+        s.faces[0].smile = false; s.labels = ["ballet", "crib"]
+        XCTAssertEqual(Describe.caption(s, date: t), "Sweet sleeping baby in the crib")   // no "sleeping baby dancing"
+        s.faces = [FaceSignal(area: 0.1, quality: 0.7, smile: true), FaceSignal(area: 0.08, quality: 0.7, smile: true)]
+        s.labels = ["high_chair", "kitchen"]
+        XCTAssertEqual(Describe.caption(s, date: t), "Two big smiles in the kitchen")     // no group "in the high chair"
     }
 
     func testHolidays() {
@@ -234,13 +239,47 @@ final class DescribeTests: XCTestCase {
         f = Provenance.FileInfo(filename: "IMG_9.JPG", software: "Facetune", cameraMake: "Apple")
         XCTAssertEqual(Provenance.verdict(f), "Edited")
         f = Provenance.FileInfo(filename: "image.png", isPNG: true)
-        XCTAssertEqual(Provenance.verdict(f), "Edited")                      // a PNG no camera made
+        XCTAssertEqual(Provenance.verdict(f), "Not a camera photo")          // a PNG no camera made
+        f = Provenance.FileInfo(filename: "DSC_0042.jpg", software: "Adobe Photoshop Lightroom Classic 13.2", cameraMake: "NIKON")
+        XCTAssertNil(Provenance.verdict(f))                                  // a photographer's Lightroom edit is fine
+        f = Provenance.FileInfo(filename: "IMG_1.jpg", software: "Adobe Photoshop 25.0 (Windows)", cameraMake: "Canon")
+        XCTAssertEqual(Provenance.verdict(f), "Edited")
+        for name in ["Foto dalle vacanze.jpg", "reminiscing_with_grandma.jpg"] {
+            XCTAssertNil(Provenance.verdict(Provenance.FileInfo(filename: name)))
+        }
+        XCTAssertNil(Provenance.verdict(Provenance.FileInfo(filename: "IMG_2.HEIC", software: "Influx Camera", cameraMake: "Apple")))
         f = Provenance.FileInfo(filename: "IMG-20240101-WA0003.jpg")
         XCTAssertNil(Provenance.verdict(f))                                  // WhatsApp strips details: not penalized
         f = Provenance.FileInfo(filename: "imagen_familia.jpg")
         XCTAssertNil(Provenance.verdict(f))
         XCTAssertTrue(Provenance.hasAIMarker(Data("<Iptc4xmpExt:DigitalSourceType>http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia".utf8)))
         XCTAssertFalse(Provenance.hasAIMarker(Data("ordinary jpeg bytes".utf8)))
+        // a real photo touched up with Clean Up / Magic Eraser is kept
+        XCTAssertFalse(Provenance.hasAIMarker(Data("digitalsourcetype/compositeWithTrainedAlgorithmicMedia".utf8)))
+        XCTAssertFalse(Provenance.hasAIMarker(Data("digitalsourcetype/compositeSynthetic".utf8)))
+    }
+}
+
+final class AgeTagTests: XCTestCase {
+    private func d(_ y: Int, _ m: Int, _ day: Int) -> Date {
+        Calendar(identifier: .gregorian).date(from: DateComponents(year: y, month: m, day: day, hour: 12))!
+    }
+
+    func testGroupsFromBirthdays() {
+        let son = d(2016, 7, 29), daughter = d(2017, 11, 29)
+        XCTAssertEqual(AgeGroup.of(birth: son, at: d(2017, 3, 1)), .baby)
+        XCTAssertEqual(AgeGroup.of(birth: son, at: d(2018, 3, 1)), .toddler)
+        XCTAssertEqual(AgeGroup.of(birth: son, at: d(2020, 7, 29)), .kid)
+        // only the son was born: his group
+        XCTAssertEqual(AgeGroup.tags(date: d(2017, 3, 1), birthdays: [son, daughter], looksLikeBaby: true, faces: 1), [.baby])
+        // one face that looks like a baby, newborn sister and toddler brother: Baby
+        XCTAssertEqual(AgeGroup.tags(date: d(2018, 2, 1), birthdays: [son, daughter], looksLikeBaby: true, faces: 1), [.baby])
+        // one face that doesn't look like a baby: the toddler
+        XCTAssertEqual(AgeGroup.tags(date: d(2018, 2, 1), birthdays: [son, daughter], looksLikeBaby: false, faces: 1), [.toddler])
+        // both together: both tags
+        XCTAssertEqual(AgeGroup.tags(date: d(2018, 2, 1), birthdays: [son, daughter], looksLikeBaby: true, faces: 2), [.baby, .toddler])
+        // no birthdays saved
+        XCTAssertEqual(AgeGroup.tags(date: d(2018, 2, 1), birthdays: [], looksLikeBaby: false, faces: 1), [.kid])
     }
 }
 

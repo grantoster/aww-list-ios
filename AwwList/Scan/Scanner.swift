@@ -117,7 +117,7 @@ final class PhotoScanner: ObservableObject {
                     let age: AgeGroup? = raw == nil ? nil : (signals.babyConfidence > 0.5 ? .baby : .kid)
                     return PhotoScore(id: asset.localIdentifier, date: date,
                                       raw: raw, excluded: excluded, age: age, caption: Scorer.caption(signals, date: date),
-                                      version: Scorer.version)
+                                      version: Scorer.version, faces: signals.faces.count)
                 }
                 checked += 1
                 if let result { batch.append(result) }
@@ -141,35 +141,68 @@ final class PhotoScanner: ObservableObject {
 }
 
 /// Reads the file details that reveal AI generation or retouching: the original file name, the app that wrote
-/// it, camera make, file type, and any AI-provenance tag. Uses only files already on the phone (no download).
+/// it, camera make, file type, and any AI-provenance tag. Only the first 512 KB of the file is read (where those
+/// details live), and only from files already on the phone (no download).
 private func fileInfo(_ asset: PHAsset, manager: PHImageManager) -> Provenance.FileInfo {
     var info = Provenance.FileInfo()
     let resources = PHAssetResource.assetResources(for: asset)
-    info.filename = resources.first { $0.type == .photo }?.originalFilename ?? resources.first?.originalFilename ?? ""
-    let edited = resources.contains { $0.type == .adjustmentData }
-    for version in edited ? [PHImageRequestOptionsVersion.original, .current] : [.original] {
-        let o = PHImageRequestOptions()
-        o.isSynchronous = true
-        o.version = version
-        o.isNetworkAccessAllowed = false
-        o.deliveryMode = .highQualityFormat
-        var data: Data?, uti: String?
-        manager.requestImageDataAndOrientation(for: asset, options: o) { d, u, _, _ in data = d; uti = u }
-        guard let data else { continue }
+    let original = resources.first { $0.type == .photo } ?? resources.first
+    info.filename = original?.originalFilename ?? ""
+    info.isPNG = (original?.uniformTypeIdentifier ?? "").lowercased().contains("png")
+    // The original, plus the edited version when the photo was edited (where AI tools leave their tag).
+    let edited = resources.first { $0.type == .fullSizePhoto }
+    for (resource, isOriginal) in [(original, true), (edited, false)] {
+        guard let resource, let data = headerBytes(resource) else { continue }
         if Provenance.hasAIMarker(data) { info.aiMarker = true }
-        if version == .original { info.isPNG = (uti ?? "").lowercased().contains("png") }
-        if let src = CGImageSourceCreateWithData(data as CFData, nil),
-           let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any] {
+        let src = CGImageSourceCreateIncremental(nil)
+        CGImageSourceUpdateData(src, data as CFData, false)
+        if let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any] {
             let tiff = props[kCGImagePropertyTIFFDictionary] as? [CFString: Any] ?? [:]
             if let sw = tiff[kCGImagePropertyTIFFSoftware] as? String { info.software += " " + sw }
-            if version == .original, let make = tiff[kCGImagePropertyTIFFMake] as? String { info.cameraMake = make }
+            if isOriginal, let make = tiff[kCGImagePropertyTIFFMake] as? String { info.cameraMake = make }
         }
-        if let meta = CGImageSourceCreateWithData(data as CFData, nil).flatMap({ CGImageSourceCopyMetadataAtIndex($0, 0, nil) }),
+        if let meta = CGImageSourceCopyMetadataAtIndex(src, 0, nil),
            let tool = CGImageMetadataCopyStringValueWithPath(meta, nil, "xmp:CreatorTool" as CFString) as String? {
             info.software += " " + tool
         }
     }
     return info
+}
+
+/// The first `limit` bytes of a resource that is stored on the phone, or nil (iCloud-only, or no answer in 10 s).
+private func headerBytes(_ resource: PHAssetResource, limit: Int = 512 * 1024) -> Data? {
+    let manager = PHAssetResourceManager.default()
+    let opts = PHAssetResourceRequestOptions()
+    opts.isNetworkAccessAllowed = false
+    let box = HeaderBox(limit: limit)
+    let sem = DispatchSemaphore(value: 0)
+    let rid = manager.requestData(for: resource, options: opts, dataReceivedHandler: { chunk in
+        if box.append(chunk), let id = box.requestID { manager.cancelDataRequest(id) }
+    }, completionHandler: { _ in sem.signal() })
+    box.requestID = rid
+    if box.isFull { manager.cancelDataRequest(rid) }
+    if sem.wait(timeout: .now() + 10) == .timedOut { manager.cancelDataRequest(rid); return nil }
+    return box.data.isEmpty ? nil : box.data
+}
+
+private final class HeaderBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private let limit: Int
+    private var bytes = Data()
+    private var id: PHAssetResourceDataRequestID?
+    init(limit: Int) { self.limit = limit }
+    var requestID: PHAssetResourceDataRequestID? {
+        get { lock.lock(); defer { lock.unlock() }; return id }
+        set { lock.lock(); id = newValue; lock.unlock() }
+    }
+    /// Adds a chunk; returns true once enough has arrived.
+    func append(_ chunk: Data) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if bytes.count < limit { bytes.append(chunk.prefix(limit - bytes.count)) }
+        return bytes.count >= limit
+    }
+    var isFull: Bool { lock.lock(); defer { lock.unlock() }; return bytes.count >= limit }
+    var data: Data { lock.lock(); defer { lock.unlock() }; return bytes }
 }
 
 /// Thread-safe stop switch shared with the scan queue.

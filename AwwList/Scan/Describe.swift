@@ -4,72 +4,83 @@ import Foundation
 /// who is in it and how they look, what's around them, and the day it was taken.
 /// For example "Belly-laugh baby in the high chair", "Two big smiles by the Christmas tree", "Halloween costume grin".
 enum Describe {
-    /// Scene and object labels from Apple's image classifier, and how they read in a caption.
-    /// Earlier entries win when several are present, so the more specific moment goes first.
-    static let scenes: [(labels: [String], phrase: String)] = [
-        (["birthday_cake"], "with the birthday cake"),
-        (["santa_claus"], "with Santa"),
-        (["christmas_tree", "christmas_decoration", "wreath", "poinsettia"], "by the Christmas tree"),
-        (["jack_o_lantern"], "with the jack-o'-lantern"),
-        (["easter_egg"], "on the Easter egg hunt"),
-        (["graduation"], "at graduation"),
-        (["wedding", "wedding_cake", "bride", "groom"], "at a wedding"),
-        (["fireworks", "sparkler"], "at the fireworks"),
-        (["gift"], "opening presents"),
-        (["costume"], "in costume"),
-        (["cake", "cupcake", "candle"], "with cake"),
-        (["balloon", "balloon_hotair"], "with balloons"),
-        (["pumpkin"], "at the pumpkin patch"),
-        (["snowman"], "with the snowman"),
-        (["sled", "sledding"], "sledding"),
-        (["snow", "snowball", "blizzard"], "in the snow"),
-        (["carousel", "ferris_wheel", "rollercoaster", "amusement_park", "fairground", "carnival"], "at the fair"),
-        (["zoo", "giraffe", "elephant", "zebra", "lion", "tiger", "panda", "kangaroo"], "at the zoo"),
-        (["aquarium", "fishtank"], "at the aquarium"),
-        (["farm", "goat", "sheep", "cow", "pig", "donkey", "llama", "poultry"], "at the farm"),
-        (["orchard"], "at the orchard"),
-        (["swing_playground", "slide_toy", "seesaw", "playground"], "at the playground"),
-        (["trampoline"], "on the trampoline"),
-        (["bicycle", "tricycle"], "on a bike"),
-        (["scooter", "skateboard"], "on wheels"),
-        (["soccer"], "at soccer"), (["baseball", "softball"], "at baseball"), (["basketball"], "at basketball"),
-        (["ballet", "ballet_dancer", "dancing"], "dancing"),
-        (["gymnastics"], "at gymnastics"),
-        (["stuffed_animals"], "with a stuffed animal"),
-        (["book", "library"], "with a book"),
-        (["blocks", "train_toy", "vehicle_toy", "toy", "puzzles", "games"], "playing with toys"),
-        (["painting", "paintbrush", "art", "easel"], "making art"),
-        (["piano", "guitar", "ukulele", "drum", "musical_instrument"], "making music"),
-        (["ice_cream", "popsicle", "frozen_dessert"], "with ice cream"),
-        (["pizza"], "with pizza"), (["pancake", "waffle"], "at breakfast"),
-        (["high_chair"], "in the high chair"),
-        (["crib"], "in the crib"),
-        (["stroller"], "in the stroller"),
-        (["car_seat"], "in the car seat"),
-        (["dog", "canine", "retriever", "terrier", "spaniel", "poodle"], "with the dog"),
-        (["cat", "kitten", "feline"], "with the cat"),
-        (["horse", "equestrian"], "with a horse"),
-        (["airplane", "airport"], "on a trip"),
-        (["museum"], "at the museum"),
-        (["restaurant"], "out to eat"),
-        (["kitchen", "kitchen_room", "kitchen_countertop"], "in the kitchen"),
-        (["camping", "tent"], "camping"),
-        (["hiking", "trail", "forest"], "on a hike"),
-        (["flower", "sunflower", "blossom", "tulip", "daisy", "flower_arrangement"], "among the flowers"),
-        (["garden"], "in the garden"),
-        (["park"], "at the park"),
-        (["bed", "bedroom", "pillow"], "in bed"),
-        (["sofa", "living_room"], "on the couch")
+    enum Kind { case moment, activity, container, place }
+    /// Scene and object labels from Apple's image classifier (kept only above 0.6 confidence), and how they read
+    /// in a caption. Earlier entries win when several are present, so the more specific moment goes first.
+    /// Broad labels that fire on decor or toys (art, candle, pillow, toy, bride…) are deliberately left out,
+    /// and guessed venues are phrased by the object, not the place ("with a pumpkin", not "at the pumpkin patch").
+    static let scenes: [(labels: [String], phrase: String, kind: Kind)] = [
+        (["birthday_cake"], "with the birthday cake", .moment),
+        (["santa_claus"], "with Santa", .moment),
+        (["christmas_tree"], "by the Christmas tree", .moment),
+        (["jack_o_lantern"], "with the jack-o'-lantern", .moment),
+        (["easter_egg"], "with Easter eggs", .moment),
+        (["graduation"], "at graduation", .moment),
+        (["wedding_cake"], "at a wedding", .moment),
+        (["fireworks"], "at the fireworks", .moment),
+        (["costume"], "in costume", .moment),
+        (["cupcake"], "with a cupcake", .moment),
+        (["balloon"], "with balloons", .moment),
+        (["pumpkin"], "with a pumpkin", .moment),
+        (["snowman"], "with the snowman", .moment),
+        (["sledding"], "sledding", .activity),
+        (["snow", "snowball"], "in the snow", .place),
+        (["carousel", "ferris_wheel", "rollercoaster", "amusement_park"], "at the fair", .place),
+        (["zoo"], "at the zoo", .place),
+        (["aquarium"], "at the aquarium", .place),
+        (["farm"], "at the farm", .place),
+        (["orchard"], "at the orchard", .place),
+        (["swing_playground", "slide_toy", "seesaw", "playground"], "at the playground", .place),
+        (["trampoline"], "on the trampoline", .activity),
+        (["bicycle", "tricycle"], "on a bike", .activity),
+        (["soccer"], "at soccer", .activity), (["baseball", "softball"], "at baseball", .activity),
+        (["basketball"], "at basketball", .activity),
+        (["ballet", "ballet_dancer"], "dancing", .activity),
+        (["gymnastics"], "at gymnastics", .activity),
+        (["stuffed_animals"], "with a stuffed animal", .moment),
+        (["book"], "with a book", .moment),
+        (["blocks", "train_toy", "vehicle_toy", "puzzles"], "playing with toys", .activity),
+        (["paintbrush", "easel"], "making art", .activity),
+        (["piano", "guitar", "ukulele"], "making music", .activity),
+        (["ice_cream", "popsicle"], "with ice cream", .moment),
+        (["pizza"], "with pizza", .moment), (["pancake", "waffle"], "at breakfast", .moment),
+        (["high_chair"], "in the high chair", .container),
+        (["crib"], "in the crib", .container),
+        (["stroller"], "in the stroller", .container),
+        (["car_seat"], "in the car seat", .container),
+        (["dog", "retriever", "terrier", "spaniel", "poodle"], "with the dog", .moment),
+        (["cat", "kitten"], "with the cat", .moment),
+        (["horse"], "with a horse", .moment),
+        (["airplane"], "on a plane", .place),
+        (["museum"], "at the museum", .place),
+        (["restaurant"], "out to eat", .place),
+        (["kitchen", "kitchen_room"], "in the kitchen", .place),
+        (["camping"], "camping", .activity),
+        (["hiking"], "on a hike", .activity),
+        (["sunflower", "tulip", "flower_arrangement"], "among the flowers", .place),
+        (["garden"], "in the garden", .place),
+        (["park"], "at the park", .place),
+        (["bedroom"], "in bed", .container),
+        (["sofa", "living_room"], "on the couch", .place)
     ]
     static let sceneLabels: Set<String> = Set(scenes.flatMap(\.labels))
 
-    static func scenePhrase(_ labels: [String]) -> String? {
+    /// The first scene phrase that fits this lead: no activities for someone asleep, and no
+    /// one-person spots (crib, high chair, bike…) for a group.
+    static func scenePhrase(_ labels: [String], asleep: Bool = false, group: Bool = false) -> String? {
         let have = Set(labels)
-        return scenes.first { !have.isDisjoint(with: $0.labels) }?.phrase
+        return scenes.first { sc in
+            if have.isDisjoint(with: sc.labels) { return false }
+            if asleep && sc.kind == .activity { return false }
+            if group && sc.kind == .container { return false }
+            return true
+        }?.phrase
     }
 
     /// A holiday the date falls on, if any.
-    static func holiday(_ date: Date, calendar: Calendar = .current) -> String? {
+    static func holiday(_ date: Date, calendar: Calendar = {
+        var c = Calendar(identifier: .gregorian); c.timeZone = .current; return c
+    }()) -> String? {
         let c = calendar.dateComponents([.month, .day, .weekday, .weekdayOrdinal], from: date)
         switch (c.month ?? 0, c.day ?? 0) {
         case (12, 24): return "on Christmas Eve"
@@ -97,8 +108,8 @@ enum Describe {
         }
         if faces.count == 2 {
             if smiles == 2 { return "Two big smiles" }
-            if smiles == 1 { return baby ? "Baby and a big smile" : "Grinning side by side" }
-            return baby ? "Snuggled up with baby" : "Side by side"
+            if smiles == 1 { return baby ? "Smiles with baby" : "Grinning side by side" }
+            return baby ? "Snuggling baby" : "Side by side"
         }
         guard let f = subj else { return baby ? "Little baby moment" : "Little moment" }
         let close = f.area > 0.12
@@ -113,7 +124,8 @@ enum Describe {
     /// "Lead + scene", or "Lead + holiday" when there is no scene, e.g. "Smiling baby with the birthday cake".
     static func caption(_ s: Signals, date: Date?) -> String {
         var text = lead(s)
-        if let scene = scenePhrase(s.labels) {
+        let asleep = s.faces.count == 1 && s.subject?.eyesClosed == true && s.subject?.smile == false
+        if let scene = scenePhrase(s.labels, asleep: asleep, group: s.faces.count >= 2) {
             text += " " + scene
             if scene == "in costume", let d = date, holiday(d) == "on Halloween" { text = lead(s) + " in a Halloween costume" }
         } else if let d = date, let h = holiday(d) {
@@ -130,8 +142,8 @@ enum Provenance {
     static let aiTools = ["midjourney", "dall-e", "dall·e", "dalle", "openai", "chatgpt", "stable diffusion",
                           "stablediffusion", "stable_diffusion", "firefly", "imagen", "gemini", "image playground",
                           "imageplayground", "ideogram", "leonardo.ai", "nightcafe", "dreamstudio", "image creator",
-                          "copilot", "meta ai", "grok", "flux"]
-    static let retouchApps = ["photoshop", "facetune", "faceapp", "lensa", "remini", "picsart", "airbrush",
+                          "copilot designer", "meta ai", "grok", "flux.1", "black forest labs", "google imagen"]
+    static let retouchApps = ["adobe photoshop", "facetune", "faceapp", "lensa", "remini", "picsart", "airbrush",
                               "beautyplus", "youcam", "meitu", "b612", "peachy", "perfect365", "photoroom"]
 
     struct FileInfo {
@@ -144,25 +156,36 @@ enum Provenance {
 
     /// File-name patterns these tools use when you save their output (kept narrow: ordinary words like
     /// "imagen", Spanish for "image", must not trip it).
-    static let aiFilenames = ["dall-e", "dall·e", "dalle", "midjourney", "chatgpt image", "gemini_generated",
+    static let aiFilenames = ["dall-e", "dall·e", "midjourney", "chatgpt image", "gemini_generated",
                               "firefly", "stablediffusion", "stable_diffusion", "ideogram", "imageplayground"]
-    static let retouchFilenames = ["faceapp", "facetune", "lensa", "remini"]
+    static let retouchFilenames = ["faceapp", "facetune", "lensa_", "remini_", "remini-"]
+    /// Photo editors that adjust light and color but don't reshape people; never counted as retouching.
+    static let ordinaryEditors = ["adobe photoshop lightroom", "adobe photoshop express", "lightroom", "photoshop express", "snapseed", "vsco"]
 
     /// "AI image", "Edited" or nil.
     static func verdict(_ f: FileInfo) -> String? {
         let name = f.filename.lowercased(), sw = f.software.lowercased()
         if f.aiMarker { return "AI image" }
         if aiTools.contains(where: { sw.contains($0) }) || aiFilenames.contains(where: { name.contains($0) }) { return "AI image" }
-        if retouchApps.contains(where: { sw.contains($0) }) || retouchFilenames.contains(where: { name.contains($0) }) { return "Edited" }
+        let swNoOrdinary = ordinaryEditors.reduce(sw) { $0.replacingOccurrences(of: $1, with: "") }
+        if retouchApps.contains(where: { swNoOrdinary.contains($0) }) || retouchFilenames.contains(where: { name.contains($0) }) { return "Edited" }
         // Cameras save HEIC or JPEG with camera details; a PNG with none came out of an app or an editor.
-        if f.isPNG && f.cameraMake.isEmpty { return "Edited" }
+        if f.isPNG && f.cameraMake.isEmpty { return "Not a camera photo" }
         return nil
     }
 
-    /// True when the raw file bytes carry an AI-provenance marker (IPTC digital source type or a C2PA manifest).
+    /// True when the file says the whole image was generated by AI (IPTC digital source type
+    /// "trainedAlgorithmicMedia", in XMP or a C2PA manifest). Real photos with an AI touch-up
+    /// ("compositeWithTrainedAlgorithmicMedia": Clean Up, Magic Eraser, Best Take) are kept.
     static func hasAIMarker(_ data: Data) -> Bool {
-        for needle in ["trainedAlgorithmicMedia", "TrainedAlgorithmicMedia", "compositeSynthetic"] {
-            if data.range(of: Data(needle.utf8)) != nil { return true }
+        let needle = Data("trainedAlgorithmicMedia".utf8)
+        let composite = Data("compositeWith".utf8)
+        var from = data.startIndex
+        while let r = data.range(of: needle, in: from..<data.endIndex) {
+            // Exact value only: "…/trainedAlgorithmicMedia" (lowercase t, not part of "compositeWithTrained…").
+            let lead = r.lowerBound >= composite.count ? data[(r.lowerBound - composite.count)..<r.lowerBound] : Data()
+            if lead != composite { return true }
+            from = r.upperBound
         }
         return false
     }
