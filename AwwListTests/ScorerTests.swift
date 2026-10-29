@@ -368,11 +368,32 @@ final class LearnerTests: XCTestCase {
         XCTAssertEqual(s.isAdult(0), true)
         XCTAssertEqual(s.isAdult(1), false)
         // Cheek to cheek, both measured on the face alone: the parent's reading can't make them the subject.
-        s.faces[0].child = 0.18; s.faces[0].childTight = true
-        s.faces[1].child = 0.55; s.faces[1].childTight = true
+        s.faces[0].child = 0.18; s.faces[0].childTight = true   // only the larger of two touching faces is face-only
+        s.faces[1].child = 0.55; s.faces[1].childTight = false
         XCTAssertEqual(s.subjectIndex, 1)
         XCTAssertEqual(s.isAdult(0), true)                      // a smaller face beside it reads clearly as a kid
         XCTAssertEqual(s.isAdult(1), false)
+        // Siblings of similar size, cheek to cheek: the bigger one's low face-only reading doesn't make them a grown-up.
+        var sib = Signals()
+        sib.faces = [FaceSignal(area: 0.08, box: [0.1, 0.4, 0.28, 0.28]), FaceSignal(area: 0.065, box: [0.4, 0.4, 0.25, 0.25])]
+        sib.faces[0].child = 0.2; sib.faces[0].childTight = true; sib.faces[1].child = 0.4
+        XCTAssertNotEqual(sib.isAdult(0), true)
+        // A kid who reads a bit low, with nobody clearly a kid beside them: not called a grown-up.
+        var lone = Signals()
+        lone.faces = [FaceSignal(area: 0.1, box: [0.1, 0.3, 0.3, 0.33]), FaceSignal(area: 0.06, box: [0.6, 0.3, 0.25, 0.25])]
+        lone.faces[0].child = 0.25; lone.faces[1].child = 0.28
+        XCTAssertNotEqual(lone.isAdult(0), true)
+        // Two grown-ups side by side read clearly low: a grown-up shot.
+        var two = Signals()
+        two.faces = [FaceSignal(area: 0.1, box: [0.1, 0.3, 0.3, 0.33]), FaceSignal(area: 0.09, box: [0.5, 0.3, 0.3, 0.3])]
+        two.faces[0].child = 0.1; two.faces[1].child = 0.12
+        XCTAssertEqual(two.isAdult(0), true)
+        // Grandpa with a newborn under his chin (his face couldn't be measured): a grown-up.
+        var gp = Signals()
+        gp.faces = [FaceSignal(area: 0.09, box: [0.3, 0.5, 0.3, 0.3]), FaceSignal(area: 0.03, box: [0.35, 0.25, 0.17, 0.17])]
+        gp.faces[1].child = 0.8
+        XCTAssertEqual(gp.isAdult(0), true)
+        XCTAssertEqual(gp.subjectIndex, 1)
         XCTAssertEqual(ShotKind.of(faces: 2, adults: 1), .family)
         XCTAssertEqual(ShotKind.of(faces: 2, adults: 0), .kids)
         XCTAssertEqual(ShotKind.of(faces: 3, adults: 0), .family)

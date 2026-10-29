@@ -31,28 +31,16 @@ struct Signals: Equatable {
     var facePrint: [Float] = []          // Vision's feature print of the main face crop
     var privacyHint = false              // even a faint bath/undressed sign: listed, but never sent to Claude
 
-    /// The main subject: the largest face that reads as a child (so in a selfie with a parent it's the kid, not the
-    /// grown-up's bigger face), or simply the largest face when no face was checked or none reads as a child.
+    /// The main subject: among the faces that are part of the shot, the largest with a clear kid reading (0.3 or
+    /// more); failing that, the highest face-only reading of 0.15 or more; failing that, the largest face.
+    /// So in a selfie with a parent it's the kid, not the grown-up's bigger face, and never someone in the background.
     var subjectIndex: Int? {
-        // A clear kid reading (0.3 or more) decides; failing that, the highest face-only reading of 0.15 or more;
-        // failing that, the largest face.
-        let kids = faces.indices.filter { (faces[$0].child ?? 0) >= 0.3 }
+        let main = mainFaceIndices.isEmpty ? Array(faces.indices) : mainFaceIndices
+        let kids = main.filter { (faces[$0].child ?? 0) >= 0.3 }
         if !kids.isEmpty { return kids.max { faces[$0].area < faces[$1].area } }
-        let tight = faces.indices.filter { faces[$0].childTight && (faces[$0].child ?? 0) >= 0.15 }
+        let tight = main.filter { faces[$0].childTight && (faces[$0].child ?? 0) >= 0.15 }
         if !tight.isEmpty { return tight.max { (faces[$0].child ?? 0) < (faces[$1].child ?? 0) } }
-        return faces.indices.max { faces[$0].area < faces[$1].area }
-    }
-
-    /// Whether face `i` is a grown-up (nil when not measured). Under 0.3 counts as grown-up; a face-only reading
-    /// (which reads lower) only does under 0.15, or when a smaller face next to it reads clearly as a kid.
-    func isAdult(_ i: Int) -> Bool? {
-        guard let c = faces[i].child else { return nil }
-        if !faces[i].childTight { return c < 0.3 }
-        if c < 0.15 { return true }
-        let youngerBeside = faces.indices.contains { j in
-            j != i && (faces[j].child ?? 0) >= 0.3 && faces[j].area < faces[i].area
-        }
-        return c < 0.3 && youngerBeside
+        return main.max { faces[$0].area < faces[$1].area }
     }
     var subject: FaceSignal? { subjectIndex.map { faces[$0] } }
 
@@ -64,6 +52,35 @@ struct Signals: Equatable {
             let h = faces[i].box.count == 4 ? faces[i].box[3] : 0
             return h >= max(0.02, tallest / 3)
         }
+    }
+
+    /// Whether face `i` (one of the main faces) is a grown-up; nil when it can't be told.
+    /// - Faces under 4% of the photo's height are too small to judge: a low reading there means "can't tell".
+    /// - A clear kid reading (0.3 or more) beside it is needed before a low reading counts, so a single kid who
+    ///   reads a bit low (or the photo's only main face) isn't called a grown-up.
+    /// - A face-only reading (it touched another face, and reads lower) counts as grown-up under 0.15, or under 0.3
+    ///   when the clear kid beside it is much smaller (a parent's face, not a sibling's of similar size).
+    /// - An unmeasured face much bigger than a clear kid's and touching it (a newborn under a chin) is a grown-up.
+    func isAdult(_ i: Int) -> Bool? {
+        let main = mainFaceIndices
+        guard main.count >= 2, main.contains(i) else { return nil }
+        let f = faces[i]
+        let clearKids = main.filter { $0 != i && (faces[$0].child ?? 0) >= 0.3 }
+        func touching(_ a: FaceSignal, _ b: FaceSignal) -> Bool {
+            guard a.box.count == 4, b.box.count == 4 else { return false }
+            let px = a.box[2] * 0.3, py = a.box[3] * 0.5   // the head-and-shoulders region used for the check
+            return a.box[0] - px < b.box[0] + b.box[2] && b.box[0] < a.box[0] + a.box[2] + px
+                && a.box[1] - py < b.box[1] + b.box[3] && b.box[1] < a.box[1] + a.box[3] + py
+        }
+        let muchSmallerKid = clearKids.contains { faces[$0].area * 1.5 <= f.area }
+        guard let c = f.child else {
+            return clearKids.contains { faces[$0].area * 1.5 <= f.area && touching(f, faces[$0]) } ? true : nil
+        }
+        guard f.box.count == 4, f.box[3] >= 0.04 else { return nil }
+        if clearKids.isEmpty { return c < 0.2 }   // no clear kid beside it: only a clearly low reading is a grown-up
+        if !f.childTight { return c < 0.3 }
+        if c < 0.15 { return true }
+        return c < 0.3 && muchSmallerKid
     }
 }
 
