@@ -240,9 +240,12 @@ enum Learner {
         return out
     }
 
+    /// A standardized value, capped at ±5: a rare label seen in only a photo or two (tiny spread) can't swing a score.
+    static func z(_ v: Double, _ mean: Double, _ std: Double) -> Double { max(-5, min(5, (v - mean) / std)) }
+
     static func predict(_ f: Fit, _ x: [Double]) -> Double {
         var s = f.bias
-        for j in 0..<min(x.count, f.w.count) { s += f.w[j] * (x[j] - f.mean[j]) / f.std[j] }
+        for j in 0..<min(x.count, f.w.count) { s += f.w[j] * z(x[j], f.mean[j], f.std[j]) }
         return max(1, min(10, s))
     }
 
@@ -368,7 +371,7 @@ enum Learner {
     /// The filter's chance (0...1) that Claude would remove a photo; it removes at 0.5 or more.
     static func removalChance(_ f: LearnedFilter, _ x: [Double]) -> Double {
         var v = f.bias
-        for j in 0..<min(x.count, f.weights.count) { v += f.weights[j] * (x[j] - f.mean[j]) / f.std[j] }
+        for j in 0..<min(x.count, f.weights.count) { v += f.weights[j] * z(x[j], f.mean[j], f.std[j]) }
         return max(0, min(1, v))
     }
     static let removeAt = 0.5
@@ -385,7 +388,7 @@ enum Learner {
         func y(_ e: (date: Date, x: [Double], removed: Bool)) -> Double { e.removed ? 1 : 0 }
         func chance(_ f: Fit, _ x: [Double]) -> Double {
             var v = f.bias
-            for j in 0..<min(x.count, f.w.count) { v += f.w[j] * (x[j] - f.mean[j]) / f.std[j] }
+            for j in 0..<min(x.count, f.w.count) { v += f.w[j] * z(x[j], f.mean[j], f.std[j]) }
             return max(0, min(1, v))
         }
         func fold(_ d: Date) -> UInt64 { (group(d) / 5) % 4 }

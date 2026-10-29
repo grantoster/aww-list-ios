@@ -91,10 +91,11 @@ final class Library: ObservableObject {
         }
         for var p in new {
             if p.claude == nil { p.claude = photos[p.id]?.claude }   // a rescan never throws away Claude's verdict
-            if p.feat == nil { p.feat = photos[p.id]?.feat }
+            // Keep the old fingerprint only if it's still the current size (an old-size one would be re-read forever).
+            if p.feat == nil, let old = photos[p.id]?.feat, old.count == Learner.featureCount { p.feat = old }
             if photos[p.id]?.privacyHold == true || Scorer.heldBack.contains(photos[p.id]?.excluded ?? "") && p.excluded != photos[p.id]?.excluded {
                 p.privacyHold = true                                  // a never-send hold is never lifted by a re-read
-            }         // nor a good fingerprint when this read's scene print failed
+            }
             photos[p.id] = p
         }
         unsaved += new.count

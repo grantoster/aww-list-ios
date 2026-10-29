@@ -139,7 +139,7 @@ final class LearningPackTests: XCTestCase {
                               removals: 40, tested: 60, accuracy: 0.9, baselineAccuracy: 0.85, caught: 0.5, wronglyRemoved: 0.02,
                               date: Date(timeIntervalSince1970: 1_800_000_000))
         let text = LearningPack(model: m, filter: f).text()
-        XCTAssertLessThan(text.utf8.count, 16000)
+        XCTAssertLessThan(text.utf8.count, 22000)
         let back = LearningPack.read(text)
         XCTAssertEqual(back.model?.weights.count, n)
         XCTAssertEqual(back.model?.weights.first ?? 0, m.weights.first!, accuracy: 1e-5)

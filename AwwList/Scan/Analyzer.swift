@@ -52,7 +52,9 @@ final class Analyzer {
     private let blocked: [String: String]
 
     init() {
-        let ids = (try? VNClassifyImageRequest().supportedIdentifiers()) ?? []
+        let req = VNClassifyImageRequest()
+        req.revision = VNClassifyImageRequestRevision2
+        let ids = (try? req.supportedIdentifiers()) ?? []
         blocked = Self.blocklist(for: ids)
         let missing = Set(Self.blockedExact.keys).union(Self.childLabels).subtracting(ids)
         if !ids.isEmpty && !missing.isEmpty { NSLog("Aww List: classifier labels not on this iOS (fragments still apply): \(missing.sorted())") }
@@ -75,6 +77,8 @@ final class Analyzer {
         var s = Signals()
 
         let classify = VNClassifyImageRequest()
+        // Pinned, so the labels (and the learned score's "what's in the photo") don't shift with a newer SDK.
+        classify.revision = VNClassifyImageRequestRevision2
         let faces = VNDetectFaceCaptureQualityRequest()
         let handler = VNImageRequestHandler(cgImage: image, orientation: orientation, options: [:])
         do { try handler.perform([classify, faces]) } catch { return nil }
