@@ -96,8 +96,16 @@ struct SettingsView: View {
                     Button(scanner.isScanning ? "Scanning…" : "Rescan, including photos that couldn't load") { scanner.start(library: library, retryUnavailable: true) }
                         .disabled(scanner.isScanning)
                 }
+                Section("What's left out") {
+                    Text("Screenshots, documents and photos without a child. Bath, pool, beach and swimwear photos, and every shot within 10 minutes of one. Shirtless kids past the baby stage (babies in a diaper are fine). Confident lake, ocean, river and sprinkler scenes. Photos that are clearly AI-made or retouched in apps like FaceApp, Facetune or Photoshop.")
+                        .font(.footnote)
+                }
                 Section("How scores work") {
-                    Text("Each photo with a child in it gets a cuteness score from smiles, faces together, how big and sharp the faces are, and how clearly a child is the subject. Scores are spread across your whole library, so 9s and 10s stay rare and every year competes on the same scale.")
+                    Text("Shots less than a minute apart (two at most) count as one moment, and only its best shot is ranked.")
+                        .font(.footnote)
+                    Text("Each photo gets points for the main child's expression (a smile counts most; a sleeping baby counts too), for a second person close by, for how big the face is in the frame, and for how clearly a child is the subject. Blur scales the total down, and crowds count a little less.")
+                        .font(.footnote)
+                    Text("Those points become 1–10 by rank across your whole library: the top 1% are 9s and 10s, the next 4% are 8s, the next 10% are 7s. Every year counts equally, so a huge year can't crowd out the others, and a photo needs real quality for a high score, not just being the best of a weak bunch.")
                         .font(.footnote)
                     Text("Photos are analyzed with Apple's on-device Vision framework. Nothing is uploaded.")
                         .font(.footnote).foregroundStyle(.secondary)

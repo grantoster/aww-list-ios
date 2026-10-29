@@ -17,6 +17,7 @@ struct Signals: Equatable {
     var babyConfidence: Double = 0       // 0...1
     var faces: [FaceSignal] = []
     var sharpness: Double = 0            // 0...1, measured on the subject's face crop
+    var labels: [String] = []            // scene/object labels used for the description (Describe.sceneLabels)
     var waterScene: Bool = false         // confident water-scene label (Analyzer.waterScenes)
     var isScreenshot: Bool = false
     var blockedLabel: String? = nil      // "bath", "swimwear", "undressed", "document", "screenshot"
@@ -27,7 +28,7 @@ struct Signals: Equatable {
 
 enum Scorer {
     /// Bump when scoring changes; photos scored by an older version are analyzed again.
-    static let version = 7
+    static let version = 8
     /// Exclusion reason for a photo whose image couldn't be loaded (offline iCloud photo).
     static let unavailable = "Unavailable"
 
@@ -207,14 +208,5 @@ enum Scorer {
         return result
     }
 
-    static func caption(_ s: Signals) -> String {
-        let smiles = s.faces.filter(\.smile).count
-        let subj = s.subject
-        if s.faces.count >= 3 && smiles >= 2 { return "All smiles together" }
-        if s.faces.count == 2 && smiles >= 2 { return "Two big smiles" }
-        if s.faces.count >= 2 { return "Together" }
-        if subj?.smile == true { return s.babyConfidence > 0.5 ? "Baby grin" : "Big smile" }
-        if subj?.eyesClosed == true { return s.babyConfidence > 0.5 ? "Sweet dreams" : "Sleepy moment" }
-        return s.babyConfidence > 0.5 ? "Baby close-up" : "Little moment"
-    }
+    static func caption(_ s: Signals, date: Date? = nil) -> String { Describe.caption(s, date: date) }
 }

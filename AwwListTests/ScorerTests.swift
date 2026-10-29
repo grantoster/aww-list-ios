@@ -199,6 +199,51 @@ final class ScorerTests: XCTestCase {
     }
 }
 
+final class DescribeTests: XCTestCase {
+    private let t = Date(timeIntervalSince1970: 1_700_000_000)
+
+    func testCaptionsNameTheMomentAndScene() {
+        var s = Signals(); s.childConfidence = 0.9; s.babyConfidence = 0.9
+        s.faces = [FaceSignal(area: 0.15, quality: 0.7, smile: true, eyesClosed: false)]
+        s.labels = ["high_chair", "food"]
+        XCTAssertEqual(Describe.caption(s, date: t), "Baby grin up close in the high chair")
+        s.labels = ["birthday_cake", "balloon"]
+        XCTAssertEqual(Describe.caption(s, date: t), "Baby grin up close with the birthday cake")
+        s.faces[0].eyesClosed = true; s.labels = []
+        XCTAssertEqual(Describe.caption(s, date: t), "Belly-laugh baby")
+    }
+
+    func testHolidays() {
+        var c = DateComponents(); c.year = 2024; c.month = 12; c.day = 25; c.hour = 10
+        let xmas = Calendar.current.date(from: c)!
+        c.month = 11; c.day = 28                       // 4th Thursday of November 2024
+        let thanks = Calendar.current.date(from: c)!
+        XCTAssertEqual(Describe.holiday(xmas), "on Christmas")
+        XCTAssertEqual(Describe.holiday(thanks), "on Thanksgiving")
+        var s = Signals(); s.faces = [FaceSignal(area: 0.05, quality: 0.7, smile: true)]
+        XCTAssertEqual(Describe.caption(s, date: xmas), "Big smile on Christmas")
+    }
+
+    func testProvenanceVerdicts() {
+        var f = Provenance.FileInfo(filename: "IMG_1234.HEIC", software: "17.4", cameraMake: "Apple")
+        XCTAssertNil(Provenance.verdict(f))                                  // a normal iPhone photo
+        f.aiMarker = true
+        XCTAssertEqual(Provenance.verdict(f), "AI image")
+        f = Provenance.FileInfo(filename: "ChatGPT Image Apr 2, 2025, 10_14_03 AM.png", isPNG: true)
+        XCTAssertEqual(Provenance.verdict(f), "AI image")
+        f = Provenance.FileInfo(filename: "IMG_9.JPG", software: "Facetune", cameraMake: "Apple")
+        XCTAssertEqual(Provenance.verdict(f), "Edited")
+        f = Provenance.FileInfo(filename: "image.png", isPNG: true)
+        XCTAssertEqual(Provenance.verdict(f), "Edited")                      // a PNG no camera made
+        f = Provenance.FileInfo(filename: "IMG-20240101-WA0003.jpg")
+        XCTAssertNil(Provenance.verdict(f))                                  // WhatsApp strips details: not penalized
+        f = Provenance.FileInfo(filename: "imagen_familia.jpg")
+        XCTAssertNil(Provenance.verdict(f))
+        XCTAssertTrue(Provenance.hasAIMarker(Data("<Iptc4xmpExt:DigitalSourceType>http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia".utf8)))
+        XCTAssertFalse(Provenance.hasAIMarker(Data("ordinary jpeg bytes".utf8)))
+    }
+}
+
 private extension Array {
     func repeated(_ n: Int) -> [Element] { (0..<n).flatMap { _ in self } }
 }

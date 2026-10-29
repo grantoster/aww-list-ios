@@ -76,6 +76,11 @@ final class PhotoScanner: ObservableObject {
                 let result: PhotoScore? = autoreleasepool {
                     var signals = Signals()
                     signals.isScreenshot = asset.mediaSubtypes.contains(.photoScreenshot)
+                    // Clearly AI-generated or face-retouched photos stay off the list (checked from the file's details).
+                    if !signals.isScreenshot, let verdict = Provenance.verdict(fileInfo(asset, manager: manager)) {
+                        return PhotoScore(id: asset.localIdentifier, date: asset.creationDate ?? .distantPast, raw: nil,
+                                          excluded: verdict, age: nil, caption: "", version: Scorer.version)
+                    }
                     if !signals.isScreenshot {
                         // Wait up to 20 s per photo (an iCloud download on a slow connection), then move on.
                         let got = LoadedImage()
@@ -111,7 +116,7 @@ final class PhotoScanner: ObservableObject {
                     let (raw, excluded) = Scorer.score(signals)
                     let age: AgeGroup? = raw == nil ? nil : (signals.babyConfidence > 0.5 ? .baby : .kid)
                     return PhotoScore(id: asset.localIdentifier, date: date,
-                                      raw: raw, excluded: excluded, age: age, caption: Scorer.caption(signals),
+                                      raw: raw, excluded: excluded, age: age, caption: Scorer.caption(signals, date: date),
                                       version: Scorer.version)
                 }
                 checked += 1
@@ -133,6 +138,38 @@ final class PhotoScanner: ObservableObject {
     }
 
     func stop() { cancelFlag.cancel() }
+}
+
+/// Reads the file details that reveal AI generation or retouching: the original file name, the app that wrote
+/// it, camera make, file type, and any AI-provenance tag. Uses only files already on the phone (no download).
+private func fileInfo(_ asset: PHAsset, manager: PHImageManager) -> Provenance.FileInfo {
+    var info = Provenance.FileInfo()
+    let resources = PHAssetResource.assetResources(for: asset)
+    info.filename = resources.first { $0.type == .photo }?.originalFilename ?? resources.first?.originalFilename ?? ""
+    let edited = resources.contains { $0.type == .adjustmentData }
+    for version in edited ? [PHImageRequestOptionsVersion.original, .current] : [.original] {
+        let o = PHImageRequestOptions()
+        o.isSynchronous = true
+        o.version = version
+        o.isNetworkAccessAllowed = false
+        o.deliveryMode = .highQualityFormat
+        var data: Data?, uti: String?
+        manager.requestImageDataAndOrientation(for: asset, options: o) { d, u, _, _ in data = d; uti = u }
+        guard let data else { continue }
+        if Provenance.hasAIMarker(data) { info.aiMarker = true }
+        if version == .original { info.isPNG = (uti ?? "").lowercased().contains("png") }
+        if let src = CGImageSourceCreateWithData(data as CFData, nil),
+           let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any] {
+            let tiff = props[kCGImagePropertyTIFFDictionary] as? [CFString: Any] ?? [:]
+            if let sw = tiff[kCGImagePropertyTIFFSoftware] as? String { info.software += " " + sw }
+            if version == .original, let make = tiff[kCGImagePropertyTIFFMake] as? String { info.cameraMake = make }
+        }
+        if let meta = CGImageSourceCreateWithData(data as CFData, nil).flatMap({ CGImageSourceCopyMetadataAtIndex($0, 0, nil) }),
+           let tool = CGImageMetadataCopyStringValueWithPath(meta, nil, "xmp:CreatorTool" as CFString) as String? {
+            info.software += " " + tool
+        }
+    }
+    return info
 }
 
 /// Thread-safe stop switch shared with the scan queue.

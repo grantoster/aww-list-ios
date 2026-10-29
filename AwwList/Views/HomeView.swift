@@ -173,7 +173,7 @@ struct Card: View {
                     .clipShape(RoundedRectangle(cornerRadius: 16))
                     .overlay(alignment: .topLeading) { RankBadge(rank: rank).padding(8) }
                     .overlay(alignment: .topTrailing) { ScoreBadge(score: moment.score).padding(8) }
-                Text(moment.best.caption).font(.subheadline.bold()).lineLimit(1)
+                Text(moment.best.caption).font(.subheadline.bold()).lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 Text(moment.best.date.shortDay).font(.caption).foregroundStyle(.secondary)
             }
         }
