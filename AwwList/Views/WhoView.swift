@@ -49,7 +49,6 @@ struct WhoView: View {
     @State private var generation = 0
     /// Groups that look like someone already named: "Is this Maya?"
     @State private var suggestions: [Suggestion] = []
-    @State private var declined = Set<String>()
 
     struct Suggestion: Identifiable {
         let id: String
@@ -81,7 +80,7 @@ struct WhoView: View {
                         }
                     }
                 }
-                let open = suggestions.filter { !declined.contains($0.id) }
+                let open = suggestions.filter { !library.declinedChecks.contains($0.id) }
                 if !open.isEmpty {
                     Section {
                         ForEach(open) { s in
@@ -97,10 +96,13 @@ struct WhoView: View {
                                 HStack {
                                     Text("Is this \(s.person.name)?").font(.headline)
                                     Spacer()
-                                    Button("No") { declined.insert(s.id) }.buttonStyle(.bordered)
+                                    Button("No") { library.declinedChecks.insert(s.id); regroup() }.buttonStyle(.bordered)
                                     Button("Yes") {
-                                        library.name(s.faces, as: s.person.name, birthday: nil)
-                                        declined.insert(s.id)
+                                        // By id, in case they were renamed since.
+                                        if let p = library.people.first(where: { $0.id == s.person.id }) {
+                                            library.name(s.faces, as: p.name, birthday: nil)
+                                        }
+                                        library.declinedChecks.insert(s.id)
                                     }
                                     .buttonStyle(.borderedProminent)
                                 }
@@ -181,9 +183,10 @@ struct WhoView: View {
         let faces = library.unnamedFaces()
         let t = library.threshold
         let named = library.people
+        let declined = library.declinedChecks
         Task.detached(priority: .userInitiated) {
             let vecs = faces.map { People.floats($0.face.vec) }
-            let matcher = People.Matcher(named)
+            let matcher = People.Matcher(named)   // named faces only
             var all = People.cluster(vecs, threshold: t).filter { $0.count >= 3 }.sorted { $0.count > $1.count }
             var asks: [Suggestion] = []
             all.removeAll { c in
@@ -191,15 +194,18 @@ struct WhoView: View {
                 let center = People.merged([], count: 0, adding: c.map { vecs[$0] })
                 guard let b = matcher.best(center), b.sim >= t - 0.07,
                       let p = named.first(where: { $0.id == b.id }) else { return false }
-                let key = p.id.uuidString + ":" + c.map { faces[$0].photo }.sorted().joined()
+                // Keyed by the group's first photo, so a No sticks even if the group gains or loses a face.
+                let key = p.id.uuidString + ":" + (c.map { faces[$0].photo }.min() ?? "")
+                guard !declined.contains(key) else { return false }   // answered No: show it as an ordinary group
                 asks.append(Suggestion(id: key, person: p, faces: c.map { faces[$0] }))
                 return true
             }
             let big = all.filter { $0.count >= 5 }
             let shown = (big.isEmpty ? all : big).prefix(12).map { $0.map { faces[$0] } }
+            let found = asks
             await MainActor.run {
                 guard gen == generation else { return }     // a newer grouping is on its way
-                groups = Array(shown); suggestions = asks; loading = false
+                groups = Array(shown); suggestions = found; loading = false
             }
         }
     }

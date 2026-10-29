@@ -157,19 +157,37 @@ enum People {
             return b.id
         }
         mutating func add(_ id: UUID, _ v: [Float]) { refs.append((id, v)) }
+        /// How close a face is to one person's references (their best one).
+        func closeness(_ v: [Float], to id: UUID) -> Float {
+            var out: Float = -2
+            for r in refs where r.id == id && r.v.count == v.count { out = max(out, People.cosine(v, r.v)) }
+            return out
+        }
     }
 
-    /// Learns who the rest of the faces are from the ones you named: a face very close to someone's example faces
-    /// (a bit stricter than ordinary matching) is taken as that person, and becomes an example itself, so the next
-    /// round can reach a little further (a toddler photo bridging a baby photo and a kid photo). Returns, per person,
-    /// the indices of the faces learned. A face close to two different people is left alone.
-    static func learn(_ faces: [[Float]], people: [Person], threshold: Float, rounds: Int = 4) -> [UUID: [Int]] {
-        var matcher = Matcher(people)
-        var assigned = [Int: UUID]()
-        let bar = threshold + 0.03
+    /// Who each face is, from the faces you named.
+    /// - `matched`: faces close enough to someone's named faces (ordinary matching).
+    /// - `learned`: faces the app worked out on its own. A face very close to faces already known to be someone (a
+    ///   bit stricter than ordinary matching, and clearly closer to them than to anyone else) is taken as that
+    ///   person, and a sample of those join the references, so the next round reaches a little further (a toddler
+    ///   photo bridging a baby photo and a kid photo). Every learned face must still be reasonably close to that
+    ///   person's named faces, so a chain can't wander into a look-alike sibling.
+    /// Indices are into `faces`. Stops early (with what it has) if the task is cancelled.
+    static func learn(_ faces: [[Float]], people: [Person], threshold: Float, rounds: Int = 3)
+        -> (matched: [Int: UUID], learned: [Int: UUID]) {
+        let named = Matcher(people)
+        var matcher = named
+        var matched = [Int: UUID](), learned = [Int: UUID]()
+        for (i, v) in faces.enumerated() { if let id = named.match(v, threshold: threshold) { matched[i] = id } }
+        // Ordinary matches are known faces too: a sample of them starts the references.
+        for (id, idx) in Dictionary(grouping: matched.keys.sorted(), by: { matched[$0]! }) {
+            for i in spread(idx, to: 30) { matcher.add(id, faces[i]) }
+        }
+        let bar = threshold + 0.03, anchor = threshold - 0.15
         for _ in 0..<rounds {
+            if Task.isCancelled { break }
             var added: [(Int, UUID)] = []
-            for (i, v) in faces.enumerated() where assigned[i] == nil {
+            for (i, v) in faces.enumerated() where matched[i] == nil && learned[i] == nil {
                 // Best and runner-up among different people.
                 var best: (id: UUID, sim: Float)? = nil, second: Float = -2
                 for r in matcher.refs where r.v.count == v.count {
@@ -179,18 +197,18 @@ enum People {
                         best = (r.id, s)
                     } else if r.id != best?.id { second = max(second, s) }
                 }
-                if let b = best, b.sim >= bar, second < b.sim - 0.03 { added.append((i, b.id)) }
+                guard let b = best, b.sim >= bar, second < b.sim - 0.03,
+                      named.closeness(v, to: b.id) >= anchor else { continue }
+                added.append((i, b.id))
             }
             if added.isEmpty { break }
-            for (i, id) in added { assigned[i] = id }
+            for (i, id) in added { learned[i] = id }
             // A sample of each person's new faces joins the references (enough to reach further, not so many it's slow).
             for (id, idx) in Dictionary(grouping: added, by: \.1) {
                 for (i, _) in spread(idx, to: 30) { matcher.add(id, faces[i]) }
             }
         }
-        var out: [UUID: [Int]] = [:]
-        for (i, id) in assigned { out[id, default: []].append(i) }
-        return out
+        return (matched, learned)
     }
 
     /// Keeps at most `n` items, spread evenly.

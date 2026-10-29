@@ -328,9 +328,12 @@ final class PeopleTests: XCTestCase {
                           samplePhoto: "x", sampleBox: [0, 0, 1, 1])
         maya.examples = path[0..<2].map { People.embed($0) }
         XCTAssertNil(People.match(path[20], people: [maya], threshold: t))     // too far for plain matching
-        let learned = People.learn(path + other, people: [maya], threshold: t)[maya.id] ?? []
-        XCTAssertTrue(Set(learned).isSuperset(of: Set(2...20)), "learned \(learned.sorted())")
-        XCTAssertTrue(Set(learned).isDisjoint(with: Set(21..<25)))            // the other person stays unnamed
+        let r = People.learn(path + other, people: [maya], threshold: t)
+        let known = Set(r.matched.keys).union(r.learned.keys)
+        XCTAssertTrue(!r.learned.isEmpty && Set(r.learned.values) == [maya.id], "learned \(r.learned.keys.sorted())")
+        XCTAssertTrue(known.max() ?? 0 > (r.matched.keys.max() ?? 0), "learning reached past plain matching")
+        XCTAssertFalse(known.contains(20))                                      // a kid face this far away isn't guessed
+        XCTAssertTrue(known.isDisjoint(with: Set(21..<25)))                    // the other person stays unnamed
         XCTAssertEqual(People.spread(Array(0..<100), to: 4), [0, 25, 50, 75])
         XCTAssertEqual(People.spread([1, 2], to: 4), [1, 2])
     }
