@@ -58,7 +58,7 @@ struct HomeView: View {
     /// Gets the next photos ready before they scroll into view (the top 30 and the first page of See all).
     private func prefetchImages() {
         let ids = Array(pool.prefix(30).dropFirst(5)).map(\.best.id) + Array(listed.prefix(shown)).map(\.best.id)
-        AssetImage.prefetch(ids, side: 260 * displayScale)
+        AssetImage.prefetch(ids, side: 180 * displayScale)
     }
 
     var body: some View {
@@ -547,7 +547,7 @@ struct Tile: View {
     @State private var pressing = false
     var body: some View {
         Color.clear.aspectRatio(1, contentMode: .fit)
-            .overlay(AssetImage(id: moment.best.id, targetSide: 260))
+            .overlay(AssetImage(id: moment.best.id, targetSide: 180))   // tiles are about 120 points wide
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay(alignment: .topLeading) { if let rank { RankBadge(rank: rank).scaleEffect(0.8).padding(2) } }
             .overlay(alignment: .bottomTrailing) { if picked == nil { ScoreBadge(score: moment.score).scaleEffect(0.85).padding(3) } }

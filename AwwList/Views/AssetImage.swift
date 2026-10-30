@@ -98,7 +98,7 @@ struct AssetImage: View {
         opts.deliveryMode = .opportunistic
         opts.isNetworkAccessAllowed = true
         let box = RequestBox()
-        return await withTaskCancellationHandler {
+        let r = await withTaskCancellationHandler {
             await withCheckedContinuation { (cont: CheckedContinuation<(image: UIImage?, degraded: Bool), Never>) in
                 let rid = manager.requestImage(for: asset, targetSize: size, contentMode: mode, options: opts) { img, info in
                     let degraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
@@ -110,6 +110,10 @@ struct AssetImage: View {
         } onCancel: {
             if let rid = box.id { manager.cancelImageRequest(rid) }
         }
+        // Decoded here, off the main thread (Photos hands images back on the main thread, still compressed), so
+        // drawing them while scrolling doesn't stutter.
+        guard let img = r.image, !Task.isCancelled else { return r }
+        return (img.preparingForDisplay() ?? img, r.degraded)
     }
 }
 
