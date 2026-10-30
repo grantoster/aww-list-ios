@@ -10,8 +10,8 @@ on:
       runner:
         description: "Mac to build on (Apple silicon is much faster; Intel if Apple silicon is out of capacity)"
         type: choice
-        options: [macos-15, macos-15-intel]
-        default: macos-15
+        options: [macos-15-intel, macos-15]
+        default: macos-15-intel
 
 # A newer run replaces an older one that's still going (no more piling up).
 concurrency:
@@ -45,7 +45,7 @@ jobs:
   # Tests and the TestFlight build run side by side once the guards pass.
   build-and-test:
     needs: guard
-    runs-on: ${{ inputs.runner || 'macos-15' }}
+    runs-on: ${{ inputs.runner || 'macos-15-intel' }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
@@ -69,7 +69,7 @@ jobs:
   testflight:
     needs: guard
     if: inputs.testflight
-    runs-on: ${{ inputs.runner || 'macos-15' }}
+    runs-on: ${{ inputs.runner || 'macos-15-intel' }}
     timeout-minutes: 120
     env:
       ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
