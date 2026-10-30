@@ -1,19 +1,28 @@
 name: iOS
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       testflight:
         description: "Upload a build to TestFlight"
         type: boolean
         default: false
+      runner:
+        description: "Mac to build on (Apple silicon is much faster; Intel if Apple silicon is out of capacity)"
+        type: choice
+        options: [macos-15, macos-15-intel]
+        default: macos-15
+
+# A newer run replaces an older one that's still going (no more piling up).
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build-and-test:
-    runs-on: macos-15-intel
-    timeout-minutes: 120
+  # The privacy guards run first, on a quick Linux machine; nothing is built or uploaded unless they pass.
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - name: Read-only guard (the only change allowed in the photo library is a favorite)
@@ -32,6 +41,14 @@ jobs:
           # Never look in the Hidden album.
           if grep -nE "includeHiddenAssets *= *[^f ]|isHidden|hiddenAlbum|smartAlbumAllHidden|AllHidden|withLocalIdentifiers|withBurstIdentifier|forKey: *\"includeHiddenAssets" $SRC; then echo "::error::The app must never look in the Hidden album."; exit 1; fi
           echo "No photo-library writes (other than favorites) and no Hidden-album access found."
+
+  # Tests and the TestFlight build run side by side once the guards pass.
+  build-and-test:
+    needs: guard
+    runs-on: ${{ inputs.runner || 'macos-15' }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
       - name: Select newest Xcode 26 (App Store uploads need the iOS 26 SDK)
         run: |
           X=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
@@ -50,9 +67,9 @@ jobs:
             CODE_SIGNING_ALLOWED=NO | xcpretty
 
   testflight:
-    needs: build-and-test
-    if: github.event_name == 'workflow_dispatch' && inputs.testflight
-    runs-on: macos-15-intel
+    needs: guard
+    if: inputs.testflight
+    runs-on: ${{ inputs.runner || 'macos-15' }}
     timeout-minutes: 120
     env:
       ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
