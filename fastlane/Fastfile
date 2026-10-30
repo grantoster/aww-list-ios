@@ -23,6 +23,8 @@ platform :ios do
     bundle = ENV.fetch("AWW_BUNDLE_ID")
     profile = "AwwListCI#{Time.now.to_i}"   # a new, uniquely named profile each run (old ones die with their certificate)
     cert_id = nil
+    uploaded = false    # an upload Apple hasn't finished processing must keep its certificate
+    processed = false
 
     begin
       # A fresh Apple Distribution certificate for this run only (the cloud Mac keeps nothing between runs).
@@ -49,11 +51,17 @@ platform :ios do
       )
 
       # Wait for Apple to finish processing, so a build Apple rejects fails this run instead of silently vanishing.
+      uploaded = true
       upload_to_testflight(api_key: api_key, skip_waiting_for_build_processing: false,
                            wait_processing_timeout_duration: 3600)
+      processed = true
       UI.message("::notice::TestFlight build #{lane_context[SharedValues::BUILD_NUMBER] || ''} processed")
     ensure
-      if cert_id
+      # Revoking the certificate before Apple finishes processing the upload makes Apple reject the build
+      # (ITMS-90721), so it's only revoked once processing is done, or when nothing was uploaded.
+      if cert_id && uploaded && !processed
+        puts "::warning::Kept this run's signing certificate (#{cert_id}): the upload wasn't confirmed as processed."
+      elsif cert_id
         begin
           Spaceship::ConnectAPI::Certificate.get(certificate_id: cert_id).delete!
           UI.message("Revoked this run's signing certificate")
