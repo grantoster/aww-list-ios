@@ -52,7 +52,7 @@ struct AssetImage: View {
         }
     }
 
-    nonisolated static let manager = PHCachingImageManager()
+    nonisolated(unsafe) static let manager = PHCachingImageManager()   // thread-safe; used from any thread
     /// Recently drawn photos, so scrolling back or reopening a list is instant. Emptied whenever the photo library
     /// changes (so a photo hidden or deleted meanwhile is never shown from here), and by iOS under memory pressure.
     nonisolated static let thumbs: NSCache<NSString, UIImage> = { let c = NSCache<NSString, UIImage>(); c.countLimit = 400; return c }()

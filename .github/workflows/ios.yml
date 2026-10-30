@@ -64,7 +64,10 @@ jobs:
           xcodebuild test \
             -project AwwList.xcodeproj -scheme AwwList \
             -destination "id=$SIM" \
-            CODE_SIGNING_ALLOWED=NO | xcpretty
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee build.log | xcpretty
+      - name: Show compile errors
+        if: failure()
+        run: grep -E "error:" build.log | sort -u | head -20 | while read -r l; do echo "::error::$l"; done || true
 
   testflight:
     needs: guard
@@ -87,3 +90,6 @@ jobs:
         run: brew install xcodegen && xcodegen generate
       - name: Build, sign and upload to TestFlight
         run: fastlane beta
+      - name: Show build errors
+        if: failure()
+        run: cat ~/Library/Logs/gym/*.log 2>/dev/null | grep -E "error:" | sort -u | head -20 | while read -r l; do echo "::error::$l"; done || true
