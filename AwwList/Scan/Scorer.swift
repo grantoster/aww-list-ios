@@ -321,15 +321,17 @@ enum Scorer {
         return Set(Describe.scenes.filter { $0.kind != .container }.flatMap(\.labels).filter { !everyday.contains($0) })
     }()
 
-    /// The balanced on-device score (0...1), from a photo's saved measurements (Learner.encode):
-    /// expression 25%, eyes open and looking at the camera 10%, photo quality (Apple's quality score and sharpness)
-    /// 30%, how big the child is in the frame 10%, a special moment or outing 10%, action and play 5%, and how
-    /// clearly a child is the subject 10%. Crowds of more than 5 faces count a little less. No bonus for extra faces.
-    /// `special` is nil for photos scanned before it was recorded: then the other parts are scaled up to fill it.
+    /// The balanced on-device score (0...1), from a photo's saved measurements (Learner.encode). Weights as set by the
+    /// owner (they add up to 95%, so the total is divided by 0.95 to keep the 0...1 scale; the order is the same):
+    /// expression 25%, eyes open and looking at the camera 10%, photo quality (Apple's quality score and sharpness) 15%,
+    /// how big the child is in the frame 10%, how clearly a child is the subject 10%, action and play 5%,
+    /// a special moment or outing 5%, pure "aww" 5%, pure joy 5%, candid 5%.
+    /// Crowds of more than 5 faces count a little less. No bonus for extra faces.
+    /// `special` is nil only in tests now (Scorer.balancedValue always supplies it).
     static func balanced(_ x: [Double], special: Double? = nil) -> Double {
         func at(_ i: Int) -> Double { i < x.count ? x[i] : 0 }
-        let smile = at(0), sleeping = at(2), presence = at(4), child = at(5), sharp = at(7)
-        let faces = at(8) * 6, eyesClosed = at(9), quality = at(12), hasQuality = at(13)
+        let smile = at(0), sleeping = at(2), presence = at(4), child = at(5), baby = at(6)
+        let sharp = at(7), faces = at(8) * 6, eyesClosed = at(9), quality = at(12), hasQuality = at(13)
         let smileCurve = at(15), mouthOpen = at(17), headTurn = at(19), armsUp = at(22), reach = at(25)
         let hasShape = (15...20).contains { at($0) > 0 }
         // A laugh (open-mouthed smile) beats a smile; a sleeping baby is a sweet moment, not a miss.
@@ -339,8 +341,16 @@ enum Scorer {
         let eyes = sleeping > 0.5 ? 1 : hasShape ? min(1, open + 0.4 * (1 - headTurn)) : open
         let photo = hasQuality > 0.5 ? 0.5 * quality + 0.5 * sharp : sharp
         let action = max(armsUp, reach)
-        var raw = 0.25 * expression + 0.10 * eyes + 0.30 * photo + 0.10 * presence + 0.05 * action + 0.10 * child
-        if let special { raw += 0.10 * min(1, max(0, special)) } else { raw /= 0.90 }
+        // Pure "aww": the things that make people melt, a sleeping baby or a baby face.
+        let aww = max(sleeping > 0.5 ? 1 : 0, baby)
+        // Pure joy: a real laugh, or arms thrown up while smiling (no credit for extra smiling faces: no pair bonus).
+        let joy = smile > 0.5 ? max(mouthOpen, armsUp) : 0
+        // Candid: caught in the moment rather than posed for the camera (looking away, or mid-action).
+        let candid = max(hasShape ? min(1, 2 * headTurn) : 0, action)
+        let sp = min(1, max(0, special ?? 0))
+        var raw = 0.25 * expression + 0.10 * eyes + 0.15 * photo + 0.10 * presence + 0.10 * child + 0.05 * action
+            + 0.05 * sp + 0.05 * aww + 0.05 * joy + 0.05 * candid
+        raw /= 0.95
         if faces > 5.5 { raw *= 0.85 }
         return max(0, min(1, raw))
     }

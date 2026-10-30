@@ -133,7 +133,7 @@ final class ScorerTests: XCTestCase {
         XCTAssertGreaterThan(Scorer.balanced(x(smiling)), Scorer.balanced(x(blurry)))
         XCTAssertEqual(Scorer.balanced(x(pair)), Scorer.balanced(x(smiling)), accuracy: 0.02)   // no bonus for a second face
         XCTAssertGreaterThan(Scorer.balanced(x(serious), special: 1), Scorer.balanced(x(serious), special: 0))
-        XCTAssertEqual(Scorer.balanced(x(serious), special: nil), Scorer.balanced(x(serious), special: 0) / 0.9, accuracy: 1e-9)
+        XCTAssertEqual(Scorer.balanced(x(serious), special: nil), Scorer.balanced(x(serious), special: 0), accuracy: 1e-9)
         XCTAssertEqual(Scorer.specialFromCaption("Kiddo grinning with the birthday cake"), 1)
         XCTAssertEqual(Scorer.specialFromCaption("Kiddo grinning in the high chair"), 0)
         XCTAssertEqual(Scorer.specialFromCaption("Kiddo grinning with a book"), 0)
