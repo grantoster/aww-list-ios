@@ -29,10 +29,13 @@ struct AssetImage: View {
             if let hit = Self.thumbs.object(forKey: key), Self.visible([id]).count == 1 { image = hit; return }
             image = nil   // never leave the previous photo showing while a different one loads
             // Show the quick low-resolution version as soon as Photos has it, then the sharp one.
-            let r = await Self.load(id: id, size: CGSize(width: px, height: px),
-                                    mode: contentMode == .fit ? .aspectFit : .aspectFill,
-                                    preview: { img in Task { @MainActor in
-                                        if !Task.isCancelled, image == nil { image = img } } })
+            let run = RunFlag()
+            defer { run.end() }   // a preview arriving after this run ends (or moved on) is ignored
+            let mode: PHImageContentMode = contentMode == .fit ? .aspectFit : .aspectFill
+            let r = await withTaskCancellationHandler {
+                await Self.load(id: id, size: CGSize(width: px, height: px), mode: mode,
+                                preview: { img in Task { @MainActor in if run.live, image == nil { image = img } } })
+            } onCancel: { run.end() }
             guard !Task.isCancelled else { return }   // this view has moved on to another photo
             if let img = r.image {
                 image = img
@@ -85,6 +88,14 @@ struct AssetImage: View {
             if let rid = box.id { manager.cancelImageRequest(rid) }
         }
     }
+}
+
+/// Marks whether one load is still the current one for its view.
+private final class RunFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var ended = false
+    var live: Bool { lock.lock(); defer { lock.unlock() }; return !ended }
+    func end() { lock.lock(); ended = true; lock.unlock() }
 }
 
 /// Small lock-protected holder so the request can resume exactly once and be cancelled from another thread.
