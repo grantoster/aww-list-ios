@@ -784,7 +784,9 @@ final class Library: ObservableObject {
         let claudeLed = useClaude || useLearned || (useConsolidated && (anyClaude || learned != nil))
         var filtered = 0
         var filteredIDs = Set<String>()
-        moments = all.compactMap { m in
+        // Built up locally and published once at the end: changing the published list item by item made every
+        // screen watching it re-filter thousands of moments thousands of times (the app froze and closed).
+        var ms: [Moment] = all.compactMap { m in
             var m = m
             // Claude's removal sticks to the whole burst, even if a different shot becomes its best later.
             if m.memberIDs.contains(where: { photos[$0]?.claude?.exclude != nil }) { return nil }
@@ -808,14 +810,14 @@ final class Library: ObservableObject {
                 guard let c = m.best.claude else { continue }
                 m.claudeScore = c.score
                 m.score = Claude.displayScore(c.score)
-                moments.append(m)
+                ms.append(m)
             }
         }
         // Same 1–10 spread in every view (about 1 in 20 moments a 9 or 10): when ranking by Claude or by the learned
         // score, the list's score is that score's rank, bucketed like Apple's. The viewer still shows the actual
         // Claude and learned numbers. Moments Claude hasn't seen still top out at 8 (learned) or 6 (Apple only).
         if useClaude || useLearned {
-            let vals = moments.map { m -> Double in
+            let vals = ms.map { m -> Double in
                 // A sliver of Apple's raw score breaks ties between equal (rounded) values, so a big tie at a bucket
                 // edge can't all land in the higher bucket; Apple-only moments sit at 6 or below in both views.
                 let appleOnly: Double = Double(min(m.apple, 6))
@@ -827,35 +829,35 @@ final class Library: ObservableObject {
                 }
                 return v + m.rankRaw * 0.001
             }
-            let cal = Scorer.calibrate(vals.map { $0 / 10 }, years: moments.map(\.year))
-            for i in moments.indices {
-                let m = moments[i]
+            let cal = Scorer.calibrate(vals.map { $0 / 10 }, years: ms.map(\.year))
+            for i in ms.indices {
+                let m = ms[i]
                 let cap: Int
                 if useClaude { cap = m.claudeScore != nil ? 10 : (m.learnedScore != nil ? 8 : 6) }
                 else { cap = m.learnedScore != nil ? 10 : 6 }
-                moments[i].score = min(cal[i], cap)
+                ms[i].score = min(cal[i], cap)
             }
         }
         // Consolidated: each year's top 100 by Claude, by the learned score and by Apple, combined into one list.
         // A moment's place is the sum of 1 / (60 + its rank) over the rankings it's in the top 100 of (reciprocal
         // rank fusion), so moments near the top of all three lead, and one that's only in one list sits lower.
-        everyMoment = moments.sorted(by: Library.ranked)
+        everyMoment = ms.sorted(by: Library.ranked)
         var outsideTop = Set<String>()
         if useConsolidated {
             // Each ranking covers only the moments it actually scored (no filling in from the others, which would
             // count the same opinion twice).
             let rankers: [(Moment) -> Double?] = [{ $0.apple > 0 ? Double($0.apple) : nil }, { $0.claudeScore }, { $0.learnedScore }]
-            var fused = Array(repeating: 0.0, count: moments.count)
-            var inTop = Array(repeating: false, count: moments.count)
-            for (_, idx) in Dictionary(grouping: moments.indices, by: { moments[$0].year }) {
+            var fused = Array(repeating: 0.0, count: ms.count)
+            var inTop = Array(repeating: false, count: ms.count)
+            for (_, idx) in Dictionary(grouping: ms.indices, by: { ms[$0].year }) {
                 for f in rankers {
                     var vals: [Int: Double] = [:]
-                    for i in idx { if let v = f(moments[i]) { vals[i] = v } }
+                    for i in idx { if let v = f(ms[i]) { vals[i] = v } }
                     let order = vals.keys.sorted { a, b in
                         let va = vals[a]!, vb = vals[b]!
                         if va != vb { return va > vb }
-                        if moments[a].rankRaw != moments[b].rankRaw { return moments[a].rankRaw > moments[b].rankRaw }
-                        return moments[a].best.date < moments[b].best.date
+                        if ms[a].rankRaw != ms[b].rankRaw { return ms[a].rankRaw > ms[b].rankRaw }
+                        return ms[a].best.date < ms[b].best.date
                     }
                     for (r, i) in order.prefix(Library.consolidatedTop).enumerated() {
                         inTop[i] = true
@@ -863,19 +865,19 @@ final class Library: ObservableObject {
                     }
                 }
             }
-            let kept = moments.indices.filter { inTop[$0] }
-            for i in moments.indices where !inTop[i] { outsideTop.formUnion(moments[i].memberIDs) }
+            let kept = ms.indices.filter { inTop[$0] }
+            for i in ms.indices where !inTop[i] { outsideTop.formUnion(ms[i].memberIDs) }
             let best = Double(rankers.count) / 61   // first in every ranking (only a scale; calibration uses the order)
             // Scored against every moment of the year (the ones left out count as last), so a top-100 moment
             // isn't shown with a low score just because the list is short.
-            let cal = Scorer.calibrate(fused.map { $0 / best }, years: moments.map(\.year), ceiling: { _ in 10 })
-            moments = kept.map { i in
-                var m = moments[i]; m.score = cal[i]; m.consolidated = fused[i]; return m
+            let cal = Scorer.calibrate(fused.map { $0 / best }, years: ms.map(\.year), ceiling: { _ in 10 })
+            ms = kept.map { i in
+                var m = ms[i]; m.score = cal[i]; m.consolidated = fused[i]; return m
             }
         }
         // What's left off and why (current photos only; hidden ones are counted separately).
         var counts: [String: Int] = [:]
-        let shown = Set(moments.flatMap(\.memberIDs))
+        let shown = Set(ms.flatMap(\.memberIDs))
         for p in photos.values where !shown.contains(p.id) {
             let why: String
             if hidden.contains(p.id) { why = "Removed by you" }
@@ -904,7 +906,8 @@ final class Library: ObservableObject {
         leftOut = counts.map { LeftOut(reason: $0.key, count: $0.value) }
             .sorted { $0.count != $1.count ? $0.count > $1.count : $0.reason < $1.reason }
         listedPhotos = shown.count
-        moments.sort(by: Library.ranked)
+        ms.sort(by: Library.ranked)
+        moments = ms
     }
 
     /// Higher score first; then higher raw score; then the earlier photo.

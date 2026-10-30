@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
+import Combine
 
 enum ListScope: Hashable { case all, year(Int) }
 
@@ -143,7 +144,8 @@ struct HomeView: View {
             .onChange(of: shot) { refreshLists() }
             .onChange(of: person) { refreshLists() }
             .onChange(of: sortByDate) { refreshLists() }
-            .onReceive(library.$moments) { refreshLists($0) }
+            // Coalesced: a burst of changes re-filters once.
+            .onReceive(library.$moments.debounce(for: .milliseconds(80), scheduler: RunLoop.main)) { refreshLists($0) }
             .onAppear { refreshLists() }
             .onChange(of: faceConsent) { if !faceConsent { person = nil } }
             .onChange(of: library.people) {
