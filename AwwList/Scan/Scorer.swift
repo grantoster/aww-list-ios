@@ -309,9 +309,10 @@ enum Scorer {
     /// For photos scanned before `special` was recorded: Apple's caption names the first scene it matched
     /// (Describe.scenePhrase), so a special scene's phrase in it means Apple saw that label. 0 otherwise.
     static func specialFromCaption(_ caption: String) -> Double {
-        let phrases = Describe.scenes.filter { sc in sc.kind != .container && sc.labels.contains(where: specialLabels.contains) }.map(\.phrase)
-        return phrases.contains(where: caption.contains) ? 1 : 0
+        specialPhrases.contains(where: caption.contains) ? 1 : 0
     }
+    private static let specialPhrases: [String] =
+        Describe.scenes.filter { sc in sc.kind != .container && sc.labels.contains(where: specialLabels.contains) }.map(\.phrase)
 
     /// Labels that mark a special moment or outing (Describe's moments, activities and outings; everyday things like
     /// books, pizza and rooms don't count). Matched against the confident scene labels at scan time (PhotoScore.special).

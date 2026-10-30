@@ -38,8 +38,8 @@ struct HomeView: View {
     @State private var listed: [Moment] = []
     private var top: [Moment] { Array(pool.prefix(30)) }
 
-    private func refreshLists() {
-        let filtered = library.moments.filter { m in
+    private func refreshLists(_ moments: [Moment]? = nil) {
+        let filtered = (moments ?? library.moments).filter { m in
             if case .year(let y) = scope, m.year != y { return false }
             if let age, !m.ages.contains(age) { return false }
             if let shot, m.shot != shot { return false }
@@ -120,7 +120,7 @@ struct HomeView: View {
             .onChange(of: shot) { refreshLists() }
             .onChange(of: person) { refreshLists() }
             .onChange(of: sortByDate) { refreshLists() }
-            .onReceive(library.$moments) { _ in DispatchQueue.main.async { refreshLists() } }
+            .onReceive(library.$moments) { refreshLists($0) }
             .onAppear { refreshLists() }
             .onChange(of: library.people) {
                 if let p = person, !library.people.contains(where: { $0.id == p }) { person = nil }
@@ -333,7 +333,7 @@ struct HomeView: View {
             var jpegs: [Data] = []
             for id in ids {
                 if Task.isCancelled { break }
-                if let img = await AssetImage.load(id: id, size: CGSize(width: 1600, height: 1600), mode: .aspectFit),
+                if let img = await AssetImage.load(id: id, size: CGSize(width: 1600, height: 1600), mode: .aspectFit).image,
                    let data = await Task.detached(priority: .userInitiated, operation: { img.jpegData(compressionQuality: 0.85) }).value {
                     jpegs.append(data)
                 }

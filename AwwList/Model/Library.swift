@@ -445,7 +445,7 @@ final class Library: ObservableObject {
     /// Drops scores for photos that were deleted from the library (ids found by the scanner).
     func remove(_ ids: Set<String>) {
         guard !ids.isEmpty else { return }
-        ids.forEach { photos[$0] = nil }
+        ids.forEach { photos[$0] = nil; derived[$0] = nil }
         rebuild(); save()
     }
 

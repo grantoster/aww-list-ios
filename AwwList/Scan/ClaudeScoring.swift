@@ -544,7 +544,7 @@ final class ClaudeService: ObservableObject {
 
     /// The photo upright, at most 768 px on its long side, as JPEG. Redrawing drops location and other file details.
     nonisolated static func jpeg(_ id: String) async -> Data? {
-        guard let img = await AssetImage.load(id: id, size: CGSize(width: 768, height: 768), mode: .aspectFit) else { return nil }
+        guard let img = await AssetImage.load(id: id, size: CGSize(width: 768, height: 768), mode: .aspectFit).image else { return nil }
         let k = min(1, 768 / max(img.size.width, img.size.height))
         let size = CGSize(width: (img.size.width * k).rounded(), height: (img.size.height * k).rounded())
         let fmt = UIGraphicsImageRendererFormat(); fmt.scale = 1; fmt.opaque = true

@@ -24,20 +24,36 @@ struct AssetImage: View {
         .task(id: id) {
             let px = targetSide * scale
             let key = "\(id)|\(Int(px))|\(contentMode == .fit ? 1 : 0)" as NSString
-            if let hit = Self.thumbs.object(forKey: key) { image = hit; return }
+            let generation = Self.cacheGeneration()
+            // A cached copy is used only while the photo is still visible (not hidden or deleted since).
+            if let hit = Self.thumbs.object(forKey: key), Self.visible([id]).count == 1 { image = hit; return }
             image = nil   // never leave the previous photo showing while a different one loads
             // Show the quick low-resolution version as soon as Photos has it, then the sharp one.
-            let full = await Self.load(id: id, size: CGSize(width: px, height: px),
-                                       mode: contentMode == .fit ? .aspectFit : .aspectFill,
-                                       preview: { img in Task { @MainActor in if image == nil { image = img } } })
-            if let full { image = full; Self.thumbs.setObject(full, forKey: key) }
+            let r = await Self.load(id: id, size: CGSize(width: px, height: px),
+                                    mode: contentMode == .fit ? .aspectFit : .aspectFill,
+                                    preview: { img in Task { @MainActor in
+                                        if !Task.isCancelled, image == nil { image = img } } })
+            guard !Task.isCancelled else { return }   // this view has moved on to another photo
+            if let img = r.image {
+                image = img
+                // Only sharp, finished images are kept, and only if the library didn't change meanwhile.
+                if !r.degraded, Self.cacheGeneration() == generation { Self.thumbs.setObject(img, forKey: key) }
+            }
         }
     }
 
     static let manager = PHCachingImageManager()
     /// Recently drawn photos, so scrolling back or reopening a list is instant. Emptied whenever the photo library
     /// changes (so a photo hidden or deleted meanwhile is never shown from here), and by iOS under memory pressure.
-    static let thumbs: NSCache<NSString, UIImage> = { let c = NSCache<NSString, UIImage>(); c.countLimit = 400; return c }()
+    nonisolated static let thumbs: NSCache<NSString, UIImage> = { let c = NSCache<NSString, UIImage>(); c.countLimit = 400; return c }()
+    private nonisolated static let genLock = NSLock()
+    private nonisolated(unsafe) static var generation = 0
+    nonisolated static func cacheGeneration() -> Int { genLock.lock(); defer { genLock.unlock() }; return generation }
+    /// Called whenever the photo library changes.
+    nonisolated static func clearCache() {
+        genLock.lock(); generation += 1; genLock.unlock()
+        thumbs.removeAllObjects()
+    }
 
     /// Looks photos up by id the same way the scan does, so the Hidden album is never looked at: a photo that's
     /// hidden simply isn't found.
@@ -50,18 +66,18 @@ struct AssetImage: View {
 
     /// Loads one image. Cancelled automatically when the view scrolls away; returns the best image delivered.
     static func load(id: String, size: CGSize, mode: PHImageContentMode,
-                     preview: (@Sendable (UIImage) -> Void)? = nil) async -> UIImage? {
-        guard let asset = visible([id]).firstObject else { return nil }
+                     preview: (@Sendable (UIImage) -> Void)? = nil) async -> (image: UIImage?, degraded: Bool) {
+        guard let asset = visible([id]).firstObject else { return (nil, false) }
         let opts = PHImageRequestOptions()
         opts.deliveryMode = .opportunistic
         opts.isNetworkAccessAllowed = true
         let box = RequestBox()
         return await withTaskCancellationHandler {
-            await withCheckedContinuation { (cont: CheckedContinuation<UIImage?, Never>) in
+            await withCheckedContinuation { (cont: CheckedContinuation<(image: UIImage?, degraded: Bool), Never>) in
                 let rid = manager.requestImage(for: asset, targetSize: size, contentMode: mode, options: opts) { img, info in
                     let degraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
                     if degraded { box.keep(img); if let img { preview?(img) }; return }
-                    box.finish { cont.resume(returning: img ?? box.lastImage) }
+                    box.finish { cont.resume(returning: img != nil ? (img, false) : (box.lastImage, true)) }
                 }
                 box.setID(rid)
             }

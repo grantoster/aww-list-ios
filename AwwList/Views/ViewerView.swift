@@ -46,7 +46,7 @@ struct ViewerView: View {
             let id = moments[index].best.id
             favorite = await Task.detached { Favorites.isFavorite(id) }.value
             shareImage = nil
-            shareImage = await AssetImage.load(id: moments[index].best.id, size: CGSize(width: 2048, height: 2048), mode: .aspectFit)
+            shareImage = await AssetImage.load(id: moments[index].best.id, size: CGSize(width: 2048, height: 2048), mode: .aspectFit).image
         }
         .sheet(isPresented: Binding(get: { sharing != nil }, set: { if !$0 { sharing = nil } })) {
             if let sharing { ShareSheet(image: sharing).presentationDetents([.medium, .large]) }
