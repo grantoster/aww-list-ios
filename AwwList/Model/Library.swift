@@ -534,7 +534,7 @@ final class Library: ObservableObject {
         claudeSent = [:]   // starting over: each year's budget is available again (removals are kept, never re-sent)
         ownModel = nil; ownFilter = nil; trainedSignature = nil; generation += 1
         applyLearning()
-        if rankBy == "learned" || rankBy == "consolidated" { rankBy = "apple" }
+        if rankBy == "learned" || rankBy == "consolidated" { rankBy = "apple"; UserDefaults.standard.set("apple", forKey: "rankBy") }
         rebuild(); save()
     }
     var claudeScored: Int { everyMoment.filter { $0.claudeScore != nil }.count }
