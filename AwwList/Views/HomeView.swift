@@ -69,6 +69,9 @@ struct HomeView: View {
                             Button("Add birthdays") { showSettings = true }.buttonStyle(.borderedProminent)
                         }
                         .padding(.top, 24)
+                    } else if rankChoice == "claude" && library.claudeScored == 0 {
+                        rankMenu
+                        ClaudeNotRunView(openSettings: { showSettings = true }).padding(.top, 24)
                     } else if pool.isEmpty {
                         rankMenu
                         EmptyListView().padding(.top, 40)
@@ -632,5 +635,25 @@ struct DropChip: View {
         .background(on ? Theme.accent : Theme.surface, in: Capsule())
         .foregroundStyle(on ? Color.white : Color.primary)
         .contentShape(Capsule())
+    }
+}
+
+/// Ranking by Claude before Claude has scored anything: say so plainly instead of showing a list ranked by
+/// something else.
+struct ClaudeNotRunView: View {
+    @EnvironmentObject var library: Library
+    let openSettings: () -> Void
+    var body: some View {
+        let pending = library.claudeBatches.reduce(0) { $0 + $1.photos.count }
+        ContentUnavailableView {
+            Label(pending > 0 ? "Claude is scoring your photos" : "Claude hasn't scored any photos yet",
+                  systemImage: "sparkles")
+        } description: {
+            Text(pending > 0
+                 ? "\(pending.formatted()) photos are with Claude. Scores usually come back within an hour and show up here. Meanwhile, rank by Learned or Apple."
+                 : "Score your photos with Claude in Settings, or rank by Learned or Apple from the menu above.")
+        } actions: {
+            if pending == 0 { Button("Score with Claude") { openSettings() }.buttonStyle(.borderedProminent) }
+        }
     }
 }
