@@ -355,10 +355,19 @@ final class Library: ObservableObject {
     private var peopleTask: Task<Void, Never>?
 
     /// Works out who the rest of the faces are from the ones you named (off the main thread), then updates the list.
+    /// Who's Who only recognizes people after you agree to it (asked the first time you open Who's Who).
+    static var faceConsent: Bool { UserDefaults.standard.bool(forKey: "faceConsent") }
+
+    /// Turns face recognition on or off (Who's Who's consent) and re-sorts who is in each photo.
+    func setFaceConsent(_ on: Bool) {
+        UserDefaults.standard.set(on, forKey: "faceConsent")
+        whoCache = [:]; rebuild(); learnPeople()
+    }
+
     func learnPeople() {
         peopleGeneration += 1
         peopleTask?.cancel()
-        guard !people.isEmpty else { learnedWho = [:]; learnedFaces = []; whoCache = [:]; learningPeople = false; return }
+        guard !people.isEmpty, Library.faceConsent else { learnedWho = [:]; learnedFaces = []; whoCache = [:]; learningPeople = false; return }
         let gen = peopleGeneration
         let snapshot = Array(photos.values)
         let named = people, t = threshold
@@ -433,6 +442,7 @@ final class Library: ObservableObject {
 
     /// Faces in ranked photos that don't match anyone named yet (largest faces of the best moments first).
     func unnamedFaces(limit: Int = 2500) -> [(photo: String, face: FaceRecord)] {
+        guard Library.faceConsent else { return [] }
         var out: [(photo: String, face: FaceRecord)] = []
         let t = threshold
         let centroids = People.Matcher(people.map { p -> Person in var p = p; p.examples = nil; return p })
@@ -477,7 +487,7 @@ final class Library: ObservableObject {
         let rankRaws = groups.indices.map { balancedVals[$0] ?? fallbackVals[$0] }
         let named = people, t = threshold
         // Centroids only here (fast, on the main thread); the thorough matching comes from learnPeople.
-        let matcher = People.Matcher(named.map { p -> Person in var p = p; p.examples = nil; return p })
+        let matcher = People.Matcher((Library.faceConsent ? named : []).map { p -> Person in var p = p; p.examples = nil; return p })
         let gregorian = Calendar(identifier: .gregorian)
         // A named person's birthday only sorts photos while they're a child (grown-ups named in Who's Who don't count).
         func childAt(_ birth: Date, _ date: Date) -> Bool {

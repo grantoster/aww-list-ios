@@ -61,7 +61,44 @@ struct WhoView: View {
         let faces: [(photo: String, face: FaceRecord)]
     }
 
+    @AppStorage("faceConsent") private var faceConsent = false
+
     var body: some View {
+        if faceConsent { whoBody } else { consentBody }
+    }
+
+    /// Asked once, before Who's Who recognizes anyone.
+    private var consentBody: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Image(systemName: "person.2.crop.square.stack").font(.system(size: 44)).foregroundStyle(Theme.accent)
+                    Text("Turn on Who's Who?").font(Theme.label(24, relativeTo: .title2))
+                    Text("Who's Who recognizes the people you name, like your kids, so you can see each person's best photos.")
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label("To do this, Awwbum compares the faces in your photos using face measurements made on this iPhone.", systemImage: "face.smiling")
+                        Label("The measurements and names stay on this iPhone. They're never sent to Claude, Anthropic or anyone else.", systemImage: "lock.fill")
+                        Label("You can forget a person at any time. Deleting the app deletes all of it.", systemImage: "trash")
+                        Label("Only name people who are OK with it (or whose parent is).", systemImage: "hand.raised")
+                    }
+                    .font(.subheadline).padding().background(Theme.surface, in: RoundedRectangle(cornerRadius: 16))
+                    Button {
+                        faceConsent = true
+                        library.setFaceConsent(true)
+                    } label: {
+                        Text("Turn on Who's Who").font(Theme.label(19, relativeTo: .headline)).frame(maxWidth: .infinity, minHeight: 52)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Button("Not now") { dismiss() }.frame(maxWidth: .infinity)
+                }
+                .padding(24)
+            }
+            .navigationTitle("Who's Who").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
+        }
+    }
+
+    private var whoBody: some View {
         NavigationStack {
             List {
                 if !library.people.isEmpty {
@@ -154,6 +191,11 @@ struct WhoView: View {
                     .pickerStyle(.segmented)
                 } footer: {
                     Text("Stricter if groups mix different people; looser if one person is split across many groups. Kids' faces change a lot, so naming a child once or twice per year or so helps the app follow them.")
+                }
+                Section {
+                    Button("Turn off Who's Who") { faceConsent = false; library.setFaceConsent(false) }
+                } footer: {
+                    Text("Stops recognizing people. Names stay saved on this iPhone so turning it back on picks up where you left off; forget a person to remove them. Face measurements and names never leave this iPhone.")
                 }
             }
             .scrollContentBackground(.hidden)
