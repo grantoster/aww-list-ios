@@ -459,6 +459,59 @@ final class Library: ObservableObject {
     var learningText: String? {
         ownModel == nil && ownFilter == nil ? nil : LearningPack(model: ownModel, filter: ownFilter).text()
     }
+    /// Photos whose Claude result could be shared as learning data. Bath and undressed photos are never shared.
+    private static func shareable(_ p: PhotoScore) -> Bool {
+        guard let c = p.claude, let f = p.feat, f.count == Learner.featureCount else { return false }
+        return c.exclude != "bath" && c.exclude != "undressed"
+    }
+    /// How many Claude results this phone could share as learning data.
+    var shareableLearningCount: Int { photos.values.filter(Library.shareable).count }
+
+    /// Writes this phone's learning data to a file to send to the app's owner, so the learning built into the app
+    /// can be trained on many families' results. For each photo Claude judged: the phone's numeric fingerprint of it
+    /// with the face picture and face-shape measurements blanked (they could match a child's face), Claude's score,
+    /// whether Claude removed it, and which day group it's in (random numbers, so dates and their order can't be
+    /// read back). No photos, photo ids, captions, names, face prints, places or dates. Bath and undressed photos
+    /// are left out. Built off the main thread; nil if there's nothing to share or the file can't be written.
+    func writeLearningData() async -> URL? {
+        let scored = photos.values.filter(Library.shareable)
+        guard !scored.isEmpty else { return nil }
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        return await Task.detached(priority: .userInitiated) { () -> URL? in
+            // Training only needs to know which photos share a day (so it checks itself on days it didn't learn
+            // from); each day becomes a random number.
+            var dayToken: [UInt64: Int] = [:]
+            var used = Set<Int>()
+            func token(_ d: Date) -> Int {
+                let g = Learner.group(d)
+                if let t = dayToken[g] { return t }
+                var t = Int.random(in: 1...Int(Int32.max))
+                while used.contains(t) { t = Int.random(in: 1...Int(Int32.max)) }
+                used.insert(t); dayToken[g] = t
+                return t
+            }
+            let faceStart = Learner.signalCount + Learner.sceneDims
+            let blank = Array(15..<21) + Array(faceStart..<(faceStart + Learner.faceDims))   // face shape, face picture
+            var rows: [[String: Any]] = []
+            for p in scored.shuffled() {                      // shuffled: the order says nothing about the library
+                guard let c = p.claude, var f = p.feat else { continue }
+                for i in blank { f[f.startIndex + i] = 0 }    // zero = "no face", the same as a photo without one
+                var r: [String: Any] = ["f": f.base64EncodedString(), "g": token(p.date), "m": c.model, "rubric": c.rubric, "r": c.exclude != nil]
+                if c.exclude == nil {
+                    r["s"] = c.score2.map { (c.score + $0) / 2 } ?? c.score
+                    if c.score2 != nil { r["two"] = true }
+                }
+                rows.append(r)
+            }
+            guard !rows.isEmpty else { return nil }
+            let obj: [String: Any] = ["kind": "awwbum-learning-data", "version": 1, "featureCount": Learner.featureCount,
+                                      "faceBlanked": true, "build": build, "count": rows.count, "examples": rows]
+            guard let data = try? JSONSerialization.data(withJSONObject: obj) else { return nil }
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("Awwbum learning data.json")
+            do { try data.write(to: url, options: [.atomic, .completeFileProtection]); return url } catch { return nil }
+        }.value
+    }
+
     /// Picks what's in use: this phone's own learning, or the built-in one where it's bigger (unless turned off).
     private func applyLearning() {
         func preferBuiltIn(_ own: Int?, _ b: Int?) -> Bool {

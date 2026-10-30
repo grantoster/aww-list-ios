@@ -331,6 +331,9 @@ struct ClaudeSection: View {
 struct LearnedSection: View {
     @EnvironmentObject var library: Library
     @State private var copied = false
+    @State private var askShare = false
+    @State private var preparingShare = false
+    @State private var shareFile: ShareFile?
     var body: some View {
         Section {
             if let m = library.learned {
@@ -404,6 +407,30 @@ struct LearnedSection: View {
                 Text("Copy learning appears once this phone has learned from its own Claude scores (about 80–100 of them, spread over enough days).")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            let shareable = library.shareableLearningCount
+            if shareable > 0 {
+                Button(preparingShare ? "Getting it ready…" : "Send my learning data to Grant") { askShare = true }
+                    .disabled(preparingShare)
+                    .confirmationDialog("Send your learning data?", isPresented: $askShare, titleVisibility: .visible) {
+                        Button("Send learning data") {
+                            preparingShare = true
+                            Task {
+                                let url = await library.writeLearningData()
+                                try? await Task.sleep(for: .milliseconds(500))   // let the dialog finish closing
+                                preparingShare = false
+                                if let url { shareFile = ShareFile(url: url) }
+                            }
+                        }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("For each photo Claude judged, this sends numbers the phone measured (like smiles, sharpness and the kind of scene), Claude's score, and whether Claude removed it. It leaves out the photos themselves, photo names, captions, names, face prints and face-shape measurements, locations and dates, and never includes bath or undressed photos. The numbers can't practically be turned back into pictures, though someone who already had one of your photos could tell it matches. Grant uses this only to improve the learning built into Awwbum.")
+                    }
+                    .sheet(item: $shareFile, onDismiss: {
+                        try? FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appendingPathComponent("Awwbum learning data.json"))
+                    }) { f in ShareSheet(items: [f.url]) }
+                Text("Optional. Sends the numbers behind your \(shareable.formatted()) Claude results so the learning built into the app can learn from more families. No photos, names, faces, captions, places or dates. You choose how to send it (Messages, Mail, AirDrop).")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
             if library.training { HStack { ProgressView(); Text("Learning…").foregroundStyle(.secondary) } }
         } header: {
             Text("Learned score")
@@ -412,6 +439,9 @@ struct LearnedSection: View {
         }
     }
 }
+
+/// A file ready to hand to the share sheet.
+struct ShareFile: Identifiable { let id = UUID(); let url: URL }
 
 /// Possible bath or undressed photos Apple held back, with a way to put any of them back on the list.
 struct HeldBackSection: View {

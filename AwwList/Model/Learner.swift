@@ -258,7 +258,9 @@ enum Learner {
 
     /// Apple's measurements, standardized, plus the formula's guess (centered on a middling score).
     static func netInput(_ x: [Double], _ f: Fit) -> [Double] {
-        var z = (0..<min(signalCount, x.count, f.mean.count)).map { (x[$0] - f.mean[$0]) / f.std[$0] }
+        // A measurement that never varied in training (e.g. blanked in shared learning data) is left out (0), and
+        // the rest are capped at ±5 like the formula's, so one unusual value can't swamp the net.
+        var z = (0..<min(signalCount, x.count, f.mean.count)).map { f.std[$0] < 1e-4 ? 0 : self.z(x[$0], f.mean[$0], f.std[$0]) }
         z.append((predict(f, x) - 5.5) / 2)
         return z
     }
