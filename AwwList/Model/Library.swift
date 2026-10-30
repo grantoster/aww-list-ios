@@ -467,9 +467,8 @@ final class Library: ObservableObject {
         }
         if preferBuiltIn(ownModel?.trainedOn, builtIn.model?.trainedOn) { learned = builtIn.model; learnedIsBuiltIn = true }
         else { learned = ownModel; learnedIsBuiltIn = false }
-        // The built-in removal filter learned from swimwear removals (no longer a reason to remove), so it would
-        // keep hiding beach and pool photos: only this phone's own filter, trained on today's rules, is used.
-        learnedFilter = ownFilter; filterIsBuiltIn = false
+        if preferBuiltIn(ownFilter?.trainedOn, builtIn.filter?.trainedOn) { learnedFilter = builtIn.filter; filterIsBuiltIn = true }
+        else { learnedFilter = ownFilter; filterIsBuiltIn = false }
         learningEpoch += 1   // cached predictions are stale
     }
     /// Throws away this phone's own learning and learns again from every Claude verdict on hand.
