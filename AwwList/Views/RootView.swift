@@ -5,8 +5,14 @@ import Photos
 struct RootView: View {
     @EnvironmentObject var library: Library
     @EnvironmentObject var scanner: PhotoScanner
+    @EnvironmentObject var claude: ClaudeService
     @State private var status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
     @Environment(\.scenePhase) private var phase
+    /// First open: ask for a Claude API key before anything else (once; skipped when a key is already saved).
+    @AppStorage("askedForKey") private var askedForKey = false
+    @State private var hadKey = Claude.apiKey != nil
+    /// Set when you choose "score every photo" on that screen: Claude runs by itself once the first scan is done.
+    @AppStorage("autoClaude") private var autoClaude = false
 
     var body: some View {
         Group {
@@ -20,6 +26,10 @@ struct RootView: View {
                 WelcomeView { request() }
             }
         }
+        .fullScreenCover(isPresented: Binding(get: { !askedForKey && !hadKey }, set: { if !$0 { askedForKey = true } })) {
+            KeySetupView { askedForKey = true }
+        }
+        .onChange(of: scanner.isScanning) { autoScore() }
         .onChange(of: phase) {
             if phase == .inactive && scanner.isScanning {
                 // Leaving the app mid-scan: ask iOS to keep it going (it must be asked while still on screen).
@@ -29,11 +39,25 @@ struct RootView: View {
                 status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
                 if status == .authorized || status == .limited { scanner.startIfNeeded(library: library) }
                 if !library.claudeBatches.isEmpty { Task { await Shared.claude.collect(library) } }
+                autoScore()
             } else if phase == .background {
                 library.save()
                 BackgroundScan.wrapUpAfterClosing()
                 BackgroundScan.scheduleOvernight()
             }
+        }
+    }
+
+    /// Sends the photos to Claude by itself after the first scan, when you chose that on the first screen. Same
+    /// rules and checks as tapping Score with Claude (it only runs once the scan is finished). It keeps trying
+    /// each time the app is opened until everything chosen has been sent, then turns itself off.
+    private func autoScore() {
+        guard autoClaude, phase == .active, status == .authorized || status == .limited,
+              !scanner.isScanning, !scanner.needsScan, !claude.busy, !library.photos.isEmpty,
+              Claude.apiKey != nil else { return }
+        Task {
+            await claude.send(library)
+            if claude.candidates(library).isEmpty { autoClaude = false }
         }
     }
 
@@ -50,7 +74,7 @@ struct WelcomeView: View {
         VStack(spacing: 20) {
             Spacer(minLength: 0)
             Image("BrandMark").resizable().scaledToFit().frame(width: 150, height: 150).accessibilityHidden(true)
-            Text("aww list").font(Theme.display(44, relativeTo: .largeTitle)).foregroundStyle(Theme.accent)
+            Text("awwbum").font(Theme.display(44, relativeTo: .largeTitle)).foregroundStyle(Theme.accent)
             Text("Finds the photos of your kids that make everyone go aww, and ranks them year by year.")
                 .font(Theme.label(19, relativeTo: .title3)).multilineTextAlignment(.center).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 10) {
@@ -80,7 +104,7 @@ struct DeniedView: View {
         ContentUnavailableView {
             Label("Photo access is off", systemImage: "photo.badge.exclamationmark")
         } description: {
-            Text("Aww List needs to look at your photos to rank them. Turn on access in Settings → Aww List → Photos.")
+            Text("Awwbum needs to look at your photos to rank them. Turn on access in Settings → Awwbum → Photos.")
         } actions: {
             Button("Open Settings") {
                 if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
@@ -127,7 +151,7 @@ struct SettingsView: View {
                         .font(.footnote)
                     Text("Everything else Apple isn't sure about stays on the list with a flag: no child spotted, water scenes, swimwear, shirtless, and files that look AI-generated, face-retouched or not from a camera. Claude makes the call on those, and once the app has learned from Claude's calls, it hides the ones it expects Claude would remove when ranking by Claude or by the learned score. Ranking by Apple shows them all.")
                         .font(.footnote)
-                    Text("Aww List reads your photo library. It never edits, adds or deletes photos; the only change it can make is a favorite, when you tap the heart. Remove from list only hides a photo inside this app.")
+                    Text("Awwbum reads your photo library. It never edits, adds or deletes photos; the only change it can make is a favorite, when you tap the heart. Remove from list only hides a photo inside this app.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("How scores work") {
@@ -402,5 +426,49 @@ struct HeldBackView: View {
             .padding(16)
         }
         .navigationTitle("Possible bath photos")
+    }
+}
+
+/// Shown the first time the app opens: add a Claude API key, and choose to have every photo scored automatically.
+struct KeySetupView: View {
+    @EnvironmentObject var library: Library
+    @AppStorage("autoClaude") private var autoClaude = false
+    @State private var key = ""
+    @State private var scoreAll = true
+    @State private var failed = false
+    let onDone: () -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 18) {
+                Image("BrandMark").resizable().scaledToFit().frame(width: 96, height: 96).accessibilityHidden(true)
+                Text("awwbum").font(Theme.display(40, relativeTo: .largeTitle)).foregroundStyle(Theme.accent)
+                Text("Add your Claude API key").font(Theme.label(22, relativeTo: .title2))
+                Text("Claude gives each photo its final score and a description, and your phone learns from it. The key is from console.anthropic.com and is saved only in this iPhone's keychain; charges go to your Anthropic account.")
+                    .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                SecureField("Paste your Claude API key", text: $key)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .padding(14).background(Theme.surface, in: RoundedRectangle(cornerRadius: 14))
+                Toggle("Score every photo with Claude when the first scan finishes", isOn: $scoreAll)
+                    .font(.subheadline)
+                Text("Estimated cost with \(Claude.models.first { $0.id == library.claudeModel }?.name ?? "the chosen model"): about \(Claude.dollars(micros: Claude.costMicros(photos: 1_000, model: library.claudeModel))) per 1,000 photos at batch prices (an estimate; your Anthropic bill shows the actual). Photos are sent at 768 px without location or file details. Possible bath or undressed photos, and every shot within 10 minutes of one, are never sent. You can change all of this in Settings.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                if failed { Text("That key couldn't be saved. Check it and try again.").font(.footnote).foregroundStyle(.secondary) }
+                Button {
+                    Claude.apiKey = key
+                    guard Claude.apiKey != nil else { failed = true; return }
+                    key = ""
+                    if scoreAll { library.setClaude(scope: 0); autoClaude = true }
+                    onDone()
+                } label: {
+                    Text("Save key").font(Theme.label(19, relativeTo: .headline)).frame(maxWidth: .infinity, minHeight: 52)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button("Not now") { onDone() }
+            }
+            .padding(24)
+        }
+        .background(Theme.background.ignoresSafeArea())
     }
 }

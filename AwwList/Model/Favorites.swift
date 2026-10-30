@@ -1,6 +1,6 @@
 import Photos
 
-/// The one change Aww List can make to your photo library: a photo's favorite (the heart in Photos).
+/// The one change Awwbum can make to your photo library: a photo's favorite (the heart in Photos).
 /// It can't edit, add, hide or delete anything; a build check fails if this file does anything else.
 enum Favorites {
     /// Whether Photos has this photo as a favorite (false if it isn't visible to the app).

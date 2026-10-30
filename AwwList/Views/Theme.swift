@@ -2,7 +2,7 @@ import SwiftUI
 
 import UIKit
 
-/// The Aww List look: grape purple, sunny yellow and night ink, set in Baloo 2 (bundled; SIL Open Font License).
+/// The Awwbum look: grape purple, sunny yellow and night ink, set in Baloo 2 (bundled; SIL Open Font License).
 enum Theme {
     static let accent = Color("AccentColor")                       // grape #7B5CF0 (white text on it passes 4.5:1)
     static let grape = Color(red: 0x7B / 255, green: 0x5C / 255, blue: 0xF0 / 255)

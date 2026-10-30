@@ -80,7 +80,8 @@ struct HomeView: View {
                 .padding(.bottom, 32)
             }
             .background(Theme.background.ignoresSafeArea())
-            .navigationTitle(selecting ? "\(picked.count) picked" : "aww list")
+            .navigationTitle(selecting ? "\(picked.count) picked" : "Awwbum")
+            .navigationBarTitleDisplayMode(.inline)
             .safeAreaInset(edge: .bottom) { if selecting { selectionBar } }
             .overlay(alignment: .bottom) {
                 if let note {
@@ -97,6 +98,18 @@ struct HomeView: View {
                 if selecting {
                     ToolbarItem(placement: .topBarLeading) {
                         Button("Cancel") { sendTask?.cancel(); endSelecting() }
+                    }
+                } else {
+                    // Small logo and the name, top left (the title itself stays for VoiceOver and the selection count).
+                    ToolbarItem(placement: .principal) { Color.clear.frame(width: 1, height: 1).accessibilityHidden(true) }
+                    ToolbarItem(placement: .topBarLeading) {
+                        HStack(spacing: 8) {
+                            Image("BrandMark").resizable().scaledToFit().frame(width: 30, height: 30)
+                                .clipShape(RoundedRectangle(cornerRadius: 7))
+                            Text("awwbum").font(Theme.display(26, relativeTo: .title2)).foregroundStyle(Theme.accent)
+                        }
+                        .fixedSize()
+                        .accessibilityElement(children: .ignore).accessibilityLabel("Awwbum").accessibilityAddTraits(.isHeader)
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
@@ -372,7 +385,7 @@ struct HomeView: View {
         }
     }
 
-    /// Favorites every picked photo in Photos too (the one change Aww List can make to the library).
+    /// Favorites every picked photo in Photos too (the one change Awwbum can make to the library).
     private func favoritePicked() {
         let ids = picked
         guard !ids.isEmpty, !preparing, !favoriting else { return }

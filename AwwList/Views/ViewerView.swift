@@ -102,7 +102,7 @@ struct ViewerView: View {
             guard moments.indices.contains(index), moments[index].id == m.id else { return }
             if changed == nil || changed == 0 {
                 favorite = !on
-                favNote = changed == nil ? "Photos didn't allow that. Check Aww List's photo access in Settings."
+                favNote = changed == nil ? "Photos didn't allow that. Check Awwbum's photo access in Settings."
                                          : "This photo isn't in your library any more."
                 AccessibilityNotification.Announcement(favNote ?? "").post()
             } else {
@@ -122,7 +122,7 @@ struct ViewerView: View {
     }
 }
 
-/// The system share sheet without "Save Image": Aww List only reads the photo library, it never adds to it.
+/// The system share sheet without "Save Image": Awwbum only reads the photo library, it never adds to it.
 struct ShareSheet: UIViewControllerRepresentable {
     let items: [Any]
     init(image: UIImage) { items = [image] }
