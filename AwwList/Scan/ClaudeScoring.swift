@@ -347,7 +347,7 @@ final class ClaudeService: ObservableObject {
 
     /// Sends the next photos in batches of 50 (small enough to finish uploading if the app is closed), then checks for results.
     /// How many photos the consistency check re-sends.
-    static let recheckCount = 100
+    static let recheckCount = 250
 
     /// Photos Claude already scored (kept, with this model) and not yet re-checked, spread across the years.
     func recheckCandidates(_ library: Library) -> [Moment] {
