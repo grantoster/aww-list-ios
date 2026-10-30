@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 /// Holds every analyzed photo, saves them to disk, and builds the ranked moments.
 @MainActor
@@ -316,7 +317,7 @@ final class Library: ObservableObject {
     /// Removes a whole moment (every shot in its burst) from the list.
     func hide(_ m: Moment) {
         hidden.formUnion(m.memberIDs); lastHidden = m.memberIDs; rebuild(); saveSoon()
-        AccessibilityNotification.Announcement("Removed from list. Undo is available.").post()
+        UIAccessibility.post(notification: .announcement, argument: "Removed from list. Undo is available.")
     }
     /// Undo for "Remove from list".
     func unhide(_ ids: [String]) { hidden.subtract(ids); lastHidden = []; rebuild(); saveSoon() }
