@@ -107,14 +107,22 @@ final class PhotoScanner: ObservableObject {
                 alive.insert(a.localIdentifier)
                 if !known.contains(a.localIdentifier) { todo.append(a) }
             }
-            // Includes photos moved to the Hidden album since the last scan: their records are dropped.
+            // Includes photos moved to the Hidden album since the last scan: their records are dropped. With
+            // Limited access, photos outside the selection only look gone: they're kept, just not listed.
             let gone = all.subtracting(alive)
             let count = todo.count
-            Task { @MainActor in library.remove(gone); me.total = count; me.done = 0 }
+            let limited = PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited
+            Task { @MainActor in
+                if limited { library.setNotVisible(gone) } else { library.setNotVisible([]); library.remove(gone) }
+                me.total = count; me.done = 0
+            }
 
             // Several photos are analyzed at once (one worker per spare core). Photos already on the phone go first;
             // ones stored only in iCloud ("Optimize iPhone Storage") are downloaded afterwards, two at a time.
-            let workers = min(4, max(2, ProcessInfo.processInfo.activeProcessorCount - 2))
+            // Gentler on battery and heat: one photo at a time in Low Power Mode or when the iPhone is hot.
+            let pi = ProcessInfo.processInfo
+            let workers = pi.isLowPowerModeEnabled || pi.thermalState == .serious || pi.thermalState == .critical
+                ? 1 : min(4, max(2, pi.activeProcessorCount - 2))
             let collector = Collector()
             let live = me.live
             func post(_ r: PhotoScore?) {
@@ -291,9 +299,11 @@ final class LibraryChangeFlag: NSObject, PHPhotoLibraryChangeObserver, @unchecke
     /// The set of photos the last scan saw; changes are measured against it.
     func watch(_ result: PHFetchResult<PHAsset>) { lock.lock(); fetch = result; lock.unlock() }
     func photoLibraryDidChange(_ changeInstance: PHChange) {
-        AssetImage.clearCache()
         lock.lock(); defer { lock.unlock() }
-        guard let f = fetch, let d = changeInstance.changeDetails(for: f) else { return }
+        // Thumbnails are thrown away only when photos were removed or hidden (or the change can't be told
+        // apart); edits, favorites and iCloud syncing keep them, so the lists don't flicker and reload.
+        guard let f = fetch, let d = changeInstance.changeDetails(for: f) else { AssetImage.clearCache(); return }
+        if !d.hasIncrementalChanges || !d.removedObjects.isEmpty { AssetImage.clearCache() }
         // Added or removed photos (hiding a photo removes it from this fetch, which leaves out the Hidden album).
         if !d.hasIncrementalChanges || !d.insertedObjects.isEmpty || !d.removedObjects.isEmpty { changed = true }
         fetch = d.fetchResultAfterChanges

@@ -1,4 +1,5 @@
 import SwiftUI
+import Photos
 import UIKit
 import UniformTypeIdentifiers
 import Combine
@@ -66,6 +67,7 @@ struct HomeView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     ScanBannerSlot()
+                    LimitedAccessBanner()
                     ClaudeKeyNote()
                     scopeBar
                     filterBar
@@ -83,7 +85,8 @@ struct HomeView: View {
                         ClaudeNotRunView(openSettings: { showSettings = true }).padding(.top, 24)
                     } else if pool.isEmpty {
                         rankMenu
-                        EmptyListView().padding(.top, 40)
+                        EmptyListView(filtersOn: age != nil || shot != nil || person != nil,
+                                      clear: { age = nil; shot = nil; person = nil }).padding(.top, 40)
                     } else {
                         topSection
                         allSection
@@ -96,6 +99,7 @@ struct HomeView: View {
             .navigationTitle(selecting ? "\(picked.count) picked" : "Awwbum")
             .navigationBarTitleDisplayMode(.inline)
             .safeAreaInset(edge: .bottom) { if selecting { selectionBar } }
+            .overlay(alignment: .bottom) { UndoRemoveBar().padding(.bottom, selecting ? 90 : 24) }
             .overlay(alignment: .bottom) {
                 if let note {
                     Text(note.text).font(.subheadline.bold()).foregroundStyle(.white)
@@ -225,8 +229,8 @@ struct HomeView: View {
             } label: {
                 HStack(spacing: 4) {
                     Text("Ranked by").foregroundStyle(.secondary)
-                    Text(rankLabel).foregroundStyle(Theme.accent)
-                    Image(systemName: "chevron.down").font(.caption2.bold()).foregroundStyle(Theme.accent)
+                    Text(rankLabel).foregroundStyle(Theme.grapeInk)
+                    Image(systemName: "chevron.down").font(.caption2.bold()).foregroundStyle(Theme.grapeInk)
                 }
                 .font(Theme.label(15))
             }
@@ -263,7 +267,7 @@ struct HomeView: View {
                         Label("Share top \(n)", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
                     }
                 }
-                .buttonStyle(.bordered).controlSize(.regular).disabled(preparing || top.isEmpty || selecting)
+                .buttonStyle(.bordered).controlSize(.regular).tint(Theme.grapeInk).disabled(preparing || top.isEmpty || selecting)
                 .overlay {
                     if preparing && !selecting {
                         Text("Getting \(progress.done) of \(progress.of)…").font(.subheadline.bold())
@@ -311,7 +315,7 @@ struct HomeView: View {
                 }
             }
             if listed.count > shown {
-                Button("Show more") { shown += 60; prefetchImages() }
+                Button("Show more") { shown += 60; prefetchImages() }.tint(Theme.grapeInk)
                     .buttonStyle(.bordered).frame(maxWidth: .infinity)
             }
         }
@@ -407,6 +411,7 @@ struct HomeView: View {
             let gap = missing > 0 ? " (\(missing) couldn't load)" : ""
             if copy {
                 UIPasteboard.general.setItems(jpegs.map { [UTType.jpeg.identifier: $0] })
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
                 flash("Copied \(n) photo\(n == 1 ? "" : "s"). Paste into a text." + gap)
             } else {
                 let files = await Task.detached(priority: .userInitiated) { Self.writeTemp(jpegs) }.value
@@ -474,7 +479,7 @@ struct Pill: View {
         Button(action: action) {
             Text(title)
                 .font(Theme.label(small ? 15 : 17))
-                .padding(.horizontal, small ? 12 : 16).frame(minHeight: 40)
+                .padding(.horizontal, small ? 12 : 16).frame(minHeight: 44)
                 .background(on ? Theme.accent : Theme.surface, in: Capsule())
                 .foregroundStyle(on ? Color.white : Color.primary)
         }
@@ -484,6 +489,7 @@ struct Pill: View {
 }
 
 struct Card: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let moment: Moment
     let rank: Int
     let height: CGFloat
@@ -503,7 +509,7 @@ struct Card: View {
             Text(moment.best.date.shortDay).font(.caption).foregroundStyle(.secondary)
         }
         .contentShape(Rectangle())
-        .scaleEffect(pressing ? 0.97 : 1)
+        .scaleEffect(pressing && !reduceMotion ? 0.97 : 1)
         .animation(.easeOut(duration: 0.15), value: pressing)
         .onTapGesture(perform: action)
         .onLongPressGesture(minimumDuration: 0.4, perform: onHold, onPressingChanged: { pressing = $0 })
@@ -539,6 +545,7 @@ struct PickMark: View {
 }
 
 struct Tile: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let moment: Moment
     let rank: Int?
     var picked: Bool? = nil
@@ -553,12 +560,12 @@ struct Tile: View {
             .overlay(alignment: .bottomTrailing) { if picked == nil { ScoreBadge(score: moment.score).scaleEffect(0.85).padding(3) } }
             .overlay { PickMark(picked: picked) }
             .contentShape(RoundedRectangle(cornerRadius: 10))
-            .scaleEffect(pressing ? 0.95 : 1)
+            .scaleEffect(pressing && !reduceMotion ? 0.95 : 1)
             .animation(.easeOut(duration: 0.15), value: pressing)
             .onTapGesture(perform: action)
             .onLongPressGesture(minimumDuration: 0.4, perform: onHold, onPressingChanged: { pressing = $0 })
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Score \(moment.score), \(moment.caption), \(moment.best.date.shortDay)")
+            .accessibilityLabel((rank.map { "Number \($0), " } ?? "") + "score \(moment.score), \(moment.caption), \(moment.best.date.shortDay)")
             .accessibilityAddTraits(picked == true ? [.isButton, .isSelected] : .isButton)
             .accessibilityAction(.default, action)
             .accessibilityAction(named: picked == nil ? "Pick photos to send" : "Pick or unpick", onHold)
@@ -624,9 +631,24 @@ struct ScanBannerSlot: View {
 
 struct EmptyListView: View {
     @EnvironmentObject var scanner: PhotoScanner
+    var filtersOn = false
+    var clear: () -> Void = {}
     var body: some View {
-        ContentUnavailableView("No awws yet", systemImage: "heart.circle",
-                               description: Text(scanner.isScanning ? "Still looking through your photos. The good ones show up here as they're found." : "Nothing here for this filter. Try another one."))
+        if filtersOn {
+            ContentUnavailableView {
+                Label("No matches", systemImage: "line.3.horizontal.decrease.circle")
+            } description: {
+                Text("No moments match these filters.")
+            } actions: {
+                Button("Clear filters", action: clear).buttonStyle(.borderedProminent)
+            }
+        } else if scanner.isScanning {
+            ContentUnavailableView("Finding your awws", systemImage: "heart.circle",
+                                   description: Text("Still looking through your photos. The good ones show up here as they're found."))
+        } else {
+            ContentUnavailableView("No awws here yet", systemImage: "heart.circle",
+                                   description: Text("No photos of kids were found for this year. With Limited photo access, add more photos in Settings."))
+        }
     }
 }
 
@@ -641,7 +663,7 @@ struct DropChip: View {
             if chevron { Image(systemName: "chevron.down").font(.caption2.bold()) }
         }
         .font(Theme.label(15))
-        .padding(.horizontal, 12).frame(minHeight: 40)
+        .padding(.horizontal, 12).frame(minHeight: 44)
         .background(on ? Theme.accent : Theme.surface, in: Capsule())
         .foregroundStyle(on ? Color.white : Color.primary)
         .contentShape(Capsule())
@@ -664,6 +686,57 @@ struct ClaudeNotRunView: View {
                  : "Score your photos with Claude in Settings, or rank by \(library.learned != nil ? "Learned or Apple" : "Apple") from the menu above.")
         } actions: {
             if pending == 0 { Button("Score with Claude") { openSettings() }.buttonStyle(.borderedProminent) }
+        }
+    }
+}
+
+/// "Removed from list · Undo", for a few seconds after a photo is removed in the viewer.
+struct UndoRemoveBar: View {
+    @EnvironmentObject var library: Library
+    var body: some View {
+        if !library.lastHidden.isEmpty {
+            HStack(spacing: 12) {
+                Text("Removed from list").font(.subheadline.bold()).foregroundStyle(.white)
+                Button("Undo") { library.unhide(library.lastHidden) }
+                    .font(.subheadline.bold()).foregroundStyle(Theme.sunny)
+            }
+            .padding(.horizontal, 16).padding(.vertical, 10)
+            .background(Color.black.opacity(0.85), in: Capsule())
+            .transition(.opacity)
+            .task(id: library.lastHidden) {
+                try? await Task.sleep(for: .seconds(6))
+                if !Task.isCancelled { library.forgetLastHidden() }
+            }
+        }
+    }
+}
+
+/// With Limited photo access: say so, and let the user add photos (Apple's own picker; nothing is changed).
+struct LimitedAccessBanner: View {
+    @State private var limited = PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited
+    @Environment(\.scenePhase) private var phase
+    var body: some View {
+        Group {
+            if limited {
+                HStack(spacing: 10) {
+                    Image(systemName: "photo.on.rectangle.angled").foregroundStyle(Theme.grapeInk)
+                    Text("Awwbum can only see the photos you picked.").font(.footnote)
+                    Spacer(minLength: 4)
+                    Button("Add photos") { Self.showPicker() }.font(.footnote.bold()).tint(Theme.grapeInk)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+            }
+        }
+        .onChange(of: phase) { limited = PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited }
+    }
+    static func showPicker() {
+        guard let root = UIApplication.shared.connectedScenes.compactMap({ ($0 as? UIWindowScene)?.keyWindow?.rootViewController }).first
+        else { return }
+        var top = root
+        while let next = top.presentedViewController { top = next }
+        PHPhotoLibrary.shared().presentLimitedLibraryPicker(from: top) { _ in
+            Task { @MainActor in Shared.scanner.start(library: Shared.library) }   // check the newly added photos
         }
     }
 }

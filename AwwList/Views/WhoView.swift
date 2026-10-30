@@ -159,8 +159,9 @@ struct WhoView: View {
                     if loading {
                         HStack { ProgressView(); Text("Finding faces…").foregroundStyle(.secondary) }
                     } else if groups.isEmpty {
-                        Text(library.moments.isEmpty ? "Faces show up here once your photos are scanned."
-                                                     : "Everyone who shows up often has a name.")
+                        Text(Shared.scanner.isScanning ? "Reading faces in your photos… they show up here as they're found."
+                             : library.moments.isEmpty ? "Faces show up here once your photos are scanned."
+                             : "Everyone who shows up often has a name.")
                             .foregroundStyle(.secondary)
                     }
                     ForEach(Array(groups.enumerated()), id: \.offset) { _, g in

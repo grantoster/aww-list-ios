@@ -7,8 +7,8 @@ struct ViewerView: View {
     @State var index: Int
     @EnvironmentObject var library: Library
     @Environment(\.dismiss) private var dismiss
-    @State private var shareImage: UIImage?
     @State private var sharing: UIImage?
+    @State private var preparingShare = false
     /// Whether Photos has this one as a favorite (nil while checking).
     @State private var favorite: Bool?
     @State private var favNote: String?
@@ -19,7 +19,8 @@ struct ViewerView: View {
             Color.black.ignoresSafeArea()
             TabView(selection: $index) {
                 ForEach(Array(moments.enumerated()), id: \.element.id) { i, m in
-                    AssetImage(id: m.best.id, contentMode: .fit, targetSide: 900)
+                    AssetImage(id: m.best.id, contentMode: .fit, targetSide: 900, cached: false)
+                        .accessibilityLabel("\(m.caption), score \(m.score) of 10, \(m.best.date.shortDay)")
                         .tag(i)
                         .background(Color.black)
                 }
@@ -45,8 +46,6 @@ struct ViewerView: View {
             favNote = nil
             let id = moments[index].best.id
             favorite = await Task.detached { Favorites.isFavorite(id) }.value
-            shareImage = nil
-            shareImage = await AssetImage.load(id: moments[index].best.id, size: CGSize(width: 2048, height: 2048), mode: .aspectFit).image
         }
         .sheet(isPresented: Binding(get: { sharing != nil }, set: { if !$0 { sharing = nil } })) {
             if let sharing { ShareSheet(image: sharing).presentationDetents([.medium, .large]) }
@@ -70,13 +69,19 @@ struct ViewerView: View {
                     }
                     .disabled(favorite == nil || favBusy)
                     .accessibilityLabel(favorite == true ? "Unfavorite in Photos" : "Favorite in Photos")
-                    if let shareImage {
-                        Button { sharing = shareImage } label: {
-                            Image(systemName: "square.and.arrow.up").font(.title3).foregroundStyle(.white).frame(width: 44, height: 44)
+                    // The full-size copy is loaded only when Share is tapped (not for every photo swiped past).
+                    Button { share(m) } label: {
+                        Group {
+                            if preparingShare { ProgressView().tint(.white) }
+                            else { Image(systemName: "square.and.arrow.up").font(.title3).foregroundStyle(.white) }
                         }
+                        .frame(width: 44, height: 44)
                     }
+                    .disabled(preparingShare)
+                    .accessibilityLabel("Share")
                     Menu {
-                        Button(role: .destructive) { library.hide(m); dismiss() } label: { Label("Remove from list", systemImage: "eye.slash") }
+                        // Can be undone from Home right after, so it isn't shown as destructive.
+                        Button { library.hide(m); dismiss() } label: { Label("Remove from list", systemImage: "eye.slash") }
                     } label: {
                         Image(systemName: "ellipsis.circle").font(.title3).foregroundStyle(.white).frame(width: 44, height: 44)
                     }
@@ -88,6 +93,15 @@ struct ViewerView: View {
             }
             .padding(16)
             .background(LinearGradient(colors: [.clear, .black.opacity(0.8)], startPoint: .top, endPoint: .bottom))
+        }
+    }
+
+    private func share(_ m: Moment) {
+        preparingShare = true
+        Task {
+            let img = await AssetImage.load(id: m.best.id, size: CGSize(width: 2048, height: 2048), mode: .aspectFit).image
+            preparingShare = false
+            if let img { sharing = img } else { favNote = "Couldn't load this photo (it may still be downloading from iCloud)." }
         }
     }
 

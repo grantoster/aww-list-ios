@@ -8,6 +8,11 @@ enum Theme {
     static let grape = Color(red: 0x7B / 255, green: 0x5C / 255, blue: 0xF0 / 255)
     static let sunny = Color(red: 0xFF / 255, green: 0xD2 / 255, blue: 0x3F / 255)
     static let night = Color(red: 0x2A / 255, green: 0x23 / 255, blue: 0x50 / 255)
+    /// Grape for text and icons (darker in light mode, lighter in dark mode) so it's easy to read; the plain
+    /// accent stays for filled buttons with white text.
+    static let grapeInk = Color(UIColor { $0.userInterfaceStyle == .dark
+        ? UIColor(red: 0xA0 / 255, green: 0x8C / 255, blue: 0xFF / 255, alpha: 1)
+        : UIColor(red: 0x5B / 255, green: 0x3F / 255, blue: 0xD9 / 255, alpha: 1) })
     /// Top scores: sunny yellow (with night text on it).
     static let gold = sunny
     /// Page background: soft lilac mist in light mode, deep night in dark mode.

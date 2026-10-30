@@ -53,9 +53,17 @@ final class Library: ObservableObject {
         Set(photos.values.filter { Scorer.heldBack.contains($0.excluded ?? "") && $0.raw == nil }.map(\.id)).subtracting(keptOut)
     }
     /// Photos Apple held back as possible bath or undressed (newest first), for review in Settings.
-    var heldBackPhotos: [PhotoScore] {
-        photos.values.filter { $0.raw == nil && Scorer.heldBack.contains($0.excluded ?? "") && $0.version == Scorer.version }
-            .sorted { $0.date > $1.date }
+    /// Worked out once per re-rank (Settings reads it on every redraw).
+    private(set) var heldBackPhotos: [PhotoScore] = []
+    private(set) var learnableCount = 0
+
+    /// With Limited photo access, photos outside the selection can't be seen right now. Their records (and
+    /// Claude's paid-for scores) are kept, just left out of the list, instead of being deleted.
+    private(set) var notVisible: Set<String> = []
+    func setNotVisible(_ ids: Set<String>) {
+        guard ids != notVisible else { return }
+        notVisible = ids
+        rebuild()
     }
 
     private static let saveQueue = DispatchQueue(label: "aww.save", qos: .utility)
@@ -282,7 +290,9 @@ final class Library: ObservableObject {
             photos[p.id] = p
         }
         unsaved += new.count
-        if Date().timeIntervalSince(lastRebuild) > 30 { rebuild() }   // re-ranking everything is costly; keep it occasional while scanning
+        // Re-ranking everything is costly, so it's occasional while scanning (but right away for the very first
+        // results, so a new install doesn't sit empty).
+        if moments.isEmpty || Date().timeIntervalSince(lastRebuild) > 30 { rebuild() }
         // The whole library is rewritten on each save, so while scanning save at most every 2 minutes (iOS limits
         // how much an app writes); the end of a scan, closing the app and background time always save.
         if unsaved >= 200 && Date().timeIntervalSince(lastSave) > 120 { save() }
@@ -303,7 +313,23 @@ final class Library: ObservableObject {
     }
 
     /// Removes a whole moment (every shot in its burst) from the list.
-    func hide(_ m: Moment) { hidden.formUnion(m.memberIDs); rebuild(); save() }
+    func hide(_ m: Moment) { hidden.formUnion(m.memberIDs); lastHidden = m.memberIDs; rebuild(); saveSoon() }
+    /// Undo for "Remove from list".
+    func unhide(_ ids: [String]) { hidden.subtract(ids); lastHidden = []; rebuild(); saveSoon() }
+    /// The moment just removed (Home offers to undo it for a few seconds).
+    @Published private(set) var lastHidden: [String] = []
+    func forgetLastHidden() { lastHidden = [] }
+
+    /// Saves a moment later, once things settle (several quick changes become one save).
+    private var saveTask: Task<Void, Never>?
+    func saveSoon() {
+        saveTask?.cancel()
+        saveTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            self?.save()
+        }
+    }
     func restoreHidden() { hidden.removeAll(); rebuild(); save() }
 
     func setBirthdays(_ dates: [Date]) { birthdays = dates.sorted(); rebuild(); save() }
@@ -436,9 +462,7 @@ final class Library: ObservableObject {
     }
 
     /// Claude scores that have a fingerprint to learn from.
-    var learnableCount: Int {
-        photos.values.filter { $0.claude != nil && $0.claude?.exclude == nil && $0.feat?.count == Learner.featureCount }.count
-    }
+
 
     /// Per-photo results worked out from its saved measurements, kept between rebuilds (a rebuild every few seconds
     /// while scanning used to decode and score every photo again). Valid while the photo's measurements and the
@@ -720,7 +744,9 @@ final class Library: ObservableObject {
         // off the list: it's listed with the score it would have had, and Claude decides. Only possible bath or
         // undressed photos (and the shots around them) are held back, unless the user puts them back.
         let pb = putBack
-        let groups = Scorer.moments(from: Array(photos.values), hidden: hidden, version: Scorer.version, putBack: pb)
+        // Photos outside a Limited Access selection are kept but left out of the list (see notVisible).
+        let seen = notVisible.isEmpty ? Array(photos.values) : photos.values.filter { !notVisible.contains($0.id) }
+        let groups = Scorer.moments(from: seen, hidden: hidden, version: Scorer.version, putBack: pb)
         let cal = Calendar.current
         // Photos with a current set of saved measurements are ranked by the balanced score; the rest (until they're
         // re-read) by the old one, against each other only, since the two scales don't line up.
@@ -772,7 +798,7 @@ final class Library: ObservableObject {
         neverSend = forbidden
         // Photos with faces but no child label: not listed, but offered to Claude too (Apple's labels miss kids).
         let listedIDs = Set(groups.flatMap(\.ids))
-        let poolOnly = Scorer.moments(from: Array(photos.values), hidden: hidden, version: Scorer.version,
+        let poolOnly = Scorer.moments(from: seen, hidden: hidden, version: Scorer.version,
                                       putBack: pb, includePoolOnly: true)
             .filter { g in Scorer.poolOnly.contains(g.best.excluded ?? "") && !g.ids.contains(where: listedIDs.contains) }
             .map { makeMoment($0, 0, balancedValue($0.best, putBack: pb, includePoolOnly: true) ?? Scorer.rankValue($0.best, putBack: pb, includePoolOnly: true) ?? 0) }
@@ -917,6 +943,11 @@ final class Library: ObservableObject {
         listedPhotos = shown.count
         ms.sort(by: Library.ranked)
         claudeScored = everyMoment.reduce(0) { $0 + ($1.claudeScore != nil ? 1 : 0) }
+        heldBackPhotos = seen.filter { $0.raw == nil && Scorer.heldBack.contains($0.excluded ?? "") && $0.version == Scorer.version }
+            .sorted { $0.date > $1.date }
+        learnableCount = photos.values.reduce(0) { n, p in
+            n + (p.claude != nil && p.claude?.exclude == nil && p.feat?.count == Learner.featureCount ? 1 : 0)
+        }
         years = Array(Set(ms.map(\.year))).sorted(by: >)
         moments = ms
     }

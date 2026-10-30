@@ -6,9 +6,23 @@ struct AssetImage: View {
     let id: String
     var contentMode: ContentMode = .fill
     var targetSide: CGFloat = 400
+    /// Off for the full-screen viewer: its big images would push the small ones out of the cache.
+    var cached = true
 
     @Environment(\.displayScale) private var scale
     @State private var image: UIImage?
+
+    init(id: String, contentMode: ContentMode = .fill, targetSide: CGFloat = 400, cached: Bool = true) {
+        self.id = id; self.contentMode = contentMode; self.targetSide = targetSide; self.cached = cached
+        // Start with the cached copy, so scrolling back shows the photo at once (no gray flash).
+        if cached {
+            let px = targetSide * UITraitCollection.current.displayScale
+            _image = State(initialValue: Self.thumbs.object(forKey: Self.key(id, px, contentMode)))
+        }
+    }
+    nonisolated static func key(_ id: String, _ px: CGFloat, _ mode: ContentMode) -> NSString {
+        "\(id)|\(Int(px))|\(mode == .fit ? 1 : 0)" as NSString
+    }
 
     var body: some View {
         // The placeholder sets the size and the photo is drawn on top of it, so a wide photo filling a tile
@@ -23,17 +37,11 @@ struct AssetImage: View {
             .contentShape(Rectangle())   // taps land on the visible photo, not its cropped-off overflow
         .task(id: id) {
             let px = targetSide * scale
-            let key = "\(id)|\(Int(px))|\(contentMode == .fit ? 1 : 0)" as NSString
+            let key = Self.key(id, px, contentMode)
             let generation = Self.cacheGeneration()
-            // A cached copy shows right away; it's checked (off the main thread) that the photo is still visible
-            // (not hidden or deleted since), and taken down if not.
-            if let hit = Self.thumbs.object(forKey: key) {
-                image = hit
-                let photo = id
-                let stillThere = await Task.detached(priority: .userInitiated) { Self.visible([photo]).count == 1 }.value
-                if !stillThere && !Task.isCancelled { image = nil; Self.thumbs.removeObject(forKey: key) }
-                return
-            }
+            // The cache is emptied whenever a photo is removed from the library or hidden, so a cached copy is
+            // always one that's still visible.
+            if cached, let hit = Self.thumbs.object(forKey: key) { image = hit; return }
             image = nil   // never leave the previous photo showing while a different one loads
             // Show the quick low-resolution version as soon as Photos has it, then the sharp one.
             let run = RunFlag()
@@ -47,7 +55,10 @@ struct AssetImage: View {
             if let img = r.image {
                 image = img
                 // Only sharp, finished images are kept, and only if the library didn't change meanwhile.
-                if !r.degraded, Self.cacheGeneration() == generation { Self.thumbs.setObject(img, forKey: key) }
+                if cached, !r.degraded, Self.cacheGeneration() == generation {
+                    let cost = img.cgImage.map { $0.bytesPerRow * $0.height } ?? 1
+                    Self.thumbs.setObject(img, forKey: key, cost: cost)
+                }
             }
         }
     }
@@ -55,7 +66,9 @@ struct AssetImage: View {
     nonisolated(unsafe) static let manager = PHCachingImageManager()   // thread-safe; used from any thread
     /// Recently drawn photos, so scrolling back or reopening a list is instant. Emptied whenever the photo library
     /// changes (so a photo hidden or deleted meanwhile is never shown from here), and by iOS under memory pressure.
-    nonisolated static let thumbs: NSCache<NSString, UIImage> = { let c = NSCache<NSString, UIImage>(); c.countLimit = 400; return c }()
+    nonisolated static let thumbs: NSCache<NSString, UIImage> = {
+        let c = NSCache<NSString, UIImage>(); c.countLimit = 600; c.totalCostLimit = 96 * 1024 * 1024; return c
+    }()
     private nonisolated static let genLock = NSLock()
     private nonisolated(unsafe) static var generation = 0
     nonisolated static func cacheGeneration() -> Int { genLock.lock(); defer { genLock.unlock() }; return generation }
