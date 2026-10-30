@@ -11,8 +11,10 @@ struct RootView: View {
     /// First open: ask for a Claude API key before anything else (once; skipped when a key is already saved).
     @AppStorage("askedForKey") private var askedForKey = false
     @State private var hadKey = Claude.apiKey != nil
+    @State private var existingInstall = !Shared.library.photos.isEmpty
     /// Set when you choose "score every photo" on that screen: Claude runs by itself once the first scan is done.
     @AppStorage("autoClaude") private var autoClaude = false
+    @AppStorage("autoClaudeTries") private var autoTries = 0
 
     var body: some View {
         Group {
@@ -26,8 +28,9 @@ struct RootView: View {
                 WelcomeView { request() }
             }
         }
-        .fullScreenCover(isPresented: Binding(get: { !askedForKey && !hadKey }, set: { if !$0 { askedForKey = true } })) {
-            KeySetupView { askedForKey = true }
+        // Existing installs (photos already checked) aren't asked again; a reinstall is (the key survives in the keychain).
+        .fullScreenCover(isPresented: Binding(get: { !askedForKey && !existingInstall }, set: { if !$0 { askedForKey = true } })) {
+            KeySetupView(hadKey: hadKey) { askedForKey = true }
         }
         .onChange(of: scanner.isScanning) { autoScore() }
         .onChange(of: phase) {
@@ -49,15 +52,17 @@ struct RootView: View {
     }
 
     /// Sends the photos to Claude by itself after the first scan, when you chose that on the first screen. Same
-    /// rules and checks as tapping Score with Claude (it only runs once the scan is finished). It keeps trying
-    /// each time the app is opened until everything chosen has been sent, then turns itself off.
+    /// rules and checks as tapping Score with Claude (it only runs once the scan is finished). It runs once: it
+    /// turns itself off after a pass that wasn't interrupted (or after 3 tries), so later photos are only sent
+    /// when you tap Score with Claude.
     private func autoScore() {
         guard autoClaude, phase == .active, status == .authorized || status == .limited,
               !scanner.isScanning, !scanner.needsScan, !claude.busy, !library.photos.isEmpty,
               Claude.apiKey != nil else { return }
+        autoTries += 1
         Task {
             await claude.send(library)
-            if claude.candidates(library).isEmpty { autoClaude = false }
+            if !claude.lastSendPaused || autoTries >= 3 { autoClaude = false }
         }
     }
 
@@ -225,6 +230,7 @@ struct ClaudeSection: View {
     @State private var key = ""
     @State private var hasKey = Claude.apiKey != nil
     @State private var agreed = false
+    @AppStorage("autoClaude") private var autoClaude = false
 
     var body: some View {
         Section {
@@ -257,6 +263,7 @@ struct ClaudeSection: View {
             }
             Toggle("Also send possible swimwear or shirtless photos",
                    isOn: Binding(get: { library.claudeSensitive }, set: { library.setClaudeSensitive($0) }))
+            Toggle("Score automatically once the first scan finishes", isOn: $autoClaude)
             Toggle("Send these photos to Claude", isOn: $agreed)
             Button(claude.busy ? "Working…" : scanner.isScanning ? "Score with Claude (after the scan)" : "Score with Claude") { Task { await claude.send(library) } }
                 .disabled(!hasKey || !agreed || claude.busy || n == 0 || scanner.isScanning)
@@ -431,6 +438,7 @@ struct HeldBackView: View {
 
 /// Shown the first time the app opens: add a Claude API key, and choose to have every photo scored automatically.
 struct KeySetupView: View {
+    let hadKey: Bool
     @EnvironmentObject var library: Library
     @AppStorage("autoClaude") private var autoClaude = false
     @State private var key = ""
@@ -443,28 +451,34 @@ struct KeySetupView: View {
             VStack(spacing: 18) {
                 Image("BrandMark").resizable().scaledToFit().frame(width: 96, height: 96).accessibilityHidden(true)
                 Text("awwbum").font(Theme.display(40, relativeTo: .largeTitle)).foregroundStyle(Theme.accent)
-                Text("Add your Claude API key").font(Theme.label(22, relativeTo: .title2))
+                Text(hadKey ? "Score with Claude" : "Add your Claude API key").font(Theme.label(22, relativeTo: .title2))
                 Text("Claude gives each photo its final score and a description, and your phone learns from it. The key is from console.anthropic.com and is saved only in this iPhone's keychain; charges go to your Anthropic account.")
                     .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                SecureField("Paste your Claude API key", text: $key)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    .padding(14).background(Theme.surface, in: RoundedRectangle(cornerRadius: 14))
+                if hadKey {
+                    Label("Your API key is already saved on this iPhone", systemImage: "key.fill").font(.subheadline)
+                } else {
+                    SecureField("Paste your Claude API key", text: $key)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .padding(14).background(Theme.surface, in: RoundedRectangle(cornerRadius: 14))
+                }
                 Toggle("Score every photo with Claude when the first scan finishes", isOn: $scoreAll)
                     .font(.subheadline)
                 Text("Estimated cost with \(Claude.models.first { $0.id == library.claudeModel }?.name ?? "the chosen model"): about \(Claude.dollars(micros: Claude.costMicros(photos: 1_000, model: library.claudeModel))) per 1,000 photos at batch prices (an estimate; your Anthropic bill shows the actual). Photos are sent at 768 px without location or file details. Possible bath or undressed photos, and every shot within 10 minutes of one, are never sent. You can change all of this in Settings.")
                     .font(.footnote).foregroundStyle(.secondary)
                 if failed { Text("That key couldn't be saved. Check it and try again.").font(.footnote).foregroundStyle(.secondary) }
                 Button {
-                    Claude.apiKey = key
-                    guard Claude.apiKey != nil else { failed = true; return }
-                    key = ""
+                    if !hadKey {
+                        Claude.apiKey = key
+                        guard Claude.apiKey != nil else { failed = true; return }
+                        key = ""
+                    }
                     if scoreAll { library.setClaude(scope: 0); autoClaude = true }
                     onDone()
                 } label: {
-                    Text("Save key").font(Theme.label(19, relativeTo: .headline)).frame(maxWidth: .infinity, minHeight: 52)
+                    Text(hadKey ? "Continue" : "Save key").font(Theme.label(19, relativeTo: .headline)).frame(maxWidth: .infinity, minHeight: 52)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(!hadKey && key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 Button("Not now") { onDone() }
             }
             .padding(24)

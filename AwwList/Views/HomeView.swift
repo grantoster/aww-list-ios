@@ -100,7 +100,7 @@ struct HomeView: View {
                         Button("Cancel") { sendTask?.cancel(); endSelecting() }
                     }
                 } else {
-                    // Small logo and the name, top left (the title itself stays for VoiceOver and the selection count).
+                    // Small logo and the name, top left (an empty center keeps the title from showing twice).
                     ToolbarItem(placement: .principal) { Color.clear.frame(width: 1, height: 1).accessibilityHidden(true) }
                     ToolbarItem(placement: .topBarLeading) {
                         HStack(spacing: 8) {
@@ -109,6 +109,7 @@ struct HomeView: View {
                             Text("awwbum").font(Theme.display(26, relativeTo: .title2)).foregroundStyle(Theme.accent)
                         }
                         .fixedSize()
+                        .dynamicTypeSize(...DynamicTypeSize.xLarge)   // stays inside the bar at large text sizes
                         .accessibilityElement(children: .ignore).accessibilityLabel("Awwbum").accessibilityAddTraits(.isHeader)
                     }
                 }
