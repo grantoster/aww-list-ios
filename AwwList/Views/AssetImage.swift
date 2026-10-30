@@ -25,8 +25,15 @@ struct AssetImage: View {
             let px = targetSide * scale
             let key = "\(id)|\(Int(px))|\(contentMode == .fit ? 1 : 0)" as NSString
             let generation = Self.cacheGeneration()
-            // A cached copy is used only while the photo is still visible (not hidden or deleted since).
-            if let hit = Self.thumbs.object(forKey: key), Self.visible([id]).count == 1 { image = hit; return }
+            // A cached copy shows right away; it's checked (off the main thread) that the photo is still visible
+            // (not hidden or deleted since), and taken down if not.
+            if let hit = Self.thumbs.object(forKey: key) {
+                image = hit
+                let photo = id
+                let stillThere = await Task.detached(priority: .userInitiated) { Self.visible([photo]).count == 1 }.value
+                if !stillThere && !Task.isCancelled { image = nil; Self.thumbs.removeObject(forKey: key) }
+                return
+            }
             image = nil   // never leave the previous photo showing while a different one loads
             // Show the quick low-resolution version as soon as Photos has it, then the sharp one.
             let run = RunFlag()
@@ -45,7 +52,7 @@ struct AssetImage: View {
         }
     }
 
-    static let manager = PHCachingImageManager()
+    nonisolated static let manager = PHCachingImageManager()
     /// Recently drawn photos, so scrolling back or reopening a list is instant. Emptied whenever the photo library
     /// changes (so a photo hidden or deleted meanwhile is never shown from here), and by iOS under memory pressure.
     nonisolated static let thumbs: NSCache<NSString, UIImage> = { let c = NSCache<NSString, UIImage>(); c.countLimit = 400; return c }()
@@ -68,7 +75,7 @@ struct AssetImage: View {
     }
 
     /// Loads one image. Cancelled automatically when the view scrolls away; returns the best image delivered.
-    static func load(id: String, size: CGSize, mode: PHImageContentMode,
+    nonisolated static func load(id: String, size: CGSize, mode: PHImageContentMode,
                      preview: (@Sendable (UIImage) -> Void)? = nil) async -> (image: UIImage?, degraded: Bool) {
         guard let asset = visible([id]).firstObject else { return (nil, false) }
         let opts = PHImageRequestOptions()

@@ -129,7 +129,8 @@ final class PhotoScanner: ObservableObject {
                 let group = DispatchGroup()
                 for lane in 0..<lanes {
                     group.enter()
-                    DispatchQueue.global(qos: .userInitiated).async {
+                    // Below the screen's priority, so scrolling and tapping stay smooth while photos are checked.
+                    DispatchQueue.global(qos: .utility).async {
                         defer { group.leave() }
                         let analyzer = Analyzer()
                         let manager = PHImageManager()

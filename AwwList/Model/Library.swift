@@ -3,7 +3,9 @@ import Foundation
 /// Holds every analyzed photo, saves them to disk, and builds the ranked moments.
 @MainActor
 final class Library: ObservableObject {
-    @Published private(set) var photos: [String: PhotoScore] = [:]
+    /// Not published: it changes every few seconds while scanning, and redrawing every screen each time made the
+    /// app sluggish. Screens update when the ranked list (`moments`) changes.
+    private(set) var photos: [String: PhotoScore] = [:]
     @Published private(set) var moments: [Moment] = []
     /// Every ranked moment, before Consolidated keeps only the top 100s (for counts and Who's Who).
     private(set) var everyMoment: [Moment] = []
@@ -275,7 +277,7 @@ final class Library: ObservableObject {
             photos[p.id] = p
         }
         unsaved += new.count
-        if Date().timeIntervalSince(lastRebuild) > 15 { rebuild() }   // re-ranking everything is costly; keep it occasional while scanning
+        if Date().timeIntervalSince(lastRebuild) > 30 { rebuild() }   // re-ranking everything is costly; keep it occasional while scanning
         // The whole library is rewritten on each save, so while scanning save at most every 2 minutes (iOS limits
         // how much an app writes); the end of a scan, closing the app and background time always save.
         if unsaved >= 200 && Date().timeIntervalSince(lastSave) > 120 { save() }
