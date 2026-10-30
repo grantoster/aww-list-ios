@@ -966,7 +966,7 @@ final class Library: ObservableObject {
         learnableCount = photos.values.reduce(0) { n, p in
             n + (p.claude != nil && p.claude?.exclude == nil && p.feat?.count == Learner.featureCount ? 1 : 0)
         }
-        years = Array(Set(ms.map(\.year))).sorted(by: >)
+        self.years = Array(Set(ms.map(\.year))).sorted(by: >)
         moments = ms
         recountClaude()
     }
