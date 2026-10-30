@@ -158,7 +158,9 @@ final class Library: ObservableObject {
         note("Apply saved library", seconds: Date().timeIntervalSince(t0))
         // The ranking chosen last time (remembered on its own); with none, Claude only once it has scored photos.
         if let r = UserDefaults.standard.string(forKey: "rankBy") { rankBy = r }
-        else if !(hadSaved && photos.values.contains { $0.claude != nil }) { rankBy = learned != nil ? "learned" : "apple" }
+        else if !(hadSaved && photos.values.contains { $0.claude != nil }) && rankBy == "claude" {
+            rankBy = learned != nil ? "learned" : "apple"   // a choice saved by an older build (not Claude) is kept
+        }
         // Work out every photo's scores off the main thread first, so the first ranking is quick.
         prewarmDerived { [weak self] in self?.finishLoadingRanked(hadSaved: hadSaved, failedBlock: failedBlock) }
     }
@@ -373,6 +375,8 @@ final class Library: ObservableObject {
 
     func applyClaude(_ verdicts: [String: ClaudeVerdict]) {
         guard !verdicts.isEmpty else { return }
+        // Claude's first scores: switch to ranking by Claude, unless a ranking was chosen in the menu.
+        if UserDefaults.standard.string(forKey: "rankBy") == nil && claudeScored == 0 { rankBy = "claude" }
         for (id, v) in verdicts {
             photos[id]?.claude = v
             if let e = v.exclude { claudeRemoved[id] = e }
