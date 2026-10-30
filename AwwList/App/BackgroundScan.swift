@@ -51,7 +51,18 @@ enum BackgroundScan {
     /// True while an overnight or continued background task owns the scan (the 30-second wrap-up then stays out of it).
     @MainActor static var taskOwnsScan = false
 
+    /// iOS often starts a background task by launching the app cold: wait until the saved library is read
+    /// (a few seconds), ending the task cleanly if iOS wants the time back first.
+    @MainActor private static func whenLibraryReady(_ task: BGTask, _ run: @escaping @MainActor () -> Void) -> Bool {
+        if Shared.library.ready { return true }
+        let gaveUp = Once()
+        task.expirationHandler = { if gaveUp.claim() { task.setTaskCompleted(success: false) } }
+        Shared.library.whenReady { if gaveUp.claim() { run() } }
+        return false
+    }
+
     @MainActor private static func runOvernight(_ task: BGTask) {
+        guard whenLibraryReady(task, { runOvernight(task) }) else { return }
         scheduleOvernight()
         guard hasAccess else { task.setTaskCompleted(success: true); return }
         let scanner = Shared.scanner
@@ -120,6 +131,7 @@ enum BackgroundScan {
 
     @available(iOS 26.0, *)
     @MainActor private static func runContinued(_ task: BGContinuedProcessingTask) {
+        guard whenLibraryReady(task, { runContinued(task) }) else { return }
         let scanner = Shared.scanner
         let done = Once()
         taskOwnsScan = true

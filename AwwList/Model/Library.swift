@@ -92,23 +92,43 @@ final class Library: ObservableObject {
         }
     }
 
-    nonisolated private static func readSaved(_ u: URL) -> Saved? {
-        guard let data = try? Data(contentsOf: u) else { return nil }
-        return try? JSONDecoder().decode(Saved.self, from: data)
+    private enum ReadResult { case none, loaded(Saved), failed }
+    nonisolated private static func readSaved(_ u: URL) -> ReadResult {
+        guard FileManager.default.fileExists(atPath: u.path) else { return .none }
+        guard let data = try? Data(contentsOf: u), let s = try? JSONDecoder().decode(Saved.self, from: data) else {
+            // Unreadable: keep it aside rather than letting the next save overwrite it with an empty library.
+            let aside = u.deletingLastPathComponent().appendingPathComponent("scores-unreadable-\(Int(Date().timeIntervalSince1970)).json")
+            try? FileManager.default.moveItem(at: u, to: aside)
+            return .failed
+        }
+        return .loaded(s)
     }
 
-    private func finishLoading(_ saved: Saved?) {
-        if let saved { load(saved) } else { applyLearning(); rebuild() }   // a fresh install
-        hadSavedData = saved != nil
+    private func finishLoading(_ result: ReadResult) {
+        var saved: Saved? = nil
+        if case .loaded(let s) = result { saved = s }
+        if let saved { load(saved) } else { applyLearning(); rebuild() }   // a fresh install (or an unreadable save, kept aside)
+        if case .failed = result { hadSavedData = true }
+        if saved != nil { hadSavedData = true }
         // Before Who's Who asked for consent: anyone who already named people keeps it on; otherwise no face
         // prints are kept until it's turned on.
+        var deletePending = false
         if UserDefaults.standard.object(forKey: "faceConsent") == nil {
-            UserDefaults.standard.set(!people.isEmpty, forKey: "faceConsent")
-            if people.isEmpty && photos.values.contains(where: { $0.faceRecords != nil }) { deleteFacePrints() }
-            whoCache = [:]; rebuild()
+            if !people.isEmpty {
+                // People were named before consent was asked: Who's Who stays on.
+                UserDefaults.standard.set(true, forKey: "faceConsent")
+                whoCache = [:]; rebuild()
+            } else {
+                if photos.values.contains(where: { $0.faceRecords != nil }) { deleteFacePrints() }
+                deletePending = true
+            }
         }
         ready = true
+        // "Off" is written only once the deletion is saved (if the app is ended first, it's done again next time).
+        if deletePending { save { UserDefaults.standard.set(false, forKey: "faceConsent") } }
         learnPeople()
+        // Claude scores that came back while the app was closed.
+        if !claudeBatches.isEmpty { Task { await Shared.claude.collect(self) } }
         let handlers = readyHandlers; readyHandlers = []
         handlers.forEach { $0() }
     }
@@ -786,8 +806,8 @@ final class Library: ObservableObject {
         useBuiltInLearning = s.useBuiltInLearning ?? true
         // Saves from before this phone's own learning was kept alongside the built-in one: learn once more at
         // launch, so it comes back (and can be copied) without waiting for new Claude scores.
-        if s.useBuiltInLearning == nil { trainedSignature = nil }
         trainedSignature = s.trainedSignature
+        if s.useBuiltInLearning == nil { trainedSignature = nil }
         claudeRemoved = s.claudeRemoved ?? [:]
         claudeSent = (s.claudeSent ?? [:]).mapValues(Set.init)
         claudeSentYear = s.claudeSentYear ?? [:]
