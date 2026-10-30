@@ -23,12 +23,21 @@ struct AssetImage: View {
             .contentShape(Rectangle())   // taps land on the visible photo, not its cropped-off overflow
         .task(id: id) {
             let px = targetSide * scale
-            image = await Self.load(id: id, size: CGSize(width: px, height: px),
-                                    mode: contentMode == .fit ? .aspectFit : .aspectFill)
+            let key = "\(id)|\(Int(px))|\(contentMode == .fit ? 1 : 0)" as NSString
+            if let hit = Self.thumbs.object(forKey: key) { image = hit; return }
+            image = nil   // never leave the previous photo showing while a different one loads
+            // Show the quick low-resolution version as soon as Photos has it, then the sharp one.
+            let full = await Self.load(id: id, size: CGSize(width: px, height: px),
+                                       mode: contentMode == .fit ? .aspectFit : .aspectFill,
+                                       preview: { img in Task { @MainActor in if image == nil { image = img } } })
+            if let full { image = full; Self.thumbs.setObject(full, forKey: key) }
         }
     }
 
     static let manager = PHCachingImageManager()
+    /// Recently drawn photos, so scrolling back or reopening a list is instant. Emptied whenever the photo library
+    /// changes (so a photo hidden or deleted meanwhile is never shown from here), and by iOS under memory pressure.
+    static let thumbs: NSCache<NSString, UIImage> = { let c = NSCache<NSString, UIImage>(); c.countLimit = 400; return c }()
 
     /// Looks photos up by id the same way the scan does, so the Hidden album is never looked at: a photo that's
     /// hidden simply isn't found.
@@ -40,7 +49,8 @@ struct AssetImage: View {
     }
 
     /// Loads one image. Cancelled automatically when the view scrolls away; returns the best image delivered.
-    static func load(id: String, size: CGSize, mode: PHImageContentMode) async -> UIImage? {
+    static func load(id: String, size: CGSize, mode: PHImageContentMode,
+                     preview: (@Sendable (UIImage) -> Void)? = nil) async -> UIImage? {
         guard let asset = visible([id]).firstObject else { return nil }
         let opts = PHImageRequestOptions()
         opts.deliveryMode = .opportunistic
@@ -50,7 +60,7 @@ struct AssetImage: View {
             await withCheckedContinuation { (cont: CheckedContinuation<UIImage?, Never>) in
                 let rid = manager.requestImage(for: asset, targetSize: size, contentMode: mode, options: opts) { img, info in
                     let degraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
-                    if degraded { box.keep(img); return }
+                    if degraded { box.keep(img); if let img { preview?(img) }; return }
                     box.finish { cont.resume(returning: img ?? box.lastImage) }
                 }
                 box.setID(rid)

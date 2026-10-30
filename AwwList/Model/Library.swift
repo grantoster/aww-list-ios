@@ -218,6 +218,7 @@ final class Library: ObservableObject {
         else { learned = ownModel; learnedIsBuiltIn = false }
         if preferBuiltIn(ownFilter?.trainedOn, builtIn.filter?.trainedOn) { learnedFilter = builtIn.filter; filterIsBuiltIn = true }
         else { learnedFilter = ownFilter; filterIsBuiltIn = false }
+        learningEpoch += 1   // cached predictions are stale
     }
     /// Throws away this phone's own learning and learns again from every Claude verdict on hand.
     func relearn() {
@@ -231,15 +232,35 @@ final class Library: ObservableObject {
         photos.values.filter { $0.claude != nil && $0.claude?.exclude == nil && $0.feat?.count == Learner.featureCount }.count
     }
 
-    /// True when the learned filter expects Claude would take this photo off the list.
-    func learnedRemoves(_ p: PhotoScore) -> Bool {
-        guard let f = learnedFilter, f.useful, let feat = p.feat, let x = Learner.decode(feat) else { return false }
-        return Learner.removalChance(f, x) >= Learner.removeAt
+    /// Per-photo results worked out from its saved measurements, kept between rebuilds (a rebuild every few seconds
+    /// while scanning used to decode and score every photo again). Valid while the photo's measurements and the
+    /// learning in use are unchanged.
+    private struct Derived { var feat: Data; var epoch: Int; var special: Double; var learned: Double?; var removes: Bool; var balanced: Double }
+    private var derived: [String: Derived] = [:]
+    private var learningEpoch = 0
+
+    private func derivedFor(_ p: PhotoScore) -> Derived? {
+        guard let f = p.feat else { return nil }
+        let sp = p.special ?? Scorer.specialFromCaption(p.caption)   // a new caption can change this without new measurements
+        if let d = derived[p.id], d.epoch == learningEpoch, d.special == sp, d.feat == f { return d }
+        guard let x = Learner.decode(f) else { return nil }
+        let learnedV = learned.map { (Learner.predict($0, x) * 10).rounded(.toNearestOrAwayFromZero) / 10 }
+        let removes = learnedFilter.map { $0.useful && Learner.removalChance($0, x) >= Learner.removeAt } ?? false
+        let d = Derived(feat: f, epoch: learningEpoch, special: sp, learned: learnedV, removes: removes,
+                        balanced: Scorer.balanced(x, special: sp))
+        derived[p.id] = d
+        return d
     }
 
-    func learnedScore(for p: PhotoScore) -> Double? {
-        guard let m = learned, let f = p.feat, let x = Learner.decode(f) else { return nil }
-        return (Learner.predict(m, x) * 10).rounded(.toNearestOrAwayFromZero) / 10
+    /// True when the learned filter expects Claude would take this photo off the list.
+    func learnedRemoves(_ p: PhotoScore) -> Bool { derivedFor(p)?.removes ?? false }
+
+    func learnedScore(for p: PhotoScore) -> Double? { derivedFor(p)?.learned }
+
+    /// The balanced on-device score (see Scorer.balanced), for a listed photo with current measurements.
+    private func balancedValue(_ p: PhotoScore, putBack: Set<String>, includePoolOnly: Bool = false) -> Double? {
+        guard Scorer.listedValue(p, putBack: putBack, includePoolOnly: includePoolOnly) != nil else { return nil }
+        return derivedFor(p)?.balanced
     }
 
     /// Re-learns from every Claude verdict (off the main thread; up to about half a minute for thousands of scores). Runs after new verdicts
@@ -440,7 +461,7 @@ final class Library: ObservableObject {
         let cal = Calendar.current
         // Photos with a current set of saved measurements are ranked by the balanced score; the rest (until they're
         // re-read) by the old one, against each other only, since the two scales don't line up.
-        let balancedVals = groups.map { Scorer.balancedValue($0.best, putBack: pb) }
+        let balancedVals = groups.map { balancedValue($0.best, putBack: pb) }
         let fallbackVals = groups.map { Scorer.rankValue($0.best, putBack: pb) ?? 0 }
         let years = groups.map { cal.component(.year, from: $0.best.date) }
         var scores = Array(repeating: 1, count: groups.count)
@@ -491,7 +512,7 @@ final class Library: ObservableObject {
         let poolOnly = Scorer.moments(from: Array(photos.values), hidden: hidden, version: Scorer.version,
                                       putBack: pb, includePoolOnly: true)
             .filter { g in Scorer.poolOnly.contains(g.best.excluded ?? "") && !g.ids.contains(where: listedIDs.contains) }
-            .map { makeMoment($0, 0, Scorer.balancedValue($0.best, putBack: pb, includePoolOnly: true) ?? Scorer.rankValue($0.best, putBack: pb, includePoolOnly: true) ?? 0) }
+            .map { makeMoment($0, 0, balancedValue($0.best, putBack: pb, includePoolOnly: true) ?? Scorer.rankValue($0.best, putBack: pb, includePoolOnly: true) ?? 0) }
         claudePool = (all + poolOnly).filter { !$0.memberIDs.contains(where: forbidden.contains) }.sorted { a, b in
             let va = poolValue(a), vb = poolValue(b)
             return va != vb ? va > vb : a.best.date < b.best.date

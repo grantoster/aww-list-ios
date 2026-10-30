@@ -285,6 +285,7 @@ final class LibraryChangeFlag: NSObject, PHPhotoLibraryChangeObserver, @unchecke
     /// The set of photos the last scan saw; changes are measured against it.
     func watch(_ result: PHFetchResult<PHAsset>) { lock.lock(); fetch = result; lock.unlock() }
     func photoLibraryDidChange(_ changeInstance: PHChange) {
+        AssetImage.thumbs.removeAllObjects()
         lock.lock(); defer { lock.unlock() }
         guard let f = fetch, let d = changeInstance.changeDetails(for: f) else { return }
         // Added or removed photos (hiding a photo removes it from this fetch, which leaves out the Hidden album).

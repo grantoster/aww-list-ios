@@ -6,7 +6,6 @@ enum ListScope: Hashable { case all, year(Int) }
 
 struct HomeView: View {
     @EnvironmentObject var library: Library
-    @EnvironmentObject var scanner: PhotoScanner
     @State private var scope: ListScope = .all
     @State private var age: AgeGroup?
     @State private var shot: ShotKind?
@@ -33,25 +32,29 @@ struct HomeView: View {
         let files: [URL]
     }
 
-    private var pool: [Moment] {
-        library.moments.filter { m in
+    /// The filtered list, worked out only when the moments or a filter change (not on every redraw: the screen
+    /// redraws often while scanning, and filtering thousands of moments each time made it feel sluggish).
+    @State private var pool: [Moment] = []
+    @State private var listed: [Moment] = []
+    private var top: [Moment] { Array(pool.prefix(30)) }
+
+    private func refreshLists() {
+        let filtered = library.moments.filter { m in
             if case .year(let y) = scope, m.year != y { return false }
             if let age, !m.ages.contains(age) { return false }
             if let shot, m.shot != shot { return false }
             if let person, !m.people.contains(person) { return false }
             return true
         }
+        pool = filtered
+        listed = sortByDate ? filtered.sorted { $0.best.date > $1.best.date } : filtered
     }
-    private var top: [Moment] { Array(pool.prefix(30)) }
-    private var listed: [Moment] { sortByDate ? pool.sorted { $0.best.date > $1.best.date } : pool }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    if scanner.isScanning && scanner.total > 0 {
-                        ScanBanner()
-                    }
+                    ScanBannerSlot()
                     scopeBar
                     ageBar
                     shotBar
@@ -67,9 +70,7 @@ struct HomeView: View {
                         }
                         .padding(.top, 24)
                     } else if pool.isEmpty {
-                        ContentUnavailableView("No awws yet", systemImage: "heart.circle",
-                                               description: Text(scanner.isScanning ? "Still looking through your photos. The good ones show up here as they're found." : "Nothing here for this filter. Try another one."))
-                            .padding(.top, 40)
+                        EmptyListView().padding(.top, 40)
                     } else {
                         topSection
                         allSection
@@ -114,6 +115,13 @@ struct HomeView: View {
             .onChange(of: age) { shown = 60; if !preparing { endSelecting() } }
             .onChange(of: shot) { shown = 60; if !preparing { endSelecting() } }
             .onChange(of: person) { shown = 60; if !preparing { endSelecting() } }
+            .onChange(of: scope) { refreshLists() }
+            .onChange(of: age) { refreshLists() }
+            .onChange(of: shot) { refreshLists() }
+            .onChange(of: person) { refreshLists() }
+            .onChange(of: sortByDate) { refreshLists() }
+            .onReceive(library.$moments) { _ in DispatchQueue.main.async { refreshLists() } }
+            .onAppear { refreshLists() }
             .onChange(of: library.people) {
                 if let p = person, !library.people.contains(where: { $0.id == p }) { person = nil }
             }
@@ -518,5 +526,21 @@ struct ScanBanner: View {
         }
         .padding(12)
         .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+/// The scan progress banner, on its own so scan progress redraws only the banner, not the whole list.
+struct ScanBannerSlot: View {
+    @EnvironmentObject var scanner: PhotoScanner
+    var body: some View {
+        if scanner.isScanning && scanner.total > 0 { ScanBanner() }
+    }
+}
+
+struct EmptyListView: View {
+    @EnvironmentObject var scanner: PhotoScanner
+    var body: some View {
+        ContentUnavailableView("No awws yet", systemImage: "heart.circle",
+                               description: Text(scanner.isScanning ? "Still looking through your photos. The good ones show up here as they're found." : "Nothing here for this filter. Try another one."))
     }
 }
