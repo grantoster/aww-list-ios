@@ -76,7 +76,7 @@ struct WhoView: View {
                     Text("Turn on Who's Who?").font(Theme.label(24, relativeTo: .title2))
                     Text("Who's Who recognizes the people you name, like your kids, so you can see each person's best photos.")
                     VStack(alignment: .leading, spacing: 10) {
-                        Label("Turning it on makes face measurements (face prints) of up to 4 faces in each photo on your list, on this iPhone, so it can tell people apart. It takes a few minutes.", systemImage: "face.smiling")
+                        Label("Turning it on makes face measurements (face prints) of up to 4 faces in each photo on your list, on this iPhone, so it can tell people apart. It re-reads those photos, which can take a while on a large library.", systemImage: "face.smiling")
                         Label("Face prints and names stay in Awwbum on this iPhone. They're never sent to us, Claude or Anthropic (they're part of your iPhone backup if backups are on).", systemImage: "lock.fill")
                         Label("Forget a person, or turn Who's Who off to delete every face print. Deleting the app deletes all of it (copies in earlier backups stay until those backups are deleted).", systemImage: "trash")
                         Label("Only name people who are OK with it (or whose parent is).", systemImage: "hand.raised")

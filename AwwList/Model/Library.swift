@@ -98,6 +98,8 @@ final class Library: ObservableObject {
             learnedWho[p.id] = nil
         }
         for var p in new {
+            // A scan that started before Who's Who was turned off can still hand over face prints: drop them.
+            if !Library.faceConsent, p.faceRecords != nil { p.faceRecords = nil; p.facePrintsOff = true }
             if p.claude == nil { p.claude = photos[p.id]?.claude }   // a rescan never throws away Claude's verdict
             // Keep the old fingerprint only if it's still the current size (an old-size one would be re-read forever).
             if p.feat == nil, let old = photos[p.id]?.feat, old.count == Learner.featureCount { p.feat = old }
