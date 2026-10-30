@@ -707,7 +707,6 @@ struct UndoRemoveBar: View {
             .background(Color.black.opacity(0.85), in: Capsule())
             .transition(.opacity)
             .task(id: library.lastHidden) {
-                AccessibilityNotification.Announcement("Removed from list. Undo is available.").post()
                 try? await Task.sleep(for: .seconds(UIAccessibility.isVoiceOverRunning ? 15 : 6))
                 if !Task.isCancelled { library.forgetLastHidden() }
             }
@@ -717,11 +716,11 @@ struct UndoRemoveBar: View {
 
 /// With Limited photo access: say so, and let the user add photos (Apple's own picker; nothing is changed).
 struct LimitedAccessBanner: View {
-    @State private var limited = PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited
-    @Environment(\.scenePhase) private var phase
+    @Environment(\.scenePhase) private var phase   // read in body: re-checked whenever the app comes back
     var body: some View {
-        VStack(spacing: 0) {
-            if limited {
+        let _ = phase
+        Group {
+            if PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited {
                 HStack(spacing: 10) {
                     Image(systemName: "photo.on.rectangle.angled").foregroundStyle(Theme.grapeInk)
                     Text("Awwbum can only see the photos you picked.").font(.footnote)
@@ -733,7 +732,6 @@ struct LimitedAccessBanner: View {
                 .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
             }
         }
-        .onChange(of: phase) { limited = PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited }
     }
     static func showPicker() {
         guard let root = UIApplication.shared.connectedScenes.compactMap({ ($0 as? UIWindowScene)?.keyWindow?.rootViewController }).first

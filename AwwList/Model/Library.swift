@@ -314,7 +314,10 @@ final class Library: ObservableObject {
     }
 
     /// Removes a whole moment (every shot in its burst) from the list.
-    func hide(_ m: Moment) { hidden.formUnion(m.memberIDs); lastHidden = m.memberIDs; rebuild(); saveSoon() }
+    func hide(_ m: Moment) {
+        hidden.formUnion(m.memberIDs); lastHidden = m.memberIDs; rebuild(); saveSoon()
+        AccessibilityNotification.Announcement("Removed from list. Undo is available.").post()
+    }
     /// Undo for "Remove from list".
     func unhide(_ ids: [String]) { hidden.subtract(ids); lastHidden = []; rebuild(); saveSoon() }
     /// The moment just removed (Home offers to undo it for a few seconds).
