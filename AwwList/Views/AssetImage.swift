@@ -67,6 +67,22 @@ struct AssetImage: View {
 
     /// Looks photos up by id the same way the scan does, so the Hidden album is never looked at: a photo that's
     /// hidden simply isn't found.
+    /// Asks Photos to get the photos about to be shown ready ahead of time (the same sizes the list draws), so
+    /// scrolling doesn't wait on each one. Off the main thread; replaces the previous set.
+    nonisolated static func prefetch(_ ids: [String], side: CGFloat, mode: PHImageContentMode = .aspectFill) {
+        guard !ids.isEmpty else { return }
+        DispatchQueue.global(qos: .utility).async {
+            let found = visible(ids)
+            var assets: [PHAsset] = []
+            found.enumerateObjects { a, _, _ in assets.append(a) }
+            let opts = PHImageRequestOptions()
+            opts.deliveryMode = .opportunistic
+            opts.isNetworkAccessAllowed = true
+            manager.stopCachingImagesForAllAssets()   // only the current set is kept ready
+            manager.startCachingImages(for: assets, targetSize: CGSize(width: side, height: side), contentMode: mode, options: opts)
+        }
+    }
+
     nonisolated static func visible(_ ids: [String]) -> PHFetchResult<PHAsset> {
         let o = PHFetchOptions()
         o.includeHiddenAssets = false

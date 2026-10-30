@@ -546,7 +546,9 @@ final class Library: ObservableObject {
         if rankBy != "apple" { rankBy = "apple"; UserDefaults.standard.set("apple", forKey: "rankBy") }
         rebuild(); save()
     }
-    var claudeScored: Int { everyMoment.filter { $0.claudeScore != nil }.count }
+    /// Worked out once per re-rank (screens read these on every redraw; counting thousands of moments each time
+    /// made scrolling the full list stutter).
+    private(set) var claudeScored = 0
     /// The moments in Apple's on-device order (used to choose what to send to Claude).
     /// (Sorted once per rebuild, so Settings can show counts without re-sorting the library on every redraw.)
     /// What can be offered to Claude: Apple's list plus the photos Apple set aside for a soft reason, ranked
@@ -914,6 +916,8 @@ final class Library: ObservableObject {
             .sorted { $0.count != $1.count ? $0.count > $1.count : $0.reason < $1.reason }
         listedPhotos = shown.count
         ms.sort(by: Library.ranked)
+        claudeScored = everyMoment.reduce(0) { $0 + ($1.claudeScore != nil ? 1 : 0) }
+        years = Array(Set(ms.map(\.year))).sorted(by: >)
         moments = ms
     }
 
@@ -931,7 +935,7 @@ final class Library: ObservableObject {
         return a.best.date < b.best.date
     }
 
-    var years: [Int] { Array(Set(moments.map(\.year))).sorted(by: >) }
+    private(set) var years: [Int] = []
 
     /// Saves now and waits for the write, so nothing is lost when iOS suspends or ends the app.
     func flush() {

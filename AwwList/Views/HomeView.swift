@@ -8,6 +8,7 @@ enum ListScope: Hashable { case all, year(Int) }
 struct HomeView: View {
     @EnvironmentObject var library: Library
     @AppStorage("faceConsent") private var faceConsent = false
+    @Environment(\.displayScale) private var displayScale
     @State private var scope: ListScope = .all
     @State private var age: AgeGroup?
     @State private var shot: ShotKind?
@@ -51,6 +52,13 @@ struct HomeView: View {
         }
         pool = filtered
         listed = sortByDate ? filtered.sorted { $0.best.date > $1.best.date } : filtered
+        prefetchImages()
+    }
+
+    /// Gets the next photos ready before they scroll into view (the top 30 and the first page of See all).
+    private func prefetchImages() {
+        let ids = Array(pool.prefix(30).dropFirst(5)).map(\.best.id) + Array(listed.prefix(shown)).map(\.best.id)
+        AssetImage.prefetch(ids, side: 260 * displayScale)
     }
 
     var body: some View {
@@ -303,7 +311,7 @@ struct HomeView: View {
                 }
             }
             if listed.count > shown {
-                Button("Show more") { shown += 60 }
+                Button("Show more") { shown += 60; prefetchImages() }
                     .buttonStyle(.bordered).frame(maxWidth: .infinity)
             }
         }
