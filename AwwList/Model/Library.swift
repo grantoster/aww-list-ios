@@ -310,7 +310,14 @@ final class Library: ObservableObject {
     }
     /// How many of each ranking's best moments per year go into Consolidated.
     nonisolated static let consolidatedTop = 100
-    func setRankBy(_ v: String) { rankBy = v; rebuild(); save() }
+    /// Switching the ranking only re-ranks: the choice is remembered on its own, without rewriting the whole
+    /// library (a full save on every switch, on top of a scan, could push a large library past iOS's memory limit).
+    func setRankBy(_ v: String) {
+        guard v != rankBy else { return }
+        rankBy = v
+        UserDefaults.standard.set(v, forKey: "rankBy")
+        rebuild()
+    }
     /// Photos Claude never returned a score for (batch lost, expired or errored): they can be sent again.
     func unsend(model: String, _ ids: [String]) {
         guard !ids.isEmpty else { return }
@@ -1014,7 +1021,7 @@ final class Library: ObservableObject {
         for id in sentIDs where claudeSentYear[id] == nil {
             if let d = photos[id]?.date { claudeSentYear[id] = Calendar.current.component(.year, from: d) }
         }
-        rankBy = s.rankBy ?? "claude"
+        rankBy = UserDefaults.standard.string(forKey: "rankBy") ?? s.rankBy ?? "claude"
         claudeFailures = s.claudeFailures ?? [:]
     }
 }
