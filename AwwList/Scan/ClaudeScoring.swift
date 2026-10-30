@@ -136,8 +136,9 @@ final class ClaudeService: ObservableObject {
     @Published private(set) var busy = false
     @Published private(set) var sent = 0
     @Published private(set) var toSend = 0
-    /// Whether the last send stopped partway (new photos to check first, or the app was closed) and should run again.
-    private(set) var lastSendPaused = false
+    /// How the last send ended, for the automatic first scoring.
+    enum Outcome { case notStarted, paused, done, retryLater, keyRejected }
+    @Published private(set) var lastOutcome = Outcome.notStarted
 
     private let endpoint = URL(string: "https://api.anthropic.com/v1/messages/batches")!
 
@@ -361,6 +362,7 @@ final class ClaudeService: ObservableObject {
     }
 
     func send(_ library: Library, recheck: Bool = false) async {
+        lastOutcome = .notStarted   // stays so on the early returns below (a send already running sets its own when done)
         guard !busy else { return }
         // Only once the scan is finished: until then a bath photo near a candidate may not be checked yet.
         guard !Shared.scanner.isScanning else { status = "Wait for the scan to finish, then send."; return }
@@ -370,9 +372,16 @@ final class ClaudeService: ObservableObject {
             return
         }
         busy = true; defer { busy = false }
-        lastSendPaused = false
         var paused = false, unloadedIDs = Set<String>()
-        defer { lastSendPaused = paused }
+        var failure: Error?
+        defer {
+            if paused { lastOutcome = .paused }
+            else if let failure {
+                if case ClaudeError.http(let code, _) = failure, code == 401 || code == 403 { lastOutcome = .keyRejected }
+                else if case ClaudeError.noKey = failure { lastOutcome = .keyRejected }
+                else { lastOutcome = .retryLater }   // offline, Claude busy and the like
+            } else { lastOutcome = .done }
+        }
         library.rebuild()   // fresh never-send set and pool, including photos added since the list last redrew
         let list = recheck ? recheckCandidates(library) : candidates(library)
         toSend = list.count; sent = 0
@@ -488,6 +497,7 @@ final class ClaudeService: ObservableObject {
                 status = "Sent \(sent.formatted()) photos. Claude's scores usually arrive within an hour; they're picked up when you open the app."
             }
         } catch {
+            failure = error
             status = Self.describe(error)
         }
     }

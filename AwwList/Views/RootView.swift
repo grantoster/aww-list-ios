@@ -59,10 +59,15 @@ struct RootView: View {
         guard autoClaude, phase == .active, status == .authorized || status == .limited,
               !scanner.isScanning, !scanner.needsScan, !claude.busy, !library.photos.isEmpty,
               Claude.apiKey != nil else { return }
-        autoTries += 1
         Task {
             await claude.send(library)
-            if !claude.lastSendPaused || autoTries >= 3 { autoClaude = false }
+            switch claude.lastOutcome {
+            case .notStarted: break                       // something else was sending, or new photos to check first
+            case .done, .keyRejected: autoClaude = false   // one full pass (later photos are sent when you tap Score)
+            case .paused, .retryLater:
+                autoTries += 1
+                if autoTries >= 3 { autoClaude = false }
+            }
         }
     }
 
@@ -263,7 +268,10 @@ struct ClaudeSection: View {
             }
             Toggle("Also send possible swimwear or shirtless photos",
                    isOn: Binding(get: { library.claudeSensitive }, set: { library.setClaudeSensitive($0) }))
-            Toggle("Score automatically once the first scan finishes", isOn: $autoClaude)
+            if autoClaude {
+                // The automatic first scoring chosen on the first screen; it can be turned off here (not back on).
+                Toggle("Automatic first scoring (runs once the scan finishes)", isOn: $autoClaude)
+            }
             Toggle("Send these photos to Claude", isOn: $agreed)
             Button(claude.busy ? "Working…" : scanner.isScanning ? "Score with Claude (after the scan)" : "Score with Claude") { Task { await claude.send(library) } }
                 .disabled(!hasKey || !agreed || claude.busy || n == 0 || scanner.isScanning)

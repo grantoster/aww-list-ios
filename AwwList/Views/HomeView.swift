@@ -55,6 +55,7 @@ struct HomeView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     ScanBannerSlot()
+                    ClaudeKeyNote()
                     scopeBar
                     ageBar
                     shotBar
@@ -542,6 +543,18 @@ struct ScanBanner: View {
         }
         .padding(12)
         .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+/// Shown on Home when Claude turned down the API key, so a failed automatic scoring doesn't go unnoticed.
+struct ClaudeKeyNote: View {
+    @EnvironmentObject var claude: ClaudeService
+    var body: some View {
+        if claude.lastOutcome == .keyRejected {
+            Label("Claude couldn't use your API key, so nothing was sent. Check it in Settings.", systemImage: "key.fill")
+                .font(.subheadline).padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+        }
     }
 }
 
