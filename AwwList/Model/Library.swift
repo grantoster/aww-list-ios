@@ -77,6 +77,8 @@ final class Library: ObservableObject {
         var claudeFailures: [String: Int]?; var learned: LearnedModel?; var claudeSensitive: Bool?
         var putBack: [String]?; var keptOut: [String]?; var learnedFilter: LearnedFilter?; var trainedSignature: UInt64?
         var useBuiltInLearning: Bool?
+        /// The same signature stored as a signed number (every save format handles those).
+        var trainedSignatureBits: Int64? = nil
         var claudeRemoved: [String: String]?; var claudeSent: [String: [String]]?; var claudeSentYear: [String: Int]?
     }
 
@@ -927,7 +929,8 @@ final class Library: ObservableObject {
                       people: people, strictness: strictness,
                       claudeModel: claudeModel, claudeScope: claudeScope, claudeBatches: claudeBatches, rankBy: rankBy, claudeFailures: claudeFailures, learned: ownModel, claudeSensitive: claudeSensitive,
                       putBack: nil, keptOut: Array(keptOut), learnedFilter: ownFilter,
-                      trainedSignature: trainedSignature, useBuiltInLearning: useBuiltInLearning,
+                      trainedSignature: nil, useBuiltInLearning: useBuiltInLearning,
+                      trainedSignatureBits: trainedSignature.map { Int64(bitPattern: $0) },
                       claudeRemoved: claudeRemoved, claudeSent: claudeSent.mapValues { Array($0) },
                       claudeSentYear: claudeSentYear)
         let u = url, legacy = legacyURL
@@ -981,7 +984,7 @@ final class Library: ObservableObject {
         useBuiltInLearning = s.useBuiltInLearning ?? true
         // Saves from before this phone's own learning was kept alongside the built-in one: learn once more at
         // launch, so it comes back (and can be copied) without waiting for new Claude scores.
-        trainedSignature = s.trainedSignature
+        trainedSignature = s.trainedSignatureBits.map { UInt64(bitPattern: $0) } ?? s.trainedSignature
         if s.useBuiltInLearning == nil { trainedSignature = nil }
         claudeRemoved = s.claudeRemoved ?? [:]
         claudeSent = (s.claudeSent ?? [:]).mapValues(Set.init)
