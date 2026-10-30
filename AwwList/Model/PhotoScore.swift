@@ -128,6 +128,8 @@ struct Moment: Identifiable, Hashable {
     var learnedScore: Double? = nil
     /// The on-device value the moment was ranked by (balanced or old scale), for breaking ties.
     var rankRaw: Double = 0
+    /// Ranking by Consolidated: how high this moment sits across the Claude, Learned and Apple rankings (higher is better).
+    var consolidated: Double? = nil
     /// Claude's description when it has one, otherwise the on-device one.
     var caption: String {
         if let c = best.claude?.caption, !c.isEmpty { return c.prefix(1).uppercased() + c.dropFirst() }

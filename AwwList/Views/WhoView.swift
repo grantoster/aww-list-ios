@@ -168,7 +168,7 @@ struct WhoView: View {
     }
 
     private func summary(_ p: Person) -> String {
-        let n = library.moments.filter { $0.people.contains(p.id) }.count
+        let n = library.everyMoment.filter { $0.people.contains(p.id) }.count
         var s = "\(n) moment\(n == 1 ? "" : "s")"
         if let l = p.learnedCount, l > 0 { s += " · \(l) faces learned" }
         if let b = p.birthday { s += " · born " + b.formatted(date: .abbreviated, time: .omitted) }

@@ -102,7 +102,7 @@ struct SettingsView: View {
                 BirthdaysSection()
                 Section("Library") {
                     LabeledContent("Photos checked", value: library.photos.count.formatted())
-                    LabeledContent("Moments ranked", value: library.moments.count.formatted())
+                    LabeledContent("Moments ranked", value: library.everyMoment.count.formatted())
                     if !library.hidden.isEmpty {
                         Button("Put back \(library.hidden.count) removed photos") { library.restoreHidden() }
                     }
@@ -313,7 +313,7 @@ struct LearnedSection: View {
                 Text(!f.useful
                      ? "Checked on \(f.tested.formatted()) photos from days it didn't learn from. It isn't clearly better than keeping everything yet (it needs at least \(Learner.minimumTestRemovals) of Claude's removals in that check, too), so it isn't hiding anything."
                      : library.rankBy == "apple"
-                     ? "Checked on \(f.tested.formatted()) photos from days it didn't learn from. It hides photos only when ranking by Claude or by the learned score; ranking by Apple shows everything."
+                     ? "Checked on \(f.tested.formatted()) photos from days it didn't learn from. It hides photos only when ranking by Claude, by the learned score or by Consolidated; ranking by Apple shows everything."
                      : "Checked on \(f.tested.formatted()) photos from days it didn't learn from. It's hiding \(library.filteredOut.formatted()) photos Claude hasn't seen.")
                     .font(.footnote).foregroundStyle(.secondary)
             } else if library.learned != nil {

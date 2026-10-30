@@ -59,7 +59,7 @@ struct HomeView: View {
                     ageBar
                     shotBar
                     whoBar
-                    if library.claudeScored > 0 || library.learned != nil { rankBar }
+                    if library.claudeScored > 0 || library.learned != nil || library.rankBy == "consolidated" { rankBar }
                     if age == .toddler && library.birthdays.isEmpty && !library.people.contains(where: { $0.birthday != nil }) {
                         ContentUnavailableView {
                             Label("Add your kids' birthdays", systemImage: "birthday.cake")
@@ -160,7 +160,8 @@ struct HomeView: View {
         }
     }
 
-    /// Once Claude has scored photos: order the lists by Claude's score or by Apple's on-device score.
+    /// Once Claude has scored photos: order the lists by Claude's score, the learned score, Apple's on-device score,
+    /// or Consolidated (each year's top 100 from each, combined).
     private var rankBar: some View {
         ScrollView(.horizontal, showsIndicators: false) { HStack(spacing: 8) {
             Text("Rank by").font(.subheadline).foregroundStyle(.secondary)
@@ -170,6 +171,7 @@ struct HomeView: View {
             }
             Pill(title: "Apple", on: library.rankBy == "apple" || (library.rankBy == "learned" && library.learned == nil),
                  small: true) { library.setRankBy("apple") }
+            Pill(title: "Consolidated", on: library.rankBy == "consolidated", small: true) { library.setRankBy("consolidated") }
         } }
     }
 

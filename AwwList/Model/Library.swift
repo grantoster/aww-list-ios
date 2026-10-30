@@ -5,6 +5,8 @@ import Foundation
 final class Library: ObservableObject {
     @Published private(set) var photos: [String: PhotoScore] = [:]
     @Published private(set) var moments: [Moment] = []
+    /// Every ranked moment, before Consolidated keeps only the top 100s (for counts and Who's Who).
+    private(set) var everyMoment: [Moment] = []
     @Published private(set) var hidden: Set<String> = []   // photos the user removed from the list
     /// The children's birthdays, which sort photos into Baby / Toddler / Kid.
     @Published private(set) var birthdays: [Date] = []
@@ -118,6 +120,8 @@ final class Library: ObservableObject {
         if let scope { claudeScope = scope }
         save()
     }
+    /// How many of each ranking's best moments per year go into Consolidated.
+    nonisolated static let consolidatedTop = 100
     func setRankBy(_ v: String) { rankBy = v; rebuild(); save() }
     /// Photos Claude never returned a score for (batch lost, expired or errored): they can be sent again.
     func unsend(model: String, _ ids: [String]) {
@@ -313,10 +317,10 @@ final class Library: ObservableObject {
         claudeSent = [:]   // starting over: each year's budget is available again (removals are kept, never re-sent)
         ownModel = nil; ownFilter = nil; trainedSignature = nil; generation += 1
         applyLearning()
-        if rankBy == "learned" { rankBy = "apple" }
+        if rankBy == "learned" || rankBy == "consolidated" { rankBy = "apple" }
         rebuild(); save()
     }
-    var claudeScored: Int { moments.filter { $0.claudeScore != nil }.count }
+    var claudeScored: Int { everyMoment.filter { $0.claudeScore != nil }.count }
     /// The moments in Apple's on-device order (used to choose what to send to Claude).
     /// (Sorted once per rebuild, so Settings can show counts without re-sorting the library on every redraw.)
     /// What can be offered to Claude: Apple's list plus the photos Apple set aside for a soft reason, ranked
@@ -432,7 +436,7 @@ final class Library: ObservableObject {
         var out: [(photo: String, face: FaceRecord)] = []
         let t = threshold
         let centroids = People.Matcher(people.map { p -> Person in var p = p; p.examples = nil; return p })
-        for m in moments {
+        for m in everyMoment {
             for (j, f) in (m.best.faceRecords ?? []).enumerated() where f.vec.count == People.dim
                 && !learnedFaces.contains(m.best.id + "#\(j)") && centroids.match(People.floats(f.vec), threshold: t) == nil {
                 out.append((m.best.id, f))
@@ -523,15 +527,18 @@ final class Library: ObservableObject {
         // score, moments Claude hasn't seen are also left off when the learned filter (learned from Claude's own
         // removals) expects Claude would remove them. Ranking by Apple shows Apple's view, flags and all.
         let anyClaude = photos.values.contains { $0.claude != nil && $0.claude?.exclude == nil && $0.version == Scorer.version }
+        let useConsolidated = rankBy == "consolidated"
         let useClaude = anyClaude && rankBy == "claude"
         let useLearned = learned != nil && rankBy == "learned"
+        // Consolidated is led by Claude's verdicts like the Claude view: same removals and same learned filter.
+        let claudeLed = useClaude || useLearned || (useConsolidated && (anyClaude || learned != nil))
         var filtered = 0
         var filteredIDs = Set<String>()
         moments = all.compactMap { m in
             var m = m
             // Claude's removal sticks to the whole burst, even if a different shot becomes its best later.
             if m.memberIDs.contains(where: { photos[$0]?.claude?.exclude != nil }) { return nil }
-            if (useClaude || useLearned) && m.best.claude == nil
+            if claudeLed && m.best.claude == nil
                 && !m.memberIDs.contains(where: { Scorer.heldBack.contains(photos[$0]?.excluded ?? "") || photos[$0]?.privacyHold == true })
                 && learnedRemoves(m.best) {   // you chose to keep possible bath photos
                 filtered += 1; filteredIDs.formUnion(m.memberIDs); return nil
@@ -545,8 +552,8 @@ final class Library: ObservableObject {
             return m
         }
         filteredOut = filtered
-        // Ones Claude kept from the no-child-label group join the list when ranking by Claude or the learned score.
-        if useClaude || useLearned {
+        // Ones Claude kept from the no-child-label group join the list when ranking by Claude, the learned score or Consolidated.
+        if claudeLed {
             for var m in poolOnly where m.best.claude?.exclude == nil && !m.memberIDs.contains(where: { photos[$0]?.claude?.exclude != nil }) {
                 guard let c = m.best.claude else { continue }
                 m.claudeScore = c.score
@@ -579,6 +586,43 @@ final class Library: ObservableObject {
                 moments[i].score = min(cal[i], cap)
             }
         }
+        // Consolidated: each year's top 100 by Claude, by the learned score and by Apple, combined into one list.
+        // A moment's place is the sum of 1 / (60 + its rank) over the rankings it's in the top 100 of (reciprocal
+        // rank fusion), so moments near the top of all three lead, and one that's only in one list sits lower.
+        everyMoment = moments.sorted(by: Library.ranked)
+        var outsideTop = Set<String>()
+        if useConsolidated {
+            // Each ranking covers only the moments it actually scored (no filling in from the others, which would
+            // count the same opinion twice).
+            let rankers: [(Moment) -> Double?] = [{ $0.apple > 0 ? Double($0.apple) : nil }, { $0.claudeScore }, { $0.learnedScore }]
+            var fused = Array(repeating: 0.0, count: moments.count)
+            var inTop = Array(repeating: false, count: moments.count)
+            for (_, idx) in Dictionary(grouping: moments.indices, by: { moments[$0].year }) {
+                for f in rankers {
+                    var vals: [Int: Double] = [:]
+                    for i in idx { if let v = f(moments[i]) { vals[i] = v } }
+                    let order = vals.keys.sorted { a, b in
+                        let va = vals[a]!, vb = vals[b]!
+                        if va != vb { return va > vb }
+                        if moments[a].rankRaw != moments[b].rankRaw { return moments[a].rankRaw > moments[b].rankRaw }
+                        return moments[a].best.date < moments[b].best.date
+                    }
+                    for (r, i) in order.prefix(Library.consolidatedTop).enumerated() {
+                        inTop[i] = true
+                        fused[i] += 1 / Double(61 + r)
+                    }
+                }
+            }
+            let kept = moments.indices.filter { inTop[$0] }
+            for i in moments.indices where !inTop[i] { outsideTop.formUnion(moments[i].memberIDs) }
+            let best = Double(rankers.count) / 61   // first in every ranking (only a scale; calibration uses the order)
+            // Scored against every moment of the year (the ones left out count as last), so a top-100 moment
+            // isn't shown with a low score just because the list is short.
+            let cal = Scorer.calibrate(fused.map { $0 / best }, years: moments.map(\.year), ceiling: { _ in 10 })
+            moments = kept.map { i in
+                var m = moments[i]; m.score = cal[i]; m.consolidated = fused[i]; return m
+            }
+        }
         // What's left off and why (current photos only; hidden ones are counted separately).
         var counts: [String: Int] = [:]
         let shown = Set(moments.flatMap(\.memberIDs))
@@ -591,6 +635,7 @@ final class Library: ObservableObject {
                 why = "Waiting to be checked again"
             }
             else if filteredIDs.contains(p.id) { why = "Hidden by the learned filter" }
+            else if outsideTop.contains(p.id) { why = "Not in any ranking's top \(Library.consolidatedTop) for its year" }
             else if p.claude?.exclude != nil || claudeRemoved[p.id] != nil || listedIDs.contains(p.id) { why = "Removed by Claude" }
             else if let e = p.excluded {
                 switch e {
@@ -615,6 +660,7 @@ final class Library: ObservableObject {
     /// Higher score first; then higher raw score; then the earlier photo.
     nonisolated static func ranked(_ a: Moment, _ b: Moment) -> Bool {
         if a.score != b.score { return a.score > b.score }
+        if let fa = a.consolidated, let fb = b.consolidated, fa != fb { return fa > fb }
         let ca = a.claudeScore ?? 0, cb = b.claudeScore ?? 0
         if ca != cb { return ca > cb }
         let la = a.learnedScore ?? 0, lb = b.learnedScore ?? 0
