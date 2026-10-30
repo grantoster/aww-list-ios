@@ -1,6 +1,11 @@
 default_platform(:ios)
 
 platform :ios do
+  # Errors also go to the run's annotations (the full log can't be read from here).
+  error do |lane, exception|
+    puts "::error::#{lane}: #{exception.message.to_s.gsub("\n", " ")[0, 900]}"
+  end
+
   desc "Build a signed release and upload it to TestFlight"
   lane :beta do
     # Temporary keychain on the CI Mac for this run's signing certificate.
@@ -43,7 +48,10 @@ platform :ios do
         export_options: { signingStyle: "manual", provisioningProfiles: { bundle => profile } }
       )
 
-      upload_to_testflight(api_key: api_key, skip_waiting_for_build_processing: true)
+      # Wait for Apple to finish processing, so a build Apple rejects fails this run instead of silently vanishing.
+      upload_to_testflight(api_key: api_key, skip_waiting_for_build_processing: false,
+                           wait_processing_timeout_duration: 3600)
+      UI.message("::notice::TestFlight build #{lane_context[SharedValues::BUILD_NUMBER] || ''} processed")
     ensure
       if cert_id
         begin
