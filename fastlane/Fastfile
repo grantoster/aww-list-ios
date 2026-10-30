@@ -1,3 +1,4 @@
+require 'time'
 default_platform(:ios)
 
 platform :ios do
@@ -30,6 +31,21 @@ platform :ios do
       # A fresh Apple Distribution certificate for this run only (the cloud Mac keeps nothing between runs).
       # It is revoked again at the end so the account never hits Apple's certificate limit; revoking it
       # does not affect builds already uploaded to TestFlight or the App Store.
+      # Builds that were cancelled midway never got to revoke their certificate, and Apple allows only a few.
+      # Revoke Apple Distribution certificates made more than 2 hours ago (any build still using one has long
+      # finished). Approved by the owner: this account's Distribution certificates are only used by these builds.
+      Spaceship::ConnectAPI.token = Spaceship::ConnectAPI::Token.from(hash: api_key)
+      Spaceship::ConnectAPI::Certificate.all.each do |c|
+        next unless %w[DISTRIBUTION IOS_DISTRIBUTION].include?(c.certificate_type)
+        made = Time.parse(c.expiration_date) - 365 * 24 * 3600
+        next unless made < Time.now - 2 * 3600
+        begin
+          c.delete!
+          UI.message("Revoked an old build certificate (#{c.id})")
+        rescue => e
+          UI.important("Could not revoke old certificate #{c.id}: #{e.message}")
+        end
+      end
       get_certificates(api_key: api_key, force: true, generate_apple_certs: true,
                        keychain_path: keychain, keychain_password: "")
       cert_id = lane_context[SharedValues::CERT_CERTIFICATE_ID]
