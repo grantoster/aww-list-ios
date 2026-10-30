@@ -74,7 +74,11 @@ enum PhotoSearch {
 
     static func stem(_ w: String) -> String {
         var w = w
-        if w.count > 5, w.hasSuffix("ing") { w.removeLast(3) }                 // dancing → danc, riding → rid
+        if w.count > 5, w.hasSuffix("ing") {                                     // dancing → danc, riding → rid
+            w.removeLast(3)
+            // hugging → hug, napping → nap, grinning → grin
+            if w.count > 2, let last = w.last, w.dropLast().last == last, !"aeiouls".contains(last) { w.removeLast() }
+        }
         else if w.count > 4, w.hasSuffix("ies") { w.removeLast(3); w += "y" }  // puppies → puppy
         else if w.count > 4, ["ches", "shes", "xes", "zes", "sses"].contains(where: w.hasSuffix) { w.removeLast(2) }
         else if w.count > 3, w.hasSuffix("s"), !w.hasSuffix("ss") { w.removeLast() }   // cakes → cake

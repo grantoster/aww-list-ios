@@ -99,7 +99,7 @@ final class Library: ObservableObject {
         }
     }
 
-    private enum ReadResult { case none, loaded(Saved), failed(blockSaves: Bool) }
+    private enum ReadResult { case none, loaded(Saved, from: URL), failed(blockSaves: Bool) }
 
     /// Reads the most recently written of the saved copies that decodes; older ones are tried if it doesn't.
     nonisolated private static func readNewest(_ files: [(URL, Bool)]) -> ReadResult {
@@ -109,18 +109,18 @@ final class Library: ObservableObject {
         let present = files.filter { FileManager.default.fileExists(atPath: $0.0.path) }
             .sorted { modified($0.0) > modified($1.0) }
         guard !present.isEmpty else { return .none }
-        var block = false
-        for (i, f) in present.enumerated() {
-            // Only the last one is moved aside if it's damaged; earlier ones are just skipped.
-            switch readSaved(f.0, binary: f.1, moveAsideIfDamaged: i == present.count - 1) {
-            case .loaded(let s): return .loaded(s)
-            case .failed(let b): block = block || b
-            case .none: continue
+        for f in present {
+            switch readSaved(f.0, binary: f.1) {
+            case .loaded(let s, let u): return .loaded(s, from: u)
+            // Couldn't open the newest copy just now: don't fall back to an older one (it would be saved over it).
+            case .failed(blockSaves: true): return .failed(blockSaves: true)
+            // Damaged (moved aside, kept): try the next newest.
+            case .failed(blockSaves: false), .none: continue
             }
         }
-        return .failed(blockSaves: block)
+        return .failed(blockSaves: false)
     }
-    nonisolated private static func readSaved(_ u: URL, binary: Bool, moveAsideIfDamaged: Bool) -> ReadResult {
+    nonisolated private static func readSaved(_ u: URL, binary: Bool) -> ReadResult {
         guard FileManager.default.fileExists(atPath: u.path) else { return .none }
         // Couldn't read the file this time (it may be briefly unavailable): leave it, and don't save over it.
         guard let data = try? Data(contentsOf: u, options: .mappedIfSafe) else { return .failed(blockSaves: true) }
@@ -129,13 +129,12 @@ final class Library: ObservableObject {
             return try? JSONDecoder().decode(Saved.self, from: data)
         }
         guard let s = decoded else {
-            if !moveAsideIfDamaged { return .failed(blockSaves: false) }
             // Damaged: keep it aside rather than letting the next save overwrite it with an empty library.
             let aside = u.deletingLastPathComponent().appendingPathComponent("scores-unreadable-\(Int(Date().timeIntervalSince1970)).\(binary ? "plist" : "json")")
             let moved = (try? FileManager.default.moveItem(at: u, to: aside)) != nil
             return .failed(blockSaves: !moved)
         }
-        return .loaded(s)
+        return .loaded(s, from: u)
     }
     /// Set when the saved library couldn't be read this time: nothing is saved over it until the app opens again.
     private var savesBlocked = false
@@ -144,7 +143,11 @@ final class Library: ObservableObject {
         let t0 = Date()
         var hadSaved = false, failedBlock: Bool? = nil
         switch result {
-        case .loaded(let s): load(s); hadSaved = true
+        case .loaded(let s, let from):
+            load(s); hadSaved = true
+            note("Opened from", from.lastPathComponent)
+            // The binary file read back fine, so the JSON backup kept from the switch-over isn't needed any more.
+            if from == url { try? FileManager.default.removeItem(at: legacyURL.appendingPathExtension("bak")) }
         case .failed(let block): applyLearning(); failedBlock = block   // an unreadable save, kept aside
         case .none: applyLearning()                                     // a fresh install
         }
@@ -505,8 +508,9 @@ final class Library: ObservableObject {
                 // from at least as many verdicts as the built-in one, or right away if the built-in one is turned off.
                 self.ownModel = model; self.ownFilter = filter
                 self.applyLearning()
-                self.rebuild(); self.save()
-                if self.pendingRetrain { self.pendingRetrain = false; self.retrain() } else { self.retrainFinished() }
+                self.rebuild()
+                if self.pendingRetrain { self.pendingRetrain = false; self.save(); self.retrain() }
+                else { self.save { Task { @MainActor in Shared.library.retrainFinished() } } }   // next step after the save
             }
         }
     }
@@ -933,13 +937,9 @@ final class Library: ObservableObject {
             var bytes = 0
             autoreleasepool {
                 let enc = PropertyListEncoder(); enc.outputFormat = .binary
-                // The first time (moving off the old JSON file), check the new file reads back before relying on it.
-                let migrating = FileManager.default.fileExists(atPath: legacy.path)
-                if let data = try? enc.encode(s),
-                   !migrating || (try? PropertyListDecoder().decode(Saved.self, from: data)) != nil,
-                   (try? data.write(to: u, options: .atomic)) != nil {
+                if let data = try? enc.encode(s), (try? data.write(to: u, options: .atomic)) != nil {
                     bytes = data.count
-                    // The old JSON copy is kept once, as a backup, until the next binary save has read back fine.
+                    // The old JSON copy is kept as a backup until a later launch has read the binary file fine.
                     let bak = legacy.appendingPathExtension("bak")
                     if FileManager.default.fileExists(atPath: legacy.path) {
                         try? FileManager.default.removeItem(at: bak)
