@@ -89,7 +89,15 @@ jobs:
       - name: Generate Xcode project
         run: brew install xcodegen && xcodegen generate
       - name: Build, sign and upload to TestFlight
-        run: fastlane beta
+        shell: bash
+        run: |
+          set -o pipefail
+          fastlane beta 2>&1 | tee fastlane.log
       - name: Show build errors
         if: failure()
-        run: cat ~/Library/Logs/gym/*.log 2>/dev/null | grep -E "error:" | sort -u | head -20 | while read -r l; do echo "::error::$l"; done || true
+        shell: bash
+        run: |
+          # The full log can't be downloaded from where this is maintained, so the key lines become annotations.
+          { cat ~/Library/Logs/gym/*.log 2>/dev/null | grep -E "error:" | sort -u | head -8
+            grep -E "\[!\]|ERROR|Error|error:|Could not|maximum|limit" fastlane.log | grep -v "^\s*$" | tail -8; } \
+            | sed 's/\x1b\[[0-9;]*m//g' | cut -c1-400 | while read -r l; do echo "::error::$l"; done || true
