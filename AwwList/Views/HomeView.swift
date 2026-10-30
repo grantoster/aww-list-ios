@@ -16,11 +16,11 @@ struct HomeView: View {
     @State private var shot: ShotKind?
     @State private var person: UUID?
     @State private var showWho = false
-    @State private var sortByDate = false
     @State private var viewer: ViewerState?
     @State private var showSettings = false
     @State private var showSearch = false
-    @State private var shown = 60
+    /// How many of the ranked photos are showing: the top 30, then 30 more each time "See more" is tapped.
+    @State private var shown = 30
     /// Picking photos to send: hold any photo to start, then tap more. Best-photo ids, in the order picked.
     @State private var selecting = false
     @State private var picked: [String] = []
@@ -41,8 +41,7 @@ struct HomeView: View {
     /// The filtered list, worked out only when the moments or a filter change (not on every redraw: the screen
     /// redraws often while scanning, and filtering thousands of moments each time made it feel sluggish).
     @State private var pool: [Moment] = []
-    @State private var listed: [Moment] = []
-    private var top: [Moment] { Array(pool.prefix(30)) }
+    private var top: [Moment] { Array(pool.prefix(shown)) }
 
     private func refreshLists(_ moments: [Moment]? = nil) {
         let filtered = (moments ?? library.moments).filter { m in
@@ -53,13 +52,12 @@ struct HomeView: View {
             return true
         }
         pool = filtered
-        listed = sortByDate ? filtered.sorted { $0.best.date > $1.best.date } : filtered
         prefetchImages()
     }
 
-    /// Gets the next photos ready before they scroll into view (the top 30 and the first page of See all).
+    /// Gets the next photos ready before they scroll into view: the small tiles showing now and the next 30.
     private func prefetchImages() {
-        let ids = Array(pool.prefix(30).dropFirst(5)).map(\.best.id) + Array(listed.prefix(shown)).map(\.best.id)
+        let ids = Array(pool.prefix(shown + 30).dropFirst(5)).map(\.best.id)
         AssetImage.prefetch(ids, side: 180 * displayScale)
     }
 
@@ -90,7 +88,6 @@ struct HomeView: View {
                                       clear: { age = nil; shot = nil; person = nil }).padding(.top, 40)
                     } else {
                         topSection
-                        allSection
                     }
                 }
                 .padding(.horizontal, 16)
@@ -148,15 +145,14 @@ struct HomeView: View {
             .sheet(isPresented: $showWho) { WhoView() }
             .sheet(isPresented: $showSearch) { SearchView() }
             .fullScreenCover(item: $viewer) { v in ViewerView(moments: v.list, index: v.index) }
-            .onChange(of: scope) { shown = 60; if !preparing { endSelecting() } }
-            .onChange(of: age) { shown = 60; if !preparing { endSelecting() } }
-            .onChange(of: shot) { shown = 60; if !preparing { endSelecting() } }
-            .onChange(of: person) { shown = 60; if !preparing { endSelecting() } }
+            .onChange(of: scope) { shown = 30; if !preparing { endSelecting() } }
+            .onChange(of: age) { shown = 30; if !preparing { endSelecting() } }
+            .onChange(of: shot) { shown = 30; if !preparing { endSelecting() } }
+            .onChange(of: person) { shown = 30; if !preparing { endSelecting() } }
             .onChange(of: scope) { refreshLists() }
             .onChange(of: age) { refreshLists() }
             .onChange(of: shot) { refreshLists() }
             .onChange(of: person) { refreshLists() }
-            .onChange(of: sortByDate) { refreshLists() }
             // Coalesced: a burst of changes re-filters once.
             .onReceive(library.$moments.debounce(for: .milliseconds(80), scheduler: DispatchQueue.main)) { refreshLists($0) }
             .onAppear { refreshLists() }
@@ -294,39 +290,18 @@ struct HomeView: View {
                     Tile(moment: m, rank: i + 6, picked: pickState(m), onHold: { hold(m) }) { tap(top, i + 5) }
                 }
             }
-        }
-    }
-
-    private var allSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ViewThatFits(in: .horizontal) {
-                HStack {
-                    Text("See all").font(Theme.display(22))
-                    Spacer()
-                    sortPicker.frame(maxWidth: 200)
+            if pool.count > shown {
+                Button {
+                    shown += 30
+                    prefetchImages()
+                } label: {
+                    Label("See more", systemImage: "chevron.down").frame(maxWidth: .infinity)
                 }
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("See all").font(Theme.display(22))
-                    sortPicker
-                }
-            }
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 3), spacing: 4) {
-                ForEach(Array(listed.prefix(shown).enumerated()), id: \.element.id) { i, m in
-                    Tile(moment: m, rank: nil, picked: pickState(m), onHold: { hold(m) }) { tap(listed, i) }
-                }
-            }
-            if listed.count > shown {
-                Button("Show more") { shown += 60; prefetchImages() }.tint(Theme.grapeInk)
-                    .buttonStyle(.bordered).frame(maxWidth: .infinity)
+                .buttonStyle(.bordered).controlSize(.large).tint(Theme.grapeInk)
+                .accessibilityHint("Shows the next 30 photos, \(shown + 1) to \(min(pool.count, shown + 30)).")
+                .padding(.top, 4)
             }
         }
-    }
-
-    private var sortPicker: some View {
-        Picker("Sort", selection: $sortByDate) {
-            Text("Cutest").tag(false)
-            Text("By date").tag(true)
-        }.pickerStyle(.segmented)
     }
 
     private var scopeTitle: String {

@@ -467,8 +467,9 @@ final class Library: ObservableObject {
         }
         if preferBuiltIn(ownModel?.trainedOn, builtIn.model?.trainedOn) { learned = builtIn.model; learnedIsBuiltIn = true }
         else { learned = ownModel; learnedIsBuiltIn = false }
-        if preferBuiltIn(ownFilter?.trainedOn, builtIn.filter?.trainedOn) { learnedFilter = builtIn.filter; filterIsBuiltIn = true }
-        else { learnedFilter = ownFilter; filterIsBuiltIn = false }
+        // The built-in removal filter learned from swimwear removals (no longer a reason to remove), so it would
+        // keep hiding beach and pool photos: only this phone's own filter, trained on today's rules, is used.
+        learnedFilter = ownFilter; filterIsBuiltIn = false
         learningEpoch += 1   // cached predictions are stale
     }
     /// Throws away this phone's own learning and learns again from every Claude verdict on hand.
@@ -1038,6 +1039,9 @@ final class Library: ObservableObject {
 
     private func load(_ s: Saved) {
         photos = Dictionary(s.photos.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        // Swimsuits are no longer a reason to leave a photo out: Claude's earlier "swimwear" calls become plain
+        // scores, so beach and pool photos come back (and the learned filter stops hiding ones like them).
+        for (id, p) in photos where p.claude?.exclude == "swimwear" { photos[id]?.claude?.exclude = nil }
         hidden = Set(s.hidden)
         birthdays = s.birthdays ?? []
         // Names saved with an older fingerprint size can't be compared; keep the names, ask for faces again.
@@ -1060,7 +1064,7 @@ final class Library: ObservableObject {
         // launch, so it comes back (and can be copied) without waiting for new Claude scores.
         trainedSignature = s.trainedSignatureBits.map { UInt64(bitPattern: $0) } ?? s.trainedSignature
         if s.useBuiltInLearning == nil { trainedSignature = nil }
-        claudeRemoved = s.claudeRemoved ?? [:]
+        claudeRemoved = (s.claudeRemoved ?? [:]).filter { $0.value != "swimwear" }
         claudeSent = (s.claudeSent ?? [:]).mapValues(Set.init)
         claudeSentYear = s.claudeSentYear ?? [:]
         // Saves from before these ledgers: fill them from the verdicts and pending batches on hand.

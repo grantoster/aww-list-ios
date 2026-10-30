@@ -436,7 +436,7 @@ enum Scorer {
     static func neverSend(_ photos: [PhotoScore], allowSwimShirtless: Bool, removed: [String: String] = [:]) -> Set<String> {
         var windows: [String: TimeInterval] = ["Bath": 600, "Undressed": 600, unavailable: 600]
         if !allowSwimShirtless { windows["Swimwear"] = 600; windows["Shirtless"] = 120 }
-        let claudeReason = ["bath": "Bath", "undressed": "Undressed", "swimwear": "Swimwear"]
+        let claudeReason = ["bath": "Bath", "undressed": "Undressed"]   // swimsuits are fine (beach photos stay)
         func window(_ p: PhotoScore) -> TimeInterval? {
             let a = windows[p.excluded ?? ""], b = p.claude?.exclude.flatMap { claudeReason[$0] }.flatMap { windows[$0] }
             let c = removed[p.id].flatMap { claudeReason[$0] }.flatMap { windows[$0] }

@@ -7,7 +7,9 @@ final class ClaudeTests: XCTestCase {
         XCTAssertEqual(v?.score, 8.5)
         XCTAssertEqual(v?.caption, "giggling in the leaf pile")
         XCTAssertNil(v?.exclude)
-        XCTAssertEqual(Claude.parse("{\"score\": 4, \"caption\": \"x\", \"exclude\": \"swimwear\"}", model: "m")?.exclude, "swimwear")
+        XCTAssertEqual(Claude.parse("{\"score\": 4, \"caption\": \"x\", \"exclude\": \"bath\"}", model: "m")?.exclude, "bath")
+        // Swimsuits are fine now: a "swimwear" call is read as a plain score, so beach photos stay.
+        XCTAssertNil(Claude.parse("{\"score\": 4, \"caption\": \"x\", \"exclude\": \"swimwear\"}", model: "m")?.exclude)
         XCTAssertNil(Claude.parse("{\"score\": 4, \"caption\": \"x\", \"exclude\": \"weird\"}", model: "m")?.exclude)
         XCTAssertEqual(Claude.parse("{\"score\": 14}", model: "m")?.score, 10)
         XCTAssertNil(Claude.parse("no json here", model: "m"))
@@ -42,11 +44,11 @@ final class ClaudeTests: XCTestCase {
         let lib = Library()
         let t = Date(timeIntervalSince1970: 1_700_000_000)
         var p = PhotoScore(id: "keep-test", date: t, raw: 0.7, excluded: nil, age: .kid, caption: "", version: Scorer.version)
-        p.claude = ClaudeVerdict(score: 8, caption: "x", exclude: "swimwear", model: "m", rubric: Claude.rubric)
+        p.claude = ClaudeVerdict(score: 8, caption: "x", exclude: "no_child", model: "m", rubric: Claude.rubric)
         lib.add([p])
         var again = p; again.claude = nil
         lib.add([again])
-        XCTAssertEqual(lib.photos["keep-test"]?.claude?.exclude, "swimwear")
+        XCTAssertEqual(lib.photos["keep-test"]?.claude?.exclude, "no_child")
     }
 
     func testSetAsidePhotosAreOfferedToClaude() {
@@ -100,6 +102,10 @@ final class ClaudeTests: XCTestCase {
         var claudeBath = PhotoScore(id: "cb", date: t, raw: 0.6, excluded: nil, age: .kid, caption: "", version: Scorer.version)
         claudeBath.claude = ClaudeVerdict(score: 1, caption: "", exclude: "bath", model: "m", rubric: Claude.rubric)
         XCTAssertEqual(Scorer.neverSend([claudeBath, burst], allowSwimShirtless: true), ["cb", "burst"])
+        // An old Claude "swimwear" call no longer blocks the photos around it.
+        var claudeSwim = PhotoScore(id: "cs", date: t, raw: 0.6, excluded: nil, age: .kid, caption: "", version: Scorer.version)
+        claudeSwim.claude = ClaudeVerdict(score: 7, caption: "", exclude: "swimwear", model: "m", rubric: Claude.rubric)
+        XCTAssertTrue(Scorer.neverSend([claudeSwim, burst], allowSwimShirtless: false).isEmpty)
         let unreadable = PhotoScore(id: "x", date: t, raw: nil, excluded: Scorer.unavailable, age: nil, caption: "", version: Scorer.version)
         XCTAssertEqual(Scorer.neverSend([unreadable, burst], allowSwimShirtless: true), ["x", "burst"])
     }

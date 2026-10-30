@@ -7,7 +7,7 @@ import Security
 struct ClaudeVerdict: Codable, Hashable {
     var score: Double          // 1...10, one decimal
     var caption: String
-    var exclude: String?       // "swimwear", "bath", "undressed", "no_child", "screenshot", "ai_or_edited"
+    var exclude: String?       // "bath", "undressed", "no_child", "screenshot", "ai_or_edited"
     var model: String
     var rubric: Int
     /// A second score from re-sending the same photo (the consistency check); the learning uses the average.
@@ -47,10 +47,11 @@ enum Claude {
     connection between people, then the moment itself; sharpness and framing only break ties. Closed eyes, backs \
     of heads and blur lose points; crying or tantrums score low. Use the whole scale: 5 is an ordinary nice photo, \
     8 is a favorite, 9 and 10 are rare, truly exceptional moments.
-    Leave the photo out (set "exclude") if: no child is the subject ("no_child"); a child is in a bath ("bath"), in \
-    swimwear ("swimwear"), or undressed beyond a diaper, including shirtless children past the baby stage \
-    ("undressed"); it is a screenshot, meme, document, collage, or a photo of a screen or print ("screenshot"); or \
-    it looks AI-generated or heavily edited or face-retouched ("ai_or_edited").
+    Leave the photo out (set "exclude") if: no child is the subject ("no_child"); a child is in a bath ("bath"), or \
+    undressed beyond a diaper, including shirtless children past the baby stage unless they're in swimwear at the \
+    beach, pool or splash pad ("undressed"); it is a screenshot, meme, document, collage, or a photo of a screen or print ("screenshot"); or \
+    it looks AI-generated or heavily edited or face-retouched ("ai_or_edited"). Swimsuits at the beach, pool or \
+    splash pad are fine: score those photos like any other and don't leave them out.
     Reply with JSON only: {"score": number, "caption": "specific description of the moment, at most 8 words, no names", \
     "exclude": null or one of the reasons above}
     """
@@ -107,7 +108,7 @@ enum Claude {
               let obj = try? JSONSerialization.jsonObject(with: Data(text[a...b].utf8)) as? [String: Any],
               let score = (obj["score"] as? NSNumber)?.doubleValue else { return nil }
         let caption = (obj["caption"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let allowed: Set<String> = ["swimwear", "bath", "undressed", "no_child", "screenshot", "ai_or_edited"]
+        let allowed: Set<String> = ["bath", "undressed", "no_child", "screenshot", "ai_or_edited"]
         let ex = (obj["exclude"] as? String).flatMap { allowed.contains($0) ? $0 : nil }
         let oneDecimal = (max(1, min(10, score)) * 10).rounded(.toNearestOrAwayFromZero) / 10   // halves round up
         return ClaudeVerdict(score: oneDecimal, caption: caption, exclude: ex, model: model, rubric: rubric)
@@ -337,7 +338,7 @@ final class ClaudeService: ObservableObject {
         guard allChecked else { return false }
         let blocked = Scorer.neverSend(near, allowSwimShirtless: library.claudeSensitive, removed: library.claudeRemoved)
         if m.memberIDs.contains(where: blocked.contains) { return false }
-        let sensitive: Set<String> = ["bath", "undressed", "swimwear"]
+        let sensitive: Set<String> = ["bath", "undressed"]
         for p in near where sensitive.contains(p.claude?.exclude ?? library.claudeRemoved[p.id] ?? "") {
             if dates.contains(where: { abs($0.timeIntervalSince(p.date)) <= 120 }) { return false }
         }
