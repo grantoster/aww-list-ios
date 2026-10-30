@@ -15,6 +15,7 @@ struct HomeView: View {
     @State private var sortByDate = false
     @State private var viewer: ViewerState?
     @State private var showSettings = false
+    @State private var showSearch = false
     @State private var shown = 60
     /// Picking photos to send: hold any photo to start, then tap more. Best-photo ids, in the order picked.
     @State private var selecting = false
@@ -54,14 +55,11 @@ struct HomeView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 12) {
                     ScanBannerSlot()
                     ClaudeKeyNote()
                     scopeBar
-                    ageBar
-                    shotBar
-                    whoBar
-                    if library.claudeScored > 0 || library.learned != nil || library.rankBy == "consolidated" { rankBar }
+                    filterBar
                     if age == .toddler && library.birthdays.isEmpty && !library.people.contains(where: { $0.birthday != nil }) {
                         ContentUnavailableView {
                             Label("Add your kids' birthdays", systemImage: "birthday.cake")
@@ -116,6 +114,10 @@ struct HomeView: View {
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
+                    Button { showSearch = true } label: { Image(systemName: "magnifyingglass") }
+                        .accessibilityLabel("Search")
+                }
+                ToolbarItem(placement: .topBarTrailing) {
                     Button { showWho = true } label: { Image(systemName: "person.2.crop.square.stack") }
                         .accessibilityLabel("Who's Who")
                 }
@@ -126,6 +128,7 @@ struct HomeView: View {
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
             .sheet(isPresented: $showWho) { WhoView() }
+            .sheet(isPresented: $showSearch) { SearchView() }
             .fullScreenCover(item: $viewer) { v in ViewerView(moments: v.list, index: v.index) }
             .onChange(of: scope) { shown = 60; if !preparing { endSelecting() } }
             .onChange(of: age) { shown = 60; if !preparing { endSelecting() } }
@@ -156,61 +159,85 @@ struct HomeView: View {
         }
     }
 
-    private var ageBar: some View {
+    /// Age, kind of shot and person, each a compact dropdown on one row (a chip turns purple when it's set).
+    private var filterBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                Text("Age").font(.subheadline).foregroundStyle(.secondary)
-                Pill(title: "All ages", on: age == nil, small: true) { age = nil }
-                ForEach(AgeGroup.allCases) { g in Pill(title: g.label, on: age == g, small: true) { age = g } }
-            }
-        }
-    }
-
-    /// Solo, kids together, or family and groups (grown-ups in the shot, or three or more faces).
-    private var shotBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                Text("Shots").font(.subheadline).foregroundStyle(.secondary)
-                Pill(title: "All", on: shot == nil, small: true) { shot = nil }
-                ForEach(ShotKind.allCases) { k in Pill(title: k.label, on: shot == k, small: true) { shot = k } }
-            }
-        }
-    }
-
-    /// Once Claude has scored photos: order the lists by Claude's score, the learned score, Apple's on-device score,
-    /// or Consolidated (each year's top 100 from each, combined).
-    private var rankBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) { HStack(spacing: 8) {
-            Text("Rank by").font(.subheadline).foregroundStyle(.secondary)
-            Pill(title: "Claude", on: library.rankBy == "claude", small: true) { library.setRankBy("claude") }
-            if library.learned != nil {
-                Pill(title: "Learned", on: library.rankBy == "learned", small: true) { library.setRankBy("learned") }
-            }
-            Pill(title: "Apple", on: library.rankBy == "apple" || (library.rankBy == "learned" && library.learned == nil),
-                 small: true) { library.setRankBy("apple") }
-            Pill(title: "Consolidated", on: library.rankBy == "consolidated", small: true) { library.setRankBy("consolidated") }
-        } }
-    }
-
-    /// Filter by someone named in Who's Who; until someone is named, a button to start.
-    @ViewBuilder private var whoBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                Text("Who").font(.subheadline).foregroundStyle(.secondary)
+                Menu {
+                    Picker("Age", selection: $age) {
+                        Text("All ages").tag(AgeGroup?.none)
+                        ForEach(AgeGroup.allCases) { g in Text(g.label).tag(AgeGroup?.some(g)) }
+                    }
+                } label: { DropChip(title: age?.label ?? "All ages", on: age != nil) }
+                // Solo, kids together, or family and groups (grown-ups in the shot, or three or more faces).
+                Menu {
+                    Picker("Shots", selection: $shot) {
+                        Text("All shots").tag(ShotKind?.none)
+                        ForEach(ShotKind.allCases) { k in Text(k.label).tag(ShotKind?.some(k)) }
+                    }
+                } label: { DropChip(title: shot?.label ?? "All shots", on: shot != nil) }
                 if library.people.isEmpty || !faceConsent {
-                    Pill(title: library.people.isEmpty ? "Name faces…" : "Turn on Who's Who…", on: false, small: true) { showWho = true }
+                    Button { showWho = true } label: {
+                        DropChip(title: library.people.isEmpty ? "Who's Who…" : "Turn on Who's Who…", on: false, chevron: false)
+                    }.buttonStyle(.plain)
                 } else {
-                    Pill(title: "Everyone", on: person == nil, small: true) { person = nil }
-                    ForEach(library.people) { p in Pill(title: p.name, on: person == p.id, small: true) { person = p.id } }
+                    Menu {
+                        Picker("Who", selection: $person) {
+                            Text("Everyone").tag(UUID?.none)
+                            ForEach(library.people) { p in Text(p.name).tag(UUID?.some(p.id)) }
+                        }
+                        Divider()
+                        Button("Who's Who…") { showWho = true }
+                    } label: {
+                        DropChip(title: person.flatMap { id in library.people.first { $0.id == id }?.name } ?? "Everyone",
+                                 on: person != nil)
+                    }
                 }
             }
         }
     }
 
+    /// Once Claude has scored photos: order the lists by Claude's score, the learned score, Apple's on-device score,
+    /// or Consolidated (each year's top 100 from each, combined). Sits beside the count under the title.
+    @ViewBuilder private var rankMenu: some View {
+        if library.claudeScored > 0 || library.learned != nil || library.rankBy == "consolidated" {
+            Menu {
+                Picker("Rank by", selection: Binding(get: { rankChoice }, set: { library.setRankBy($0) })) {
+                    Text("Claude").tag("claude")
+                    if library.learned != nil { Text("Learned").tag("learned") }
+                    Text("Apple").tag("apple")
+                    Text("Consolidated").tag("consolidated")
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text("Ranked by").foregroundStyle(.secondary)
+                    Text(rankLabel).foregroundStyle(Theme.accent)
+                    Image(systemName: "chevron.down").font(.caption2.bold()).foregroundStyle(Theme.accent)
+                }
+                .font(Theme.label(15))
+            }
+            .accessibilityLabel("Ranked by \(rankLabel)")
+        }
+    }
+    private var rankChoice: String { library.rankBy == "learned" && library.learned == nil ? "apple" : library.rankBy }
+    private var rankLabel: String {
+        switch rankChoice { case "learned": "Learned"; case "apple": "Apple"; case "consolidated": "Consolidated"; default: "Claude" }
+    }
+
     private var topSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(scopeTitle + " top 30").font(Theme.display(26)).lineLimit(1).minimumScaleFactor(0.7)
-            Text("\(pool.count.formatted()) moments ranked").font(Theme.label(15)).foregroundStyle(.secondary)
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    Text("\(pool.count.formatted()) moments").font(Theme.label(15)).foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    rankMenu
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("\(pool.count.formatted()) moments").font(Theme.label(15)).foregroundStyle(.secondary)
+                    rankMenu
+                }
+            }
             // While picking, this row stays (blank) so the photos don't jump under your finger.
             Group {
                 let n = min(maxPick, top.count)
@@ -243,7 +270,7 @@ struct HomeView: View {
                     Card(moment: m, rank: i + 2, height: 190, picked: pickState(m), onHold: { hold(m) }) { tap(top, i + 1) }
                 }
             }
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 4), spacing: 6) {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
                 ForEach(Array(top.dropFirst(5).enumerated()), id: \.element.id) { i, m in
                     Tile(moment: m, rank: i + 6, picked: pickState(m), onHold: { hold(m) }) { tap(top, i + 5) }
                 }
@@ -506,7 +533,7 @@ struct Tile: View {
     @State private var pressing = false
     var body: some View {
         Color.clear.aspectRatio(1, contentMode: .fit)
-            .overlay(AssetImage(id: moment.best.id, targetSide: 200))
+            .overlay(AssetImage(id: moment.best.id, targetSide: 260))
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay(alignment: .topLeading) { if let rank { RankBadge(rank: rank).scaleEffect(0.8).padding(2) } }
             .overlay(alignment: .bottomTrailing) { if picked == nil { ScoreBadge(score: moment.score).scaleEffect(0.85).padding(3) } }
@@ -528,11 +555,23 @@ struct ScanBanner: View {
     @EnvironmentObject var scanner: PhotoScanner
     @State private var asked = BackgroundScan.autoContinue
     @State private var failed: String?
+    @State private var expanded = false
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Finding your cutest moments…").font(.subheadline.bold())
-            ProgressView(value: Double(scanner.done), total: Double(max(1, scanner.total)))
-            Text("\(scanner.done.formatted()) of \(scanner.total.formatted()) photos checked. If you leave, it keeps going in the background (iOS shows its progress), and otherwise picks up overnight while your phone charges, or when you come back.")
+            // One slim line; tap for the details.
+            Button { withAnimation(.easeOut(duration: 0.2)) { expanded.toggle() } } label: {
+                HStack(spacing: 8) {
+                    Text("Checking photos… \(scanner.done.formatted()) of \(scanner.total.formatted())")
+                        .font(.footnote.bold()).foregroundStyle(.primary)
+                    Spacer(minLength: 4)
+                    Image(systemName: expanded ? "chevron.up" : "info.circle").font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint(expanded ? "Hides the details" : "Shows the details")
+            ProgressView(value: Double(scanner.done), total: Double(max(1, scanner.total))).controlSize(.mini)
+            if expanded {
+            Text("If you leave, it keeps going in the background (iOS shows its progress), and otherwise picks up overnight while your phone charges, or when you come back.")
                 .font(.caption).foregroundStyle(.secondary)
             if BackgroundScan.canContinueInBackground {
                 Button(asked ? "It'll keep going after you leave" : "Keep scanning in the background") {
@@ -542,8 +581,9 @@ struct ScanBanner: View {
                 .buttonStyle(.bordered).font(.subheadline).disabled(asked)
                 if let failed { Text(failed).font(.caption).foregroundStyle(.secondary) }
             }
+            }
         }
-        .padding(12)
+        .padding(.horizontal, 12).padding(.vertical, 8)
         .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
     }
 }
@@ -573,5 +613,23 @@ struct EmptyListView: View {
     var body: some View {
         ContentUnavailableView("No awws yet", systemImage: "heart.circle",
                                description: Text(scanner.isScanning ? "Still looking through your photos. The good ones show up here as they're found." : "Nothing here for this filter. Try another one."))
+    }
+}
+
+/// A compact filter chip that opens a menu (purple when a filter is set).
+struct DropChip: View {
+    let title: String
+    let on: Bool
+    var chevron = true
+    var body: some View {
+        HStack(spacing: 5) {
+            Text(title).lineLimit(1)
+            if chevron { Image(systemName: "chevron.down").font(.caption2.bold()) }
+        }
+        .font(Theme.label(15))
+        .padding(.horizontal, 12).frame(minHeight: 36)
+        .background(on ? Theme.accent : Theme.surface, in: Capsule())
+        .foregroundStyle(on ? Color.white : Color.primary)
+        .contentShape(Capsule())
     }
 }

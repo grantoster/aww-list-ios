@@ -1,5 +1,6 @@
 import SwiftUI
 import Photos
+import UIKit
 
 /// Asks for photo access the first time, then shows the list and keeps the scan going.
 struct RootView: View {
@@ -138,6 +139,7 @@ struct SettingsView: View {
                 ClaudeSection()
                 LearnedSection()
                 BirthdaysSection()
+                DiagnosticsSection()
                 Section("Library") {
                     LabeledContent("Photos checked", value: library.photos.count.formatted())
                     LabeledContent("Moments ranked", value: library.everyMoment.count.formatted())
@@ -515,5 +517,27 @@ struct LoadingView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.background.ignoresSafeArea())
+    }
+}
+
+/// How long opening, ranking and saving took, and memory use, so a slow or closing app can be looked into.
+struct DiagnosticsSection: View {
+    @EnvironmentObject var library: Library
+    @State private var copied = false
+    var body: some View {
+        Section {
+            ForEach(library.diagnostics) { d in LabeledContent(d.label, value: d.value) }
+            Button(copied ? "Copied" : "Copy diagnostics") {
+                library.noteMemory()
+                let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+                UIPasteboard.general.string = (["Awwbum build \(build)"] + library.diagnostics.map { "\($0.label): \($0.value)" })
+                    .joined(separator: "\n")
+                copied = true
+            }
+        } header: {
+            Text("Diagnostics")
+        } footer: {
+            Text("Timings and memory from this session, to help find what makes the app slow. Nothing here is sent anywhere unless you copy it.")
+        }
     }
 }

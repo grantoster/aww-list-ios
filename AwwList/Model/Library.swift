@@ -61,11 +61,15 @@ final class Library: ObservableObject {
     private var unsaved = 0
     private var lastSave = Date()
 
+    /// The library is saved as a compact binary file (much smaller and lighter on memory than the JSON it
+    /// replaces, which a large library could push past iOS's memory limit while saving). The old JSON file is
+    /// read once if that's all there is, and removed after the first binary save.
     private let url: URL = {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("scores.json")
+        return dir.appendingPathComponent("scores.plist")
     }()
+    private var legacyURL: URL { url.deletingLastPathComponent().appendingPathComponent("scores.json") }
     private struct Saved: Codable {
         var photos: [PhotoScore]; var hidden: [String]; var birthdays: [Date]?
         var people: [Person]?; var strictness: Int?
@@ -85,21 +89,28 @@ final class Library: ObservableObject {
     func whenReady(_ handler: @escaping () -> Void) { if ready { handler() } else { readyHandlers.append(handler) } }
 
     init() {
-        let u = url
+        let u = url, legacy = legacyURL
         Task.detached(priority: .userInitiated) { [weak self] in
-            let saved = Library.readSaved(u)
-            await MainActor.run { self?.finishLoading(saved) }
+            let t0 = Date()
+            let saved = FileManager.default.fileExists(atPath: u.path) ? Library.readSaved(u, binary: true)
+                                                                       : Library.readSaved(legacy, binary: false)
+            let readTime = Date().timeIntervalSince(t0)
+            await MainActor.run { self?.note("Read saved library", seconds: readTime); self?.finishLoading(saved) }
         }
     }
 
     private enum ReadResult { case none, loaded(Saved), failed(blockSaves: Bool) }
-    nonisolated private static func readSaved(_ u: URL) -> ReadResult {
+    nonisolated private static func readSaved(_ u: URL, binary: Bool) -> ReadResult {
         guard FileManager.default.fileExists(atPath: u.path) else { return .none }
         // Couldn't read the file this time (it may be briefly unavailable): leave it, and don't save over it.
-        guard let data = try? Data(contentsOf: u) else { return .failed(blockSaves: true) }
-        guard let s = try? JSONDecoder().decode(Saved.self, from: data) else {
+        guard let data = try? Data(contentsOf: u, options: .mappedIfSafe) else { return .failed(blockSaves: true) }
+        let decoded: Saved? = autoreleasepool {
+            if binary { return try? PropertyListDecoder().decode(Saved.self, from: data) }
+            return try? JSONDecoder().decode(Saved.self, from: data)
+        }
+        guard let s = decoded else {
             // Damaged: keep it aside rather than letting the next save overwrite it with an empty library.
-            let aside = u.deletingLastPathComponent().appendingPathComponent("scores-unreadable-\(Int(Date().timeIntervalSince1970)).json")
+            let aside = u.deletingLastPathComponent().appendingPathComponent("scores-unreadable-\(Int(Date().timeIntervalSince1970)).\(binary ? "plist" : "json")")
             let moved = (try? FileManager.default.moveItem(at: u, to: aside)) != nil
             return .failed(blockSaves: !moved)
         }
@@ -109,11 +120,24 @@ final class Library: ObservableObject {
     private var savesBlocked = false
 
     private func finishLoading(_ result: ReadResult) {
-        var saved: Saved? = nil
-        if case .loaded(let s) = result { saved = s }
-        if let saved { load(saved) } else { applyLearning(); rebuild() }   // a fresh install (or an unreadable save, kept aside)
-        if case .failed(let block) = result { hadSavedData = true; savesBlocked = block }
-        if saved != nil { hadSavedData = true }
+        let t0 = Date()
+        var hadSaved = false, failedBlock: Bool? = nil
+        switch result {
+        case .loaded(let s): load(s); hadSaved = true
+        case .failed(let block): applyLearning(); failedBlock = block   // an unreadable save, kept aside
+        case .none: applyLearning()                                     // a fresh install
+        }
+        note("Apply saved library", seconds: Date().timeIntervalSince(t0))
+        // Work out every photo's scores off the main thread first, so the first ranking is quick.
+        prewarmDerived { [weak self] in self?.finishLoadingRanked(hadSaved: hadSaved, failedBlock: failedBlock) }
+    }
+
+    private func finishLoadingRanked(hadSaved: Bool, failedBlock: Bool?) {
+        let t1 = Date()
+        rebuild()
+        note("First ranking", seconds: Date().timeIntervalSince(t1))
+        if let block = failedBlock { hadSavedData = true; savesBlocked = block }
+        if hadSaved { hadSavedData = true }
         // Before Who's Who asked for consent: anyone who already named people keeps it on; otherwise no face
         // prints are kept until it's turned on.
         var deletePending = false
@@ -132,11 +156,72 @@ final class Library: ObservableObject {
         if deletePending {
             save { if UserDefaults.standard.object(forKey: "faceConsent") == nil { UserDefaults.standard.set(false, forKey: "faceConsent") } }
         }
-        learnPeople()
-        // Claude scores that came back while the app was closed.
-        if !claudeBatches.isEmpty { Task { await Shared.claude.collect(self) } }
         let handlers = readyHandlers; readyHandlers = []
         handlers.forEach { $0() }
+        noteMemory()
+        // The rest waits a moment, one thing at a time, so opening the app never piles up work (or memory).
+        staggered([
+            { $0.retrain() },
+            { $0.learnPeople() },
+            { lib in if !lib.claudeBatches.isEmpty { Task { await Shared.claude.collect(lib) } } },
+        ])
+    }
+
+    // MARK: Diagnostics (shown in Settings, so a slow or closing app can be looked into without a crash log)
+
+    struct Diagnostic: Identifiable { var label: String; var value: String; var id: String { label } }
+    @Published private(set) var diagnostics: [Diagnostic] = []
+    func note(_ label: String, seconds: Double) { note(label, String(format: "%.1f s", seconds)) }
+    func note(_ label: String, _ value: String) {
+        if let i = diagnostics.firstIndex(where: { $0.label == label }) { diagnostics[i].value = value }
+        else { diagnostics.append(Diagnostic(label: label, value: value)) }
+    }
+    /// The app's current memory use, as iOS counts it toward its limit.
+    func noteMemory() {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+        let r = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count) }
+        }
+        guard r == KERN_SUCCESS else { return }
+        let used = ByteCountFormatter.string(fromByteCount: Int64(info.phys_footprint), countStyle: .memory)
+        note("Memory in use", used)
+        if info.limit_bytes_remaining > 0 {
+            note("Memory left before iOS's limit", ByteCountFormatter.string(fromByteCount: Int64(info.limit_bytes_remaining), countStyle: .memory))
+        }
+    }
+
+    /// Runs each step a couple of seconds after the last, on the main thread.
+    private func staggered(_ steps: [(Library) -> Void], gap: Double = 2) {
+        Task { @MainActor [weak self] in
+            for step in steps {
+                try? await Task.sleep(for: .seconds(gap))
+                guard let self else { return }
+                step(self)
+            }
+        }
+    }
+
+    /// Fills the per-photo cache (decoded measurements, learned score, removal check, balanced score) off the
+    /// main thread, then calls `then` on the main thread.
+    private func prewarmDerived(then: @escaping () -> Void) {
+        let snapshot = Array(photos.values), model = learned, filter = learnedFilter, epoch = learningEpoch
+        let t0 = Date()
+        Task.detached(priority: .userInitiated) { [weak self] in
+            var out: [String: Derived] = [:]
+            out.reserveCapacity(snapshot.count)
+            for p in snapshot {
+                guard let f = p.feat, let x = Learner.decode(f) else { continue }
+                out[p.id] = Library.derive(p, f, x, model: model, filter: filter, epoch: epoch)
+            }
+            let took = Date().timeIntervalSince(t0)
+            await MainActor.run {
+                guard let self else { return }
+                if self.learningEpoch == epoch { self.derived.merge(out) { _, new in new } }
+                self.note("Scores worked out (\(out.count.formatted()) photos)", seconds: took)
+                then()
+            }
+        }
     }
 
     /// New results from the scanner. The list is rebuilt at most every 2 seconds while scanning.
@@ -167,7 +252,12 @@ final class Library: ObservableObject {
         if unsaved >= 200 && Date().timeIntervalSince(lastSave) > 120 { save() }
     }
 
-    func finishScan() { rebuild(); save(); retrain(); learnPeople() }
+    /// After a scan: re-rank now, then save, re-check the learning and update Who's Who a few seconds apart
+    /// (all at once could push a large library past iOS's memory limit).
+    func finishScan() {
+        rebuild()
+        staggered([{ $0.save() }, { $0.retrain() }, { $0.learnPeople() }, { $0.noteMemory() }], gap: 3)
+    }
 
     /// Removes a whole moment (every shot in its burst) from the list.
     func hide(_ m: Moment) { hidden.formUnion(m.memberIDs); rebuild(); save() }
@@ -310,12 +400,18 @@ final class Library: ObservableObject {
         let sp = p.special ?? Scorer.specialFromCaption(p.caption)   // a new caption can change this without new measurements
         if let d = derived[p.id], d.epoch == learningEpoch, d.special == sp, d.feat == f { return d }
         guard let x = Learner.decode(f) else { return nil }
-        let learnedV = learned.map { (Learner.predict($0, x) * 10).rounded(.toNearestOrAwayFromZero) / 10 }
-        let removes = learnedFilter.map { $0.useful && Learner.removalChance($0, x) >= Learner.removeAt } ?? false
-        let d = Derived(feat: f, epoch: learningEpoch, special: sp, learned: learnedV, removes: removes,
-                        balanced: Scorer.balanced(x, special: sp))
+        let d = Library.derive(p, f, x, model: learned, filter: learnedFilter, epoch: learningEpoch)
         derived[p.id] = d
         return d
+    }
+
+    nonisolated private static func derive(_ p: PhotoScore, _ f: Data, _ x: [Double], model: LearnedModel?,
+                                           filter: LearnedFilter?, epoch: Int) -> Derived {
+        let sp = p.special ?? Scorer.specialFromCaption(p.caption)
+        let learnedV = model.map { (Learner.predict($0, x) * 10).rounded(.toNearestOrAwayFromZero) / 10 }
+        let removes = filter.map { $0.useful && Learner.removalChance($0, x) >= Learner.removeAt } ?? false
+        return Derived(feat: f, epoch: epoch, special: sp, learned: learnedV, removes: removes,
+                       balanced: Scorer.balanced(x, special: sp))
     }
 
     /// True when the learned filter expects Claude would take this photo off the list.
@@ -338,24 +434,32 @@ final class Library: ObservableObject {
 
     func retrain() {
         guard !training else { pendingRetrain = true; return }   // run again once the current one finishes
-        var parts: [String] = []
-        var examples: [(date: Date, x: [Double], y: Double)] = []
-        var verdicts: [(date: Date, x: [Double], removed: Bool)] = []
-        var averagedCount = 0
-        for p in photos.values.sorted(by: { $0.id < $1.id }) {
-            guard let c = p.claude, let f = p.feat, let x = Learner.decode(f) else { continue }
-            parts.append("\(p.id)|\(c.score)|\(c.score2 ?? -1)|\(c.exclude ?? "")")
-            verdicts.append((p.date, x, c.exclude != nil))
-            // Where Claude scored a photo twice, learn from the average (closer to its real opinion).
-            if c.exclude == nil { examples.append((p.date, x, c.score2.map { (c.score + $0) / 2 } ?? c.score)) }
-            if c.exclude == nil && c.score2 != nil { averagedCount += 1 }
-        }
-        let signature = Learner.stableHash(parts)
-        guard signature != trainedSignature else { return }      // nothing new to learn from (also across launches)
         training = true
         let gen = generation
-        let averaged = averagedCount
+        let known = trainedSignature
+        let scored = photos.values.filter { $0.claude != nil && $0.feat != nil }   // only these are needed
+        // Gathering the examples (decoding thousands of fingerprints) happens off the main thread too.
         Task.detached(priority: .utility) {
+            var parts: [String] = []
+            var examples: [(date: Date, x: [Double], y: Double)] = []
+            var verdicts: [(date: Date, x: [Double], removed: Bool)] = []
+            var averaged = 0
+            for p in scored.sorted(by: { $0.id < $1.id }) {
+                guard let c = p.claude, let f = p.feat, let x = Learner.decode(f) else { continue }
+                parts.append("\(p.id)|\(c.score)|\(c.score2 ?? -1)|\(c.exclude ?? "")")
+                verdicts.append((p.date, x, c.exclude != nil))
+                // Where Claude scored a photo twice, learn from the average (closer to its real opinion).
+                if c.exclude == nil { examples.append((p.date, x, c.score2.map { (c.score + $0) / 2 } ?? c.score)) }
+                if c.exclude == nil && c.score2 != nil { averaged += 1 }
+            }
+            let signature = Learner.stableHash(parts)
+            if signature == known {                             // nothing new to learn from (also across launches)
+                await MainActor.run {
+                    self.training = false
+                    if self.pendingRetrain { self.pendingRetrain = false; self.retrain() }
+                }
+                return
+            }
             let model = Learner.train(examples, averaged: averaged)
             let filter = Learner.trainFilter(verdicts)
             await MainActor.run {
@@ -546,6 +650,8 @@ final class Library: ObservableObject {
 
     func rebuild() {
         lastRebuild = Date()
+        let started = Date()
+        defer { note("Last ranking", seconds: Date().timeIntervalSince(started)) }
         // Results from an older scorer never went through today's filters, so they stay off the list until re-scored,
         // but their bath/swim exclusions still quarantine the shots around them.
         // Apple's flags (no child spotted, water, swimwear, shirtless, AI or edited file) no longer take a photo
@@ -782,10 +888,26 @@ final class Library: ObservableObject {
                       trainedSignature: trainedSignature, useBuiltInLearning: useBuiltInLearning,
                       claudeRemoved: claudeRemoved, claudeSent: claudeSent.mapValues { Array($0) },
                       claudeSentYear: claudeSentYear)
-        let u = url
+        let u = url, legacy = legacyURL
         // One save at a time, in order, so an older snapshot can never land after a newer one.
         Library.saveQueue.async {
-            if let data = try? JSONEncoder().encode(s) { try? data.write(to: u, options: .atomic) }
+            let t0 = Date()
+            var bytes = 0
+            autoreleasepool {
+                let enc = PropertyListEncoder(); enc.outputFormat = .binary
+                if let data = try? enc.encode(s), (try? data.write(to: u, options: .atomic)) != nil {
+                    bytes = data.count
+                    try? FileManager.default.removeItem(at: legacy)   // the old JSON copy isn't needed any more
+                } else if let data = try? JSONEncoder().encode(s), (try? data.write(to: legacy, options: .atomic)) != nil {
+                    bytes = data.count
+                    try? FileManager.default.removeItem(at: u)        // fall back to JSON (read next time instead)
+                }
+            }
+            let took = Date().timeIntervalSince(t0), size = bytes
+            DispatchQueue.main.async {
+                Shared.library.note("Last save", String(format: "%.1f s, ", took) + ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
+                Shared.library.noteMemory()
+            }
             if let done { DispatchQueue.main.async(execute: done) }
         }
     }
@@ -844,7 +966,5 @@ final class Library: ObservableObject {
         }
         rankBy = s.rankBy ?? "claude"
         claudeFailures = s.claudeFailures ?? [:]
-        rebuild()
-        retrain()
     }
 }
