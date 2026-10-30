@@ -54,10 +54,13 @@ struct RootView: View {
             }
             if phase == .active {
                 status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+                if status == .authorized && !library.notVisible.isEmpty { scanner.start(library: library) }   // Limited → Full
                 if status == .authorized || status == .limited { scanner.startIfNeeded(library: library) }
                 if !library.claudeBatches.isEmpty { Task { await Shared.claude.collect(library) } }
                 autoScore()
             } else if phase == .background {
+                // Photos may be hidden or deleted in Photos while Awwbum is away: no cached copy outlives that.
+                AssetImage.clearCache()
                 library.save()
                 BackgroundScan.wrapUpAfterClosing()
                 BackgroundScan.scheduleOvernight()
@@ -251,14 +254,6 @@ struct ClaudeSection: View {
     @State private var hasKey = Claude.apiKey != nil
     @State private var agreed = false
     @AppStorage("autoClaude") private var autoClaude = false
-    /// Worked out when Settings opens and when the list or sending changes, not on every redraw (each walks
-    /// the whole library).
-    @State private var toSendCount = 0
-    @State private var recheckCount = 0
-    private func recount() {
-        toSendCount = claude.candidates(library).count
-        recheckCount = claude.recheckCandidates(library).count
-    }
 
     var body: some View {
         Section {
@@ -277,7 +272,7 @@ struct ClaudeSection: View {
             Picker("Photos to send", selection: Binding(get: { library.claudeScope }, set: { library.setClaude(scope: $0) })) {
                 ForEach(Claude.scopes, id: \.n) { s in Text(s.name).tag(s.n) }
             }
-            let n = toSendCount
+            let n = library.claudeToSend
             LabeledContent("Not sent yet", value: n == 0 ? "None" : "\(n.formatted()) photos")
             if !library.claudeBatches.isEmpty {
                 LabeledContent("Being scored", value: "\(library.claudeBatches.reduce(0) { $0 + $1.photos.count }.formatted()) photos")
@@ -298,7 +293,7 @@ struct ClaudeSection: View {
             Toggle("Send these photos to Claude", isOn: $agreed)
             Button(claude.busy ? "Working…" : scanner.isScanning ? "Score with Claude (after the scan)" : "Score with Claude") { Task { await claude.send(library) } }
                 .disabled(!hasKey || !agreed || claude.busy || n == 0 || scanner.isScanning)
-            let rc = recheckCount
+            let rc = library.claudeRecheckable
             if library.claudeScored > 0 {
                 Button("Check Claude's consistency (re-score \(rc.formatted()) photos, about \(Claude.dollars(micros: Claude.costMicros(photos: rc, model: library.claudeModel))))") {
                     Task { await claude.send(library, recheck: true) }
@@ -326,13 +321,6 @@ struct ClaudeSection: View {
             }
         } header: {
             Text("Score with Claude")
-                .onAppear { recount() }
-                .onChange(of: library.moments.count) { recount() }
-                .onChange(of: library.claudeBatches.count) { recount() }
-                .onChange(of: library.claudeScope) { recount() }
-                .onChange(of: library.claudeModel) { recount() }
-                .onChange(of: library.claudeSensitive) { recount() }
-                .onChange(of: claude.busy) { recount() }
         } footer: {
             Text("Optional. Claude decides what comes off the list. Your phone scores every photo first and only flags what it isn't sure about (no child spotted, water, swimwear, shirtless, AI or edited files); flagged photos stay listed. Each year's best photos, flagged or not, plus a spread of lower-ranked ones and photos with faces but no child label, are sent to Anthropic's Claude for the final 1–10 score, a description, and the call on whether a photo belongs (bath, swimwear, shirtless, AI or edited, no child). Photos flagged as possible bath or undressed (by Apple's check or Claude's), and every shot within 10 minutes of one, are never sent, even if you put them back. The check is automatic and can miss some photos. Right before sending, the phone re-reads every photo taken within 10 minutes of each one; if any isn't checked yet (still downloading from iCloud, or new), it waits. With Limited photo access, photos outside your selection can't be checked. Possible swimwear and shirtless photos (and the shots right around them) are sent only if you turn that on above; otherwise they stay listed and Claude just doesn't see them. Photos are sent at most 768 pixels on the long side, without location or file details. It uses your own API key from console.anthropic.com; charges go to your Anthropic account. Anthropic's terms say it doesn't train on what's sent; it normally deletes it within 29–30 days, and can keep anything its safety checks flag for up to 2 years. When ranking by Claude, photos Claude hasn't seen are held at 6 or below (8 or below once there's a learned score).")
         }

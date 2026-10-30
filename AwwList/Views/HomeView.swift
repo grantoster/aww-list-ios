@@ -647,7 +647,9 @@ struct EmptyListView: View {
                                    description: Text("Still looking through your photos. The good ones show up here as they're found."))
         } else {
             ContentUnavailableView("No awws here yet", systemImage: "heart.circle",
-                                   description: Text("No photos of kids were found for this year. With Limited photo access, add more photos in Settings."))
+                                   description: Text(PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited
+                                                     ? "No photos of kids were found in the photos you picked. Tap Add photos above to include more."
+                                                     : "No photos of kids were found here yet."))
         }
     }
 }
@@ -699,12 +701,14 @@ struct UndoRemoveBar: View {
                 Text("Removed from list").font(.subheadline.bold()).foregroundStyle(.white)
                 Button("Undo") { library.unhide(library.lastHidden) }
                     .font(.subheadline.bold()).foregroundStyle(Theme.sunny)
+                    .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
             }
             .padding(.horizontal, 16).padding(.vertical, 10)
             .background(Color.black.opacity(0.85), in: Capsule())
             .transition(.opacity)
             .task(id: library.lastHidden) {
-                try? await Task.sleep(for: .seconds(6))
+                AccessibilityNotification.Announcement("Removed from list. Undo is available.").post()
+                try? await Task.sleep(for: .seconds(UIAccessibility.isVoiceOverRunning ? 15 : 6))
                 if !Task.isCancelled { library.forgetLastHidden() }
             }
         }
@@ -716,13 +720,14 @@ struct LimitedAccessBanner: View {
     @State private var limited = PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited
     @Environment(\.scenePhase) private var phase
     var body: some View {
-        Group {
+        VStack(spacing: 0) {
             if limited {
                 HStack(spacing: 10) {
                     Image(systemName: "photo.on.rectangle.angled").foregroundStyle(Theme.grapeInk)
                     Text("Awwbum can only see the photos you picked.").font(.footnote)
                     Spacer(minLength: 4)
                     Button("Add photos") { Self.showPicker() }.font(.footnote.bold()).tint(Theme.grapeInk)
+                        .frame(minHeight: 44).contentShape(Rectangle())
                 }
                 .padding(.horizontal, 12).padding(.vertical, 8)
                 .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))

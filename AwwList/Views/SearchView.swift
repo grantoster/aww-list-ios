@@ -48,6 +48,7 @@ struct SearchView: View {
                     library.people.map { ($0.id, $0.name) }, uniquingKeysWith: { a, _ in a }))
             }
             .fullScreenCover(item: $viewer) { v in ViewerView(moments: v.list, index: v.index) }
+            .overlay(alignment: .bottom) { UndoRemoveBar().padding(.bottom, 24) }
         }
     }
 }

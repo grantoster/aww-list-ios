@@ -292,7 +292,8 @@ final class Library: ObservableObject {
         unsaved += new.count
         // Re-ranking everything is costly, so it's occasional while scanning (but right away for the very first
         // results, so a new install doesn't sit empty).
-        if moments.isEmpty || Date().timeIntervalSince(lastRebuild) > 30 { rebuild() }
+        let since = Date().timeIntervalSince(lastRebuild)
+        if (moments.isEmpty && since > 3) || since > 30 { rebuild() }
         // The whole library is rewritten on each save, so while scanning save at most every 2 minutes (iOS limits
         // how much an app writes); the end of a scan, closing the app and background time always save.
         if unsaved >= 200 && Date().timeIntervalSince(lastSave) > 120 { save() }
@@ -339,7 +340,17 @@ final class Library: ObservableObject {
     func setClaude(model: String? = nil, scope: Int? = nil) {
         if let model { claudeModel = model }
         if let scope { claudeScope = scope }
+        recountClaude()
         save()
+    }
+    /// How many photos would go to Claude now, and how many can be re-checked (Settings shows these; worked out
+    /// when they can change, not on every redraw).
+    @Published private(set) var claudeToSend = 0
+    @Published private(set) var claudeRecheckable = 0
+    func recountClaude() {
+        let n = Shared.claude.candidates(self).count, r = Shared.claude.recheckCandidates(self).count
+        if n != claudeToSend { claudeToSend = n }
+        if r != claudeRecheckable { claudeRecheckable = r }
     }
     /// How many of each ranking's best moments per year go into Consolidated.
     nonisolated static let consolidatedTop = 100
@@ -355,6 +366,7 @@ final class Library: ObservableObject {
     func unsend(model: String, _ ids: [String]) {
         guard !ids.isEmpty else { return }
         claudeSent[model]?.subtract(ids)
+        recountClaude()
         save()
     }
     func addClaudeBatch(_ b: ClaudeBatch) {
@@ -363,9 +375,10 @@ final class Library: ObservableObject {
         for id in b.photos.values where claudeSentYear[id] == nil {
             if let d = photos[id]?.date { claudeSentYear[id] = Calendar.current.component(.year, from: d) }
         }
+        recountClaude()
         flush()
     }
-    func removeClaudeBatch(_ id: String) { claudeBatches.removeAll { $0.id == id }; save() }
+    func removeClaudeBatch(_ id: String) { claudeBatches.removeAll { $0.id == id }; recountClaude(); save() }
     /// Second scores from the consistency check: stored next to the first (a removal on the second pass is
     /// recorded as no second score), and the learning then uses the average.
     func applyRecheck(_ verdicts: [String: ClaudeVerdict], failed: [String] = []) {
@@ -640,7 +653,7 @@ final class Library: ObservableObject {
         peopleTask?.cancel()
         guard !people.isEmpty, Library.faceConsent else { learnedWho = [:]; learnedFaces = []; whoCache = [:]; learningPeople = false; return }
         let gen = peopleGeneration
-        let snapshot = Array(photos.values)
+        let snapshot = photos.values.filter { !notVisible.contains($0.id) }   // not photos that can't be seen now
         let named = people, t = threshold
         learningPeople = true
         peopleTask = Task.detached(priority: .utility) {
@@ -915,7 +928,8 @@ final class Library: ObservableObject {
         let shown = Set(ms.flatMap(\.memberIDs))
         for p in photos.values where !shown.contains(p.id) {
             let why: String
-            if hidden.contains(p.id) { why = "Removed by you" }
+            if notVisible.contains(p.id) { why = "Not in your Limited Access selection" }
+            else if hidden.contains(p.id) { why = "Removed by you" }
             else if p.version != Scorer.version
                         || (p.excluded == "No child" && p.soft == nil && (p.faces ?? 0) > 0 && (p.flagVersion ?? 0) < 3)
                         || Scorer.needsShirtlessRecheck(p) {
@@ -950,6 +964,7 @@ final class Library: ObservableObject {
         }
         years = Array(Set(ms.map(\.year))).sorted(by: >)
         moments = ms
+        recountClaude()
     }
 
     /// Higher score first; then higher raw score; then the earlier photo.
@@ -978,6 +993,7 @@ final class Library: ObservableObject {
     func save(then done: (@Sendable () -> Void)? = nil) {
         // Never before the saved library is read: an empty save would overwrite it.
         guard ready, !savesBlocked else { if let done { DispatchQueue.main.async(execute: done) }; return }
+        saveTask?.cancel()   // this save covers any pending "save soon"
         unsaved = 0; lastSave = Date()
         let s = Saved(photos: Array(photos.values), hidden: Array(hidden), birthdays: birthdays,
                       people: people, strictness: strictness,
