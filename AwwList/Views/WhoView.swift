@@ -76,9 +76,9 @@ struct WhoView: View {
                     Text("Turn on Who's Who?").font(Theme.label(24, relativeTo: .title2))
                     Text("Who's Who recognizes the people you name, like your kids, so you can see each person's best photos.")
                     VStack(alignment: .leading, spacing: 10) {
-                        Label("Awwbum already measures faces on this iPhone to rank photos (how big, how close, smiles). Who's Who uses those measurements to tell people apart.", systemImage: "face.smiling")
-                        Label("Face measurements and names stay in Awwbum on this iPhone. They're never sent to us, Claude or Anthropic (they're part of your iPhone backup if backups are on).", systemImage: "lock.fill")
-                        Label("You can forget a person at any time. Deleting the app deletes all of it.", systemImage: "trash")
+                        Label("Turning it on makes face measurements (face prints) of up to 4 faces in each photo on your list, on this iPhone, so it can tell people apart. It takes a few minutes.", systemImage: "face.smiling")
+                        Label("Face prints and names stay in Awwbum on this iPhone. They're never sent to us, Claude or Anthropic (they're part of your iPhone backup if backups are on).", systemImage: "lock.fill")
+                        Label("Forget a person, or turn Who's Who off to delete every face print. Deleting the app deletes all of it (copies in earlier backups stay until those backups are deleted).", systemImage: "trash")
                         Label("Only name people who are OK with it (or whose parent is).", systemImage: "hand.raised")
                     }
                     .font(.subheadline).padding().background(Theme.surface, in: RoundedRectangle(cornerRadius: 16))
@@ -195,7 +195,7 @@ struct WhoView: View {
                 Section {
                     Button("Turn off Who's Who") { faceConsent = false; library.setFaceConsent(false) }
                 } footer: {
-                    Text("Stops recognizing people. Names stay saved on this iPhone so turning it back on picks up where you left off; forget a person to remove them. Face measurements and names are never sent to us, Claude or Anthropic.")
+                    Text("Stops recognizing people and deletes every Who's Who face print. Names and birthdays stay; to recognize someone again, turn Who's Who back on and name a few of their faces with the same name.")
                 }
             }
             .scrollContentBackground(.hidden)
@@ -205,6 +205,7 @@ struct WhoView: View {
             .sheet(item: $naming, onDismiss: regroup) { g in NameSheet(faces: g.faces) }
             .sheet(item: $editing, onDismiss: regroup) { p in PersonSheet(person: p) }
             .task { regroup() }
+            .onReceive(Shared.scanner.$isScanning) { scanning in if !scanning { regroup() } }   // new face prints
             .onChange(of: library.learningPeople) { _, busy in if !busy { regroup() } }
         }
     }

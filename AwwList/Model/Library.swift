@@ -77,6 +77,12 @@ final class Library: ObservableObject {
 
     init() {
         load()
+        // Before Who's Who asked for consent: anyone who already named people keeps it on; otherwise no face
+        // prints are kept until it's turned on.
+        if UserDefaults.standard.object(forKey: "faceConsent") == nil {
+            UserDefaults.standard.set(!people.isEmpty, forKey: "faceConsent")
+            if people.isEmpty && photos.values.contains(where: { $0.faceRecords != nil }) { deleteFacePrints(); save() }
+        }
         if !loaded { applyLearning(); rebuild() }   // a fresh install (load already did this otherwise)
         learnPeople()
     }
@@ -361,8 +367,26 @@ final class Library: ObservableObject {
     /// Turns face recognition on or off (Who's Who's consent) and re-sorts who is in each photo.
     func setFaceConsent(_ on: Bool) {
         UserDefaults.standard.set(on, forKey: "faceConsent")
-        if !on { learnedWho = [:]; learnedFaces = [] }   // before the rebuild, so no one stays tagged
-        whoCache = [:]; rebuild(); learnPeople()
+        if on {
+            // Makes the face prints Who's Who needs (listed photos only), after any scan already running.
+            Shared.scanner.whenFinished { [weak self] in if let self { Shared.scanner.start(library: self) } }
+        } else {
+            learnedWho = [:]; learnedFaces = []   // before the rebuild, so no one stays tagged
+            deleteFacePrints()
+        }
+        whoCache = [:]; rebuild(); save(); learnPeople()
+    }
+
+    /// Deletes Who's Who's face prints: from every photo, and each named person's (names and birthdays stay;
+    /// naming them again after turning Who's Who back on picks up the same person).
+    private func deleteFacePrints() {
+        for (id, p) in photos where p.faceRecords != nil || (p.raw != nil && p.facePrintsOff != true) {
+            photos[id]?.faceRecords = nil
+            photos[id]?.facePrintsOff = true
+        }
+        for i in people.indices {
+            people[i].centroid = []; people[i].count = 0; people[i].examples = nil; people[i].namedExamples = nil
+        }
     }
 
     func learnPeople() {

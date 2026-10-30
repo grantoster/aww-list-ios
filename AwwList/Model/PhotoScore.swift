@@ -59,6 +59,8 @@ struct PhotoScore: Codable, Hashable, Identifiable {
     var faces: Int? = nil
     /// Face fingerprints for Who's Who (counted photos only); nil until measured.
     var faceRecords: [FaceRecord]? = nil
+    /// True when Who's Who's face prints weren't made (or were deleted) because Who's Who is off.
+    var facePrintsOff: Bool? = nil
     /// Claude's score, description and checks, when this photo was sent to Claude.
     var claude: ClaudeVerdict? = nil
     /// For photos Apple set aside for a soft reason (Scorer.softReasons): the score they'd have had,

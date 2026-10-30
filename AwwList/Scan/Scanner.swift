@@ -55,9 +55,11 @@ final class PhotoScanner: ObservableObject {
         let all = Set(library.photos.keys)
         // Photos scored by an older version of the scorer are analyzed again.
         // Counted photos from before Who's Who are measured again to get their face fingerprints.
+        let facesAllowed = UserDefaults.standard.bool(forKey: "faceConsent")
         let known = Set(library.photos.values.filter {
             $0.version == Scorer.version && !(retryUnavailable && $0.excluded == Scorer.unavailable)
-                && ($0.raw == nil || ($0.faceRecords.map { $0.allSatisfy { $0.vec.count == People.dim } } ?? false))
+                && ($0.raw == nil || ($0.faceRecords.map { $0.allSatisfy { $0.vec.count == People.dim } } ?? false)
+                    || (!facesAllowed && $0.facePrintsOff == true))   // Who's Who off: no face prints needed
                 // set-aside photos from before Claude could overrule Apple get one more look
                 && !(Scorer.softReasons.contains($0.excluded ?? "") && $0.softChecked != true
                      && ($0.faces ?? 0) > 0)
@@ -325,6 +327,7 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
         old.mainFaces = old.mainFaces ?? old.faces   // couldn't be re-read: keep what's known, don't retry every scan
         old.adults = old.adults ?? 0
         old.version = Scorer.version   // its held-back or flagged reason stands; just don't keep re-reading it
+        if old.faceRecords == nil { old.facePrintsOff = true }   // can't be read now: no face prints, don't retry every scan
         return .done(old)
     }
     return autoreleasepool {
@@ -374,7 +377,8 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
                 signals.aesthetic = ex.aesthetic; signals.isUtility = ex.utility
                 signals.faceShape = ex.shape; signals.facePrint = ex.facePrint; signals.poseAndFocus = ex.poseAndFocus
             }
-            if Scorer.score(measured).raw != nil {
+            // Who's Who's face prints are made only after you turn Who's Who on.
+            if Scorer.score(measured).raw != nil && UserDefaults.standard.bool(forKey: "faceConsent") {
                 records = analyzer.facePrints(cg, orientation: CGImagePropertyOrientation(img.imageOrientation),
                                               faces: measured.faces)
             }
@@ -396,7 +400,8 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
         var p = PhotoScore(id: asset.localIdentifier, date: date,
                            raw: raw, excluded: excluded, age: age, caption: Scorer.caption(signals, date: date),
                            version: Scorer.version, faces: signals.faces.count,
-                           faceRecords: (raw != nil || flaggedScore != nil) ? records : nil)
+                           faceRecords: (raw != nil || flaggedScore != nil) && UserDefaults.standard.bool(forKey: "faceConsent") ? records : nil)
+        if (raw != nil || flaggedScore != nil) && !UserDefaults.standard.bool(forKey: "faceConsent") { p.facePrintsOff = true }
         if raw == nil, let e = excluded, Scorer.softReasons.contains(e) || Scorer.heldBack.contains(e) || Scorer.poolOnly.contains(e) {
             p.soft = flaggedScore ?? poolSoft ?? Scorer.softScore(signals)
             p.age = signals.babyConfidence > 0.5 ? .baby : .kid
