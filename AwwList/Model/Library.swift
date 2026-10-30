@@ -92,15 +92,35 @@ final class Library: ObservableObject {
         let u = url, legacy = legacyURL
         Task.detached(priority: .userInitiated) { [weak self] in
             let t0 = Date()
-            let saved = FileManager.default.fileExists(atPath: u.path) ? Library.readSaved(u, binary: true)
-                                                                       : Library.readSaved(legacy, binary: false)
+            let saved = Library.readNewest([(u, true), (legacy, false),
+                                            (legacy.appendingPathExtension("bak"), false)])
             let readTime = Date().timeIntervalSince(t0)
             await MainActor.run { self?.note("Read saved library", seconds: readTime); self?.finishLoading(saved) }
         }
     }
 
     private enum ReadResult { case none, loaded(Saved), failed(blockSaves: Bool) }
-    nonisolated private static func readSaved(_ u: URL, binary: Bool) -> ReadResult {
+
+    /// Reads the most recently written of the saved copies that decodes; older ones are tried if it doesn't.
+    nonisolated private static func readNewest(_ files: [(URL, Bool)]) -> ReadResult {
+        func modified(_ u: URL) -> Date {
+            (try? FileManager.default.attributesOfItem(atPath: u.path)[.modificationDate] as? Date) ?? .distantPast
+        }
+        let present = files.filter { FileManager.default.fileExists(atPath: $0.0.path) }
+            .sorted { modified($0.0) > modified($1.0) }
+        guard !present.isEmpty else { return .none }
+        var block = false
+        for (i, f) in present.enumerated() {
+            // Only the last one is moved aside if it's damaged; earlier ones are just skipped.
+            switch readSaved(f.0, binary: f.1, moveAsideIfDamaged: i == present.count - 1) {
+            case .loaded(let s): return .loaded(s)
+            case .failed(let b): block = block || b
+            case .none: continue
+            }
+        }
+        return .failed(blockSaves: block)
+    }
+    nonisolated private static func readSaved(_ u: URL, binary: Bool, moveAsideIfDamaged: Bool) -> ReadResult {
         guard FileManager.default.fileExists(atPath: u.path) else { return .none }
         // Couldn't read the file this time (it may be briefly unavailable): leave it, and don't save over it.
         guard let data = try? Data(contentsOf: u, options: .mappedIfSafe) else { return .failed(blockSaves: true) }
@@ -109,6 +129,7 @@ final class Library: ObservableObject {
             return try? JSONDecoder().decode(Saved.self, from: data)
         }
         guard let s = decoded else {
+            if !moveAsideIfDamaged { return .failed(blockSaves: false) }
             // Damaged: keep it aside rather than letting the next save overwrite it with an empty library.
             let aside = u.deletingLastPathComponent().appendingPathComponent("scores-unreadable-\(Int(Date().timeIntervalSince1970)).\(binary ? "plist" : "json")")
             let moved = (try? FileManager.default.moveItem(at: u, to: aside)) != nil
@@ -159,18 +180,20 @@ final class Library: ObservableObject {
         let handlers = readyHandlers; readyHandlers = []
         handlers.forEach { $0() }
         noteMemory()
-        // The rest waits a moment, one thing at a time, so opening the app never piles up work (or memory).
-        staggered([
-            { $0.retrain() },
-            { $0.learnPeople() },
-            { lib in if !lib.claudeBatches.isEmpty { Task { await Shared.claude.collect(lib) } } },
-        ])
+        // The rest waits a moment and runs one thing at a time, each after the last finishes, so opening the
+        // app never piles up work (or memory).
+        staggered([{ lib in
+            lib.retrain {
+                lib.learnPeople()
+                if !lib.claudeBatches.isEmpty { Task { await Shared.claude.collect(lib) } }
+            }
+        }])
     }
 
     // MARK: Diagnostics (shown in Settings, so a slow or closing app can be looked into without a crash log)
 
     struct Diagnostic: Identifiable { var label: String; var value: String; var id: String { label } }
-    @Published private(set) var diagnostics: [Diagnostic] = []
+    private(set) var diagnostics: [Diagnostic] = []   // not published: updating it mustn't redraw the app
     func note(_ label: String, seconds: Double) { note(label, String(format: "%.1f s", seconds)) }
     func note(_ label: String, _ value: String) {
         if let i = diagnostics.firstIndex(where: { $0.label == label }) { diagnostics[i].value = value }
@@ -215,10 +238,11 @@ final class Library: ObservableObject {
                 out[p.id] = Library.derive(p, f, x, model: model, filter: filter, epoch: epoch)
             }
             let took = Date().timeIntervalSince(t0)
+            let result = out
             await MainActor.run {
                 guard let self else { return }
-                if self.learningEpoch == epoch { self.derived.merge(out) { _, new in new } }
-                self.note("Scores worked out (\(out.count.formatted()) photos)", seconds: took)
+                if self.learningEpoch == epoch { self.derived.merge(result) { _, new in new } }
+                self.note("Scores worked out (\(result.count.formatted()) photos)", seconds: took)
                 then()
             }
         }
@@ -256,7 +280,14 @@ final class Library: ObservableObject {
     /// (all at once could push a large library past iOS's memory limit).
     func finishScan() {
         rebuild()
-        staggered([{ $0.save() }, { $0.retrain() }, { $0.learnPeople() }, { $0.noteMemory() }], gap: 3)
+        // Each step starts only after the one before has finished (a save is written off the main thread).
+        staggered([{ lib in
+            lib.save {
+                Task { @MainActor in
+                    Shared.library.retrain { Shared.library.learnPeople(); Shared.library.noteMemory() }
+                }
+            }
+        }], gap: 1)
     }
 
     /// Removes a whole moment (every shot in its burst) from the list.
@@ -433,8 +464,8 @@ final class Library: ObservableObject {
     private var generation = 0
 
     func retrain() {
-        guard !training else { pendingRetrain = true; return }   // run again once the current one finishes
-        training = true
+        guard !retrainBusy else { pendingRetrain = true; return }   // run again once the current one finishes
+        retrainBusy = true
         let gen = generation
         let known = trainedSignature
         let scored = photos.values.filter { $0.claude != nil && $0.feat != nil }   // only these are needed
@@ -455,15 +486,17 @@ final class Library: ObservableObject {
             let signature = Learner.stableHash(parts)
             if signature == known {                             // nothing new to learn from (also across launches)
                 await MainActor.run {
-                    self.training = false
-                    if self.pendingRetrain { self.pendingRetrain = false; self.retrain() }
+                    self.retrainBusy = false
+                    if self.pendingRetrain { self.pendingRetrain = false; self.retrain() } else { self.retrainFinished() }
                 }
                 return
             }
+            await MainActor.run { self.training = true }      // shown in Settings only while really learning
             let model = Learner.train(examples, averaged: averaged)
             let filter = Learner.trainFilter(verdicts)
             await MainActor.run {
                 self.training = false
+                self.retrainBusy = false
                 guard gen == self.generation else {          // cleared while this was running: start over
                     self.pendingRetrain = false; self.retrain(); return
                 }
@@ -473,10 +506,15 @@ final class Library: ObservableObject {
                 self.ownModel = model; self.ownFilter = filter
                 self.applyLearning()
                 self.rebuild(); self.save()
-                if self.pendingRetrain { self.pendingRetrain = false; self.retrain() }
+                if self.pendingRetrain { self.pendingRetrain = false; self.retrain() } else { self.retrainFinished() }
             }
         }
     }
+    private var retrainBusy = false
+    private var afterRetrain: [() -> Void] = []
+    /// Runs `then` once the learning check (and any training it starts) has finished.
+    func retrain(then: @escaping () -> Void) { afterRetrain.append(then); retrain() }
+    private func retrainFinished() { let h = afterRetrain; afterRetrain = []; h.forEach { $0() } }
     func clearClaude() {
         for id in photos.keys where photos[id]?.claude != nil { photos[id]?.claude = nil }
         claudeBatches = []
@@ -895,12 +933,21 @@ final class Library: ObservableObject {
             var bytes = 0
             autoreleasepool {
                 let enc = PropertyListEncoder(); enc.outputFormat = .binary
-                if let data = try? enc.encode(s), (try? data.write(to: u, options: .atomic)) != nil {
+                // The first time (moving off the old JSON file), check the new file reads back before relying on it.
+                let migrating = FileManager.default.fileExists(atPath: legacy.path)
+                if let data = try? enc.encode(s),
+                   !migrating || (try? PropertyListDecoder().decode(Saved.self, from: data)) != nil,
+                   (try? data.write(to: u, options: .atomic)) != nil {
                     bytes = data.count
-                    try? FileManager.default.removeItem(at: legacy)   // the old JSON copy isn't needed any more
+                    // The old JSON copy is kept once, as a backup, until the next binary save has read back fine.
+                    let bak = legacy.appendingPathExtension("bak")
+                    if FileManager.default.fileExists(atPath: legacy.path) {
+                        try? FileManager.default.removeItem(at: bak)
+                        try? FileManager.default.moveItem(at: legacy, to: bak)
+                    }
                 } else if let data = try? JSONEncoder().encode(s), (try? data.write(to: legacy, options: .atomic)) != nil {
                     bytes = data.count
-                    try? FileManager.default.removeItem(at: u)        // fall back to JSON (read next time instead)
+                    // Fall back to JSON; the newest readable copy is the one read next time.
                 }
             }
             let took = Date().timeIntervalSince(t0), size = bytes

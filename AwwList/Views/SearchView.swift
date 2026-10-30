@@ -44,7 +44,7 @@ struct SearchView: View {
                 try? await Task.sleep(for: .milliseconds(200))
                 guard !Task.isCancelled else { return }
                 shown = 60
-                results = PhotoSearch.matches(query, in: library.moments, names: Dictionary(
+                results = PhotoSearch.matches(query, in: library.everyMoment, names: Dictionary(
                     library.people.map { ($0.id, $0.name) }, uniquingKeysWith: { a, _ in a }))
             }
             .fullScreenCover(item: $viewer) { v in ViewerView(moments: v.list, index: v.index) }
@@ -74,10 +74,11 @@ enum PhotoSearch {
 
     static func stem(_ w: String) -> String {
         var w = w
-        if w.count > 5, w.hasSuffix("ing") { w.removeLast(3) }
-        else if w.count > 4, w.hasSuffix("ies") { w.removeLast(3); w += "y" }
-        else if w.count > 4, w.hasSuffix("es"), !w.hasSuffix("ses") { w.removeLast(2) }
-        else if w.count > 3, w.hasSuffix("s"), !w.hasSuffix("ss") { w.removeLast() }
+        if w.count > 5, w.hasSuffix("ing") { w.removeLast(3) }                 // dancing → danc, riding → rid
+        else if w.count > 4, w.hasSuffix("ies") { w.removeLast(3); w += "y" }  // puppies → puppy
+        else if w.count > 4, ["ches", "shes", "xes", "zes", "sses"].contains(where: w.hasSuffix) { w.removeLast(2) }
+        else if w.count > 3, w.hasSuffix("s"), !w.hasSuffix("ss") { w.removeLast() }   // cakes → cake
+        if w.count > 3, w.hasSuffix("e") { w.removeLast() }                     // cake → cak, dance → danc (matches the -ing forms)
         return synonyms[w] ?? w
     }
 
@@ -89,7 +90,7 @@ enum PhotoSearch {
             ["kid", "child", "children", "toddler"], ["mom", "mother", "mommy", "mum", "mama"],
             ["dad", "father", "daddy", "papa"], ["grandma", "grandmother", "nana", "granny"],
             ["grandpa", "grandfather", "papaw", "grandad"], ["baby", "infant", "newborn"],
-            ["dog", "puppy", "pup"], ["cat", "kitten", "kitty"], ["smile", "smil", "grin"],
+            ["dog", "puppy", "pup"], ["cat", "kitten", "kitty"], ["smil", "grin"],
             ["laugh", "giggl", "laughter"], ["hug", "cuddl", "snuggl"], ["sleep", "nap", "asleep"],
         ]
         var out: [String: String] = [:]

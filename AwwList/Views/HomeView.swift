@@ -70,6 +70,7 @@ struct HomeView: View {
                         }
                         .padding(.top, 24)
                     } else if pool.isEmpty {
+                        rankMenu
                         EmptyListView().padding(.top, 40)
                     } else {
                         topSection
@@ -627,7 +628,7 @@ struct DropChip: View {
             if chevron { Image(systemName: "chevron.down").font(.caption2.bold()) }
         }
         .font(Theme.label(15))
-        .padding(.horizontal, 12).frame(minHeight: 36)
+        .padding(.horizontal, 12).frame(minHeight: 40)
         .background(on ? Theme.accent : Theme.surface, in: Capsule())
         .foregroundStyle(on ? Color.white : Color.primary)
         .contentShape(Capsule())
