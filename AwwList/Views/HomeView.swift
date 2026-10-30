@@ -6,6 +6,7 @@ enum ListScope: Hashable { case all, year(Int) }
 
 struct HomeView: View {
     @EnvironmentObject var library: Library
+    @AppStorage("faceConsent") private var faceConsent = false
     @State private var scope: ListScope = .all
     @State private var age: AgeGroup?
     @State private var shot: ShotKind?
@@ -137,6 +138,7 @@ struct HomeView: View {
             .onChange(of: sortByDate) { refreshLists() }
             .onReceive(library.$moments) { refreshLists($0) }
             .onAppear { refreshLists() }
+            .onChange(of: faceConsent) { if !faceConsent { person = nil } }
             .onChange(of: library.people) {
                 if let p = person, !library.people.contains(where: { $0.id == p }) { person = nil }
             }
@@ -195,8 +197,8 @@ struct HomeView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 Text("Who").font(.subheadline).foregroundStyle(.secondary)
-                if library.people.isEmpty {
-                    Pill(title: "Name faces…", on: false, small: true) { showWho = true }
+                if library.people.isEmpty || !faceConsent {
+                    Pill(title: library.people.isEmpty ? "Name faces…" : "Turn on Who's Who…", on: false, small: true) { showWho = true }
                 } else {
                     Pill(title: "Everyone", on: person == nil, small: true) { person = nil }
                     ForEach(library.people) { p in Pill(title: p.name, on: person == p.id, small: true) { person = p.id } }

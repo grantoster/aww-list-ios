@@ -361,6 +361,7 @@ final class Library: ObservableObject {
     /// Turns face recognition on or off (Who's Who's consent) and re-sorts who is in each photo.
     func setFaceConsent(_ on: Bool) {
         UserDefaults.standard.set(on, forKey: "faceConsent")
+        if !on { learnedWho = [:]; learnedFaces = [] }   // before the rebuild, so no one stays tagged
         whoCache = [:]; rebuild(); learnPeople()
     }
 
@@ -400,7 +401,7 @@ final class Library: ObservableObject {
     /// Names a group of faces. Using a name that already exists adds the faces to that person.
     func name(_ faces: [(photo: String, face: FaceRecord)], as rawName: String, birthday: Date?) {
         let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, let first = faces.first else { return }
+        guard Library.faceConsent, !name.isEmpty, let first = faces.first else { return }
         let faces = faces.filter { $0.face.vec.count == People.dim }
         guard !faces.isEmpty else { return }
         let vecs = faces.map { People.floats($0.face.vec) }

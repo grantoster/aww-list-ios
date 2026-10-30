@@ -76,8 +76,8 @@ struct WhoView: View {
                     Text("Turn on Who's Who?").font(Theme.label(24, relativeTo: .title2))
                     Text("Who's Who recognizes the people you name, like your kids, so you can see each person's best photos.")
                     VStack(alignment: .leading, spacing: 10) {
-                        Label("To do this, Awwbum compares the faces in your photos using face measurements made on this iPhone.", systemImage: "face.smiling")
-                        Label("The measurements and names stay on this iPhone. They're never sent to Claude, Anthropic or anyone else.", systemImage: "lock.fill")
+                        Label("Awwbum already measures faces on this iPhone to rank photos (how big, how close, smiles). Who's Who uses those measurements to tell people apart.", systemImage: "face.smiling")
+                        Label("Face measurements and names stay in Awwbum on this iPhone. They're never sent to us, Claude or Anthropic (they're part of your iPhone backup if backups are on).", systemImage: "lock.fill")
                         Label("You can forget a person at any time. Deleting the app deletes all of it.", systemImage: "trash")
                         Label("Only name people who are OK with it (or whose parent is).", systemImage: "hand.raised")
                     }
@@ -195,7 +195,7 @@ struct WhoView: View {
                 Section {
                     Button("Turn off Who's Who") { faceConsent = false; library.setFaceConsent(false) }
                 } footer: {
-                    Text("Stops recognizing people. Names stay saved on this iPhone so turning it back on picks up where you left off; forget a person to remove them. Face measurements and names never leave this iPhone.")
+                    Text("Stops recognizing people. Names stay saved on this iPhone so turning it back on picks up where you left off; forget a person to remove them. Face measurements and names are never sent to us, Claude or Anthropic.")
                 }
             }
             .scrollContentBackground(.hidden)
