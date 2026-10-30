@@ -14,7 +14,7 @@ final class PhotoScanner: ObservableObject {
     /// The background task reports this to iOS every second, which treats a task whose progress stalls as stuck.
     nonisolated let live = Counter()
 
-    private let queue = DispatchQueue(label: "aww.scan", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "aww.scan", qos: .utility)
     private let cancelFlag = CancelFlag()
     private let changes = LibraryChangeFlag()
     private var hasScanned = false

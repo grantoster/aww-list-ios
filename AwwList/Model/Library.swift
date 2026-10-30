@@ -156,6 +156,9 @@ final class Library: ObservableObject {
         case .none: applyLearning()                                     // a fresh install
         }
         note("Apply saved library", seconds: Date().timeIntervalSince(t0))
+        // The ranking chosen last time (remembered on its own); with none, Claude only once it has scored photos.
+        if let r = UserDefaults.standard.string(forKey: "rankBy") { rankBy = r }
+        else if !(hadSaved && photos.values.contains { $0.claude != nil }) { rankBy = learned != nil ? "learned" : "apple" }
         // Work out every photo's scores off the main thread first, so the first ranking is quick.
         prewarmDerived { [weak self] in self?.finishLoadingRanked(hadSaved: hadSaved, failedBlock: failedBlock) }
     }
@@ -255,7 +258,7 @@ final class Library: ObservableObject {
         }
     }
 
-    /// New results from the scanner. The list is rebuilt at most every 2 seconds while scanning.
+    /// New results from the scanner. The list is re-ranked at most every 30 seconds while scanning.
     func add(_ new: [PhotoScore]) {
         guard !new.isEmpty else { return }
         for p in new {
@@ -536,7 +539,7 @@ final class Library: ObservableObject {
         claudeSent = [:]   // starting over: each year's budget is available again (removals are kept, never re-sent)
         ownModel = nil; ownFilter = nil; trainedSignature = nil; generation += 1
         applyLearning()
-        if rankBy == "learned" || rankBy == "consolidated" { rankBy = "apple"; UserDefaults.standard.set("apple", forKey: "rankBy") }
+        if rankBy != "apple" { rankBy = "apple"; UserDefaults.standard.set("apple", forKey: "rankBy") }
         rebuild(); save()
     }
     var claudeScored: Int { everyMoment.filter { $0.claudeScore != nil }.count }
@@ -1026,7 +1029,7 @@ final class Library: ObservableObject {
         for id in sentIDs where claudeSentYear[id] == nil {
             if let d = photos[id]?.date { claudeSentYear[id] = Calendar.current.component(.year, from: d) }
         }
-        rankBy = UserDefaults.standard.string(forKey: "rankBy") ?? s.rankBy ?? "claude"
+        if let r = s.rankBy { rankBy = r }
         claudeFailures = s.claudeFailures ?? [:]
     }
 }

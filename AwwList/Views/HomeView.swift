@@ -145,7 +145,7 @@ struct HomeView: View {
             .onChange(of: person) { refreshLists() }
             .onChange(of: sortByDate) { refreshLists() }
             // Coalesced: a burst of changes re-filters once.
-            .onReceive(library.$moments.debounce(for: .milliseconds(80), scheduler: RunLoop.main)) { refreshLists($0) }
+            .onReceive(library.$moments.debounce(for: .milliseconds(80), scheduler: DispatchQueue.main)) { refreshLists($0) }
             .onAppear { refreshLists() }
             .onChange(of: faceConsent) { if !faceConsent { person = nil } }
             .onChange(of: library.people) {
@@ -206,7 +206,7 @@ struct HomeView: View {
     /// Once Claude has scored photos: order the lists by Claude's score, the learned score, Apple's on-device score,
     /// or Consolidated (each year's top 100 from each, combined). Sits beside the count under the title.
     @ViewBuilder private var rankMenu: some View {
-        if library.claudeScored > 0 || library.learned != nil || library.rankBy == "consolidated" {
+        if library.claudeScored > 0 || library.learned != nil || library.rankBy == "consolidated" || rankChoice == "claude" {
             Menu {
                 Picker("Rank by", selection: Binding(get: { rankChoice }, set: { library.setRankBy($0) })) {
                     Text("Claude").tag("claude")
@@ -652,8 +652,8 @@ struct ClaudeNotRunView: View {
                   systemImage: "sparkles")
         } description: {
             Text(pending > 0
-                 ? "\(pending.formatted()) photos are with Claude. Scores usually come back within an hour and show up here. Meanwhile, rank by Learned or Apple."
-                 : "Score your photos with Claude in Settings, or rank by Learned or Apple from the menu above.")
+                 ? "\(pending.formatted()) photos are with Claude. Scores usually come back within an hour and show up here. Meanwhile, rank by \(library.learned != nil ? "Learned or Apple" : "Apple") from the menu above."
+                 : "Score your photos with Claude in Settings, or rank by \(library.learned != nil ? "Learned or Apple" : "Apple") from the menu above.")
         } actions: {
             if pending == 0 { Button("Score with Claude") { openSettings() }.buttonStyle(.borderedProminent) }
         }
