@@ -92,23 +92,27 @@ final class Library: ObservableObject {
         }
     }
 
-    private enum ReadResult { case none, loaded(Saved), failed }
+    private enum ReadResult { case none, loaded(Saved), failed(blockSaves: Bool) }
     nonisolated private static func readSaved(_ u: URL) -> ReadResult {
         guard FileManager.default.fileExists(atPath: u.path) else { return .none }
-        guard let data = try? Data(contentsOf: u), let s = try? JSONDecoder().decode(Saved.self, from: data) else {
-            // Unreadable: keep it aside rather than letting the next save overwrite it with an empty library.
+        // Couldn't read the file this time (it may be briefly unavailable): leave it, and don't save over it.
+        guard let data = try? Data(contentsOf: u) else { return .failed(blockSaves: true) }
+        guard let s = try? JSONDecoder().decode(Saved.self, from: data) else {
+            // Damaged: keep it aside rather than letting the next save overwrite it with an empty library.
             let aside = u.deletingLastPathComponent().appendingPathComponent("scores-unreadable-\(Int(Date().timeIntervalSince1970)).json")
-            try? FileManager.default.moveItem(at: u, to: aside)
-            return .failed
+            let moved = (try? FileManager.default.moveItem(at: u, to: aside)) != nil
+            return .failed(blockSaves: !moved)
         }
         return .loaded(s)
     }
+    /// Set when the saved library couldn't be read this time: nothing is saved over it until the app opens again.
+    private var savesBlocked = false
 
     private func finishLoading(_ result: ReadResult) {
         var saved: Saved? = nil
         if case .loaded(let s) = result { saved = s }
         if let saved { load(saved) } else { applyLearning(); rebuild() }   // a fresh install (or an unreadable save, kept aside)
-        if case .failed = result { hadSavedData = true }
+        if case .failed(let block) = result { hadSavedData = true; savesBlocked = block }
         if saved != nil { hadSavedData = true }
         // Before Who's Who asked for consent: anyone who already named people keeps it on; otherwise no face
         // prints are kept until it's turned on.
@@ -125,7 +129,9 @@ final class Library: ObservableObject {
         }
         ready = true
         // "Off" is written only once the deletion is saved (if the app is ended first, it's done again next time).
-        if deletePending { save { UserDefaults.standard.set(false, forKey: "faceConsent") } }
+        if deletePending {
+            save { if UserDefaults.standard.object(forKey: "faceConsent") == nil { UserDefaults.standard.set(false, forKey: "faceConsent") } }
+        }
         learnPeople()
         // Claude scores that came back while the app was closed.
         if !claudeBatches.isEmpty { Task { await Shared.claude.collect(self) } }
@@ -767,7 +773,7 @@ final class Library: ObservableObject {
     /// Writes to disk off the main thread.
     func save(then done: (@Sendable () -> Void)? = nil) {
         // Never before the saved library is read: an empty save would overwrite it.
-        guard ready else { if let done { DispatchQueue.main.async(execute: done) }; return }
+        guard ready, !savesBlocked else { if let done { DispatchQueue.main.async(execute: done) }; return }
         unsaved = 0; lastSave = Date()
         let s = Saved(photos: Array(photos.values), hidden: Array(hidden), birthdays: birthdays,
                       people: people, strictness: strictness,

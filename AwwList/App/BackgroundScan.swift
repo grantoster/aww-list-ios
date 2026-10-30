@@ -56,14 +56,14 @@ enum BackgroundScan {
     @MainActor private static func whenLibraryReady(_ task: BGTask, _ run: @escaping @MainActor () -> Void) -> Bool {
         if Shared.library.ready { return true }
         let gaveUp = Once()
-        task.expirationHandler = { if gaveUp.claim() { task.setTaskCompleted(success: false) } }
+        task.expirationHandler = { @Sendable in if gaveUp.claim() { task.setTaskCompleted(success: false) } }
         Shared.library.whenReady { if gaveUp.claim() { run() } }
         return false
     }
 
     @MainActor private static func runOvernight(_ task: BGTask) {
+        scheduleOvernight()   // first, so the next night is asked for even if this one ends early
         guard whenLibraryReady(task, { runOvernight(task) }) else { return }
-        scheduleOvernight()
         guard hasAccess else { task.setTaskCompleted(success: true); return }
         let scanner = Shared.scanner
         let done = Once()
