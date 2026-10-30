@@ -34,7 +34,8 @@ final class PhotoScanner: ObservableObject {
     /// photos, or switching back to the app, doesn't start the scan over. Photos that couldn't be loaded
     /// (offline iCloud) are retried automatically about once a day.
     func startIfNeeded(library: Library) {
-        if isScanning { return }                       // don't consume a change while a scan is running
+        if isScanning { return }
+        guard library.ready else { library.whenReady { [weak self] in self?.startIfNeeded(library: library) }; return }                       // don't consume a change while a scan is running
         let last = UserDefaults.standard.object(forKey: Self.retryKey) as? Date ?? .distantPast
         let retry = Date().timeIntervalSince(last) > 86_400
         if hasScanned && !retry && !stoppedEarly && !changes.takeChanged() { return }
@@ -44,6 +45,8 @@ final class PhotoScanner: ObservableObject {
     /// `retryUnavailable` also retries photos whose image couldn't be loaded before.
     func start(library: Library, retryUnavailable: Bool = false) {
         guard !isScanning else { return }
+        // Not before the saved library is read (it would look like every photo is new).
+        guard library.ready else { library.whenReady { [weak self] in self?.start(library: library, retryUnavailable: retryUnavailable) }; return }
         isScanning = true
         total = 0; done = 0                            // so no stale "x of y" shows before counting finishes
         live.reset()

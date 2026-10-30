@@ -11,13 +11,15 @@ struct RootView: View {
     /// First open: ask for a Claude API key before anything else (once; skipped when a key is already saved).
     @AppStorage("askedForKey") private var askedForKey = false
     @State private var hadKey = Claude.apiKey != nil
-    @State private var existingInstall = !Shared.library.photos.isEmpty
     /// Set when you choose "score every photo" on that screen: Claude runs by itself once the first scan is done.
     @AppStorage("autoClaude") private var autoClaude = false
     @AppStorage("autoClaudeTries") private var autoTries = 0
 
     var body: some View {
         Group {
+            if !library.ready {
+                LoadingView()   // reading the saved library, off the main thread
+            } else {
             switch status {
             case .authorized, .limited:
                 HomeView()
@@ -27,9 +29,11 @@ struct RootView: View {
             default:
                 WelcomeView { request() }
             }
+            }
         }
         // Existing installs (photos already checked) aren't asked again; a reinstall is (the key survives in the keychain).
-        .fullScreenCover(isPresented: Binding(get: { !askedForKey && !existingInstall }, set: { if !$0 { askedForKey = true } })) {
+        .fullScreenCover(isPresented: Binding(get: { library.ready && !askedForKey && !library.hadSavedData },
+                                              set: { if !$0 { askedForKey = true } })) {
             KeySetupView(hadKey: hadKey) { askedForKey = true }
         }
         .onChange(of: scanner.isScanning) { autoScore() }
@@ -498,6 +502,18 @@ struct KeySetupView: View {
             }
             .padding(24)
         }
+        .background(Theme.background.ignoresSafeArea())
+    }
+}
+
+/// Shown for a moment at launch while the saved library is read.
+struct LoadingView: View {
+    var body: some View {
+        VStack(spacing: 16) {
+            Image("BrandMark").resizable().scaledToFit().frame(width: 96, height: 96).accessibilityHidden(true)
+            ProgressView("Opening your awws…")
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.background.ignoresSafeArea())
     }
 }

@@ -59,6 +59,7 @@ final class Library: ObservableObject {
     private static let saveQueue = DispatchQueue(label: "aww.save", qos: .utility)
     private var lastRebuild = Date.distantPast
     private var unsaved = 0
+    private var lastSave = Date()
 
     private let url: URL = {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -75,16 +76,41 @@ final class Library: ObservableObject {
         var claudeRemoved: [String: String]?; var claudeSent: [String: [String]]?; var claudeSentYear: [String: Int]?
     }
 
+    /// False until the saved library has been read (off the main thread, so a large library can't make iOS end
+    /// the app for taking too long to open). Nothing is saved or scanned before then.
+    @Published private(set) var ready = false
+    /// Whether this iPhone already had saved Awwbum data when the app opened (an existing install).
+    private(set) var hadSavedData = false
+    private var readyHandlers: [() -> Void] = []
+    func whenReady(_ handler: @escaping () -> Void) { if ready { handler() } else { readyHandlers.append(handler) } }
+
     init() {
-        load()
+        let u = url
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let saved = Library.readSaved(u)
+            await MainActor.run { self?.finishLoading(saved) }
+        }
+    }
+
+    nonisolated private static func readSaved(_ u: URL) -> Saved? {
+        guard let data = try? Data(contentsOf: u) else { return nil }
+        return try? JSONDecoder().decode(Saved.self, from: data)
+    }
+
+    private func finishLoading(_ saved: Saved?) {
+        if let saved { load(saved) } else { applyLearning(); rebuild() }   // a fresh install
+        hadSavedData = saved != nil
         // Before Who's Who asked for consent: anyone who already named people keeps it on; otherwise no face
         // prints are kept until it's turned on.
         if UserDefaults.standard.object(forKey: "faceConsent") == nil {
             UserDefaults.standard.set(!people.isEmpty, forKey: "faceConsent")
-            if people.isEmpty && photos.values.contains(where: { $0.faceRecords != nil }) { deleteFacePrints(); save() }
+            if people.isEmpty && photos.values.contains(where: { $0.faceRecords != nil }) { deleteFacePrints() }
+            whoCache = [:]; rebuild()
         }
-        if !loaded { applyLearning(); rebuild() }   // a fresh install (load already did this otherwise)
+        ready = true
         learnPeople()
+        let handlers = readyHandlers; readyHandlers = []
+        handlers.forEach { $0() }
     }
 
     /// New results from the scanner. The list is rebuilt at most every 2 seconds while scanning.
@@ -110,7 +136,9 @@ final class Library: ObservableObject {
         }
         unsaved += new.count
         if Date().timeIntervalSince(lastRebuild) > 15 { rebuild() }   // re-ranking everything is costly; keep it occasional while scanning
-        if unsaved >= 200 { save() }
+        // The whole library is rewritten on each save, so while scanning save at most every 2 minutes (iOS limits
+        // how much an app writes); the end of a scan, closing the app and background time always save.
+        if unsaved >= 200 && Date().timeIntervalSince(lastSave) > 120 { save() }
     }
 
     func finishScan() { rebuild(); save(); retrain(); learnPeople() }
@@ -718,7 +746,9 @@ final class Library: ObservableObject {
 
     /// Writes to disk off the main thread.
     func save(then done: (@Sendable () -> Void)? = nil) {
-        unsaved = 0
+        // Never before the saved library is read: an empty save would overwrite it.
+        guard ready else { if let done { DispatchQueue.main.async(execute: done) }; return }
+        unsaved = 0; lastSave = Date()
         let s = Saved(photos: Array(photos.values), hidden: Array(hidden), birthdays: birthdays,
                       people: people, strictness: strictness,
                       claudeModel: claudeModel, claudeScope: claudeScope, claudeBatches: claudeBatches, rankBy: rankBy, claudeFailures: claudeFailures, learned: ownModel, claudeSensitive: claudeSensitive,
@@ -734,10 +764,7 @@ final class Library: ObservableObject {
         }
     }
 
-    private var loaded = false
-    private func load() {
-        guard let data = try? Data(contentsOf: url), let s = try? JSONDecoder().decode(Saved.self, from: data) else { return }
-        loaded = true
+    private func load(_ s: Saved) {
         photos = Dictionary(s.photos.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         hidden = Set(s.hidden)
         birthdays = s.birthdays ?? []
