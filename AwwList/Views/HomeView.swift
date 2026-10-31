@@ -600,8 +600,35 @@ struct ClaudeKeyNote: View {
 /// The scan progress banner, on its own so scan progress redraws only the banner, not the whole list.
 struct ScanBannerSlot: View {
     @EnvironmentObject var scanner: PhotoScanner
+    @EnvironmentObject var claude: ClaudeService
     var body: some View {
         if scanner.isScanning && scanner.total > 0 { ScanBanner() }
+        if claude.scoring && !claude.status.isEmpty { ClaudeBanner() }
+    }
+}
+
+/// While Claude is scoring: one slim line with the progress, so it's clear it's working.
+struct ClaudeBanner: View {
+    @EnvironmentObject var claude: ClaudeService
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles").font(.footnote).foregroundStyle(Theme.accent).accessibilityHidden(true)
+                Text(claude.status).font(.footnote.bold()).lineLimit(2)
+                Spacer(minLength: 4)
+                Button("Stop") {
+                    UserDefaults.standard.set(false, forKey: "autoClaude")
+                    claude.stop()
+                }
+                .font(.footnote).buttonStyle(.bordered).controlSize(.mini)
+            }
+            if claude.toSend > 0 && claude.sent > 0 {
+                ProgressView(value: Double(min(claude.sent, claude.toSend)), total: Double(claude.toSend)).controlSize(.mini)
+            }
+        }
+        .padding(12)
+        .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+        .accessibilityElement(children: .combine)
     }
 }
 

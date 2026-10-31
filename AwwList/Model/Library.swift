@@ -38,8 +38,11 @@ final class Library: ObservableObject {
     /// The year each sent photo counted against (fixed when sent, so deleting or re-dating it doesn't free a slot).
     private(set) var claudeSentYear: [String: Int] = [:]
     /// What's left off the list and why, with counts (worked out at each rebuild), for Settings.
-    struct LeftOut: Hashable { let reason: String; let count: Int }
+    /// A group of photos and why they're in it (newest first).
+    struct LeftOut: Hashable { let reason: String; let count: Int; var ids: [String] = [] }
     @Published private(set) var leftOut: [LeftOut] = []
+    /// Photos still on the list that Apple's check flagged (swimwear, shirtless, water, AI or edited, ...), by flag.
+    @Published private(set) var flagged: [LeftOut] = []
     @Published private(set) var listedPhotos = 0
 
     /// Possible bath or undressed photos are listed and scored on the phone, unless the user keeps one out.
@@ -382,6 +385,14 @@ final class Library: ObservableObject {
         recountClaude()
         flush()
     }
+    /// Fast mode: photos Claude answered (scored or failed), recorded like a batch so they aren't sent again.
+    func markClaudeSent(model: String, _ ids: [String]) {
+        guard !ids.isEmpty else { return }
+        claudeSent[model, default: []].formUnion(ids)
+        for id in ids where claudeSentYear[id] == nil {
+            if let d = photos[id]?.date { claudeSentYear[id] = Calendar.current.component(.year, from: d) }
+        }
+    }
     func removeClaudeBatch(_ id: String) { claudeBatches.removeAll { $0.id == id }; recountClaude(); save() }
     /// Second scores from the consistency check: stored next to the first (a removal on the second pass is
     /// recorded as no second score), and the learning then uses the average.
@@ -418,12 +429,23 @@ final class Library: ObservableObject {
 
     func applyClaude(_ verdicts: [String: ClaudeVerdict]) {
         guard !verdicts.isEmpty else { return }
+        recordClaude(verdicts)
+        refreshAfterClaude()
+    }
+    /// Stores Claude's scores right away (so those photos are never offered or billed again, and a save soon
+    /// keeps them), without re-ranking yet: fast scoring calls this for every group and re-ranks every ~100.
+    func recordClaude(_ verdicts: [String: ClaudeVerdict]) {
+        guard !verdicts.isEmpty else { return }
         // Claude's first scores: switch to ranking by Claude, unless a ranking was chosen in the menu.
         if UserDefaults.standard.string(forKey: "rankBy") == nil && claudeScored == 0 { rankBy = "claude" }
         for (id, v) in verdicts {
             photos[id]?.claude = v
             if let e = v.exclude { claudeRemoved[id] = e }
         }
+        saveSoon()
+    }
+    /// Re-ranks with the scores recorded so far, saves, and learns from them.
+    func refreshAfterClaude() {
         rebuild(); flush()
         retrain()
     }
@@ -981,8 +1003,12 @@ final class Library: ObservableObject {
             }
         }
         // What's left off and why (current photos only; hidden ones are counted separately).
-        var counts: [String: Int] = [:]
+        var counts: [String: [PhotoScore]] = [:]
+        var flags: [String: [PhotoScore]] = [:]
         let shown = Set(ms.flatMap(\.memberIDs))
+        for p in photos.values where shown.contains(p.id) {
+            if let f = p.appleFlag { flags[f, default: []].append(p) }
+        }
         for p in photos.values where !shown.contains(p.id) {
             let why: String
             if notVisible.contains(p.id) { why = "Not in your Limited Access selection" }
@@ -1007,10 +1033,14 @@ final class Library: ObservableObject {
                 default: why = Scorer.softReasons.contains(e) ? "\(e), and no sign of a child" : e
                 }
             } else { why = "Other" }
-            counts[why, default: 0] += 1
+            counts[why, default: []].append(p)
         }
-        leftOut = counts.map { LeftOut(reason: $0.key, count: $0.value) }
-            .sorted { $0.count != $1.count ? $0.count > $1.count : $0.reason < $1.reason }
+        func groups(_ g: [String: [PhotoScore]]) -> [LeftOut] {
+            g.map { LeftOut(reason: $0.key, count: $0.value.count, ids: $0.value.sorted { $0.date > $1.date }.map(\.id)) }
+                .sorted { $0.count != $1.count ? $0.count > $1.count : $0.reason < $1.reason }
+        }
+        leftOut = groups(counts)
+        flagged = groups(flags)
         listedPhotos = shown.count
         ms.sort(by: Library.ranked)
         claudeScored = everyMoment.reduce(0) { $0 + ($1.claudeScore != nil ? 1 : 0) }

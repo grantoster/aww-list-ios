@@ -53,6 +53,7 @@ struct RootView: View {
                 BackgroundScan.continueInBackground()
             }
             if phase == .active {
+                BackgroundScan.appBecameActive()
                 status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
                 if status == .authorized && !library.notVisible.isEmpty { scanner.start(library: library) }   // Limited → Full
                 if status == .authorized || status == .limited { scanner.startIfNeeded(library: library) }
@@ -68,24 +69,15 @@ struct RootView: View {
         }
     }
 
-    /// Sends the photos to Claude by itself after the first scan, when you chose that on the first screen. Same
-    /// rules and checks as tapping Score with Claude (it only runs once the scan is finished). It runs once: it
-    /// turns itself off after a pass that wasn't interrupted (or after 3 tries), so later photos are only sent
-    /// when you tap Score with Claude.
+    /// Keeps a scoring run going (started with Score, or chosen on the first screen) until everything chosen is
+    /// scored: it picks up again by itself when the photo check finishes and when you come back to the app. Same
+    /// rules and checks as every send. It stops after a pass that finished (or was stopped), when the key is
+    /// rejected, or after 6 tries in a row that sent nothing.
     private func autoScore() {
         guard autoClaude, phase == .active, status == .authorized || status == .limited,
               !scanner.isScanning, !scanner.needsScan, !claude.busy, !library.photos.isEmpty,
               Claude.apiKey != nil else { return }
-        Task {
-            await claude.send(library)
-            switch claude.lastOutcome {
-            case .notStarted: break                       // something else was sending, or new photos to check first
-            case .done, .keyRejected: autoClaude = false   // one full pass (later photos are sent when you tap Score)
-            case .paused, .retryLater:
-                autoTries += 1
-                if autoTries >= 3 { autoClaude = false }
-            }
-        }
+        Task { await ClaudeService.runAndTrack(library) }
     }
 
     private func request() {
@@ -171,7 +163,9 @@ struct SettingsView: View {
                 Section("What's left out") {
                     LabeledContent("On the list", value: "\(library.listedPhotos.formatted()) photos")
                     ForEach(library.leftOut, id: \.reason) { row in
-                        LabeledContent(row.reason, value: row.count.formatted())
+                        NavigationLink { PhotoGroupView(title: row.reason, ids: row.ids) } label: {
+                            LabeledContent(row.reason, value: row.count.formatted())
+                        }
                     }
                     Text("Counts are photos, not moments; a moment's other shots in a burst count as on the list.")
                         .font(.footnote).foregroundStyle(.secondary)
@@ -181,6 +175,19 @@ struct SettingsView: View {
                         .font(.footnote)
                     Text("Awwbum reads your photo library. It never edits, adds or deletes photos; the only change it can make is a favorite, when you tap the heart. Remove from list only hides a photo inside this app.")
                         .font(.footnote).foregroundStyle(.secondary)
+                }
+                if !library.flagged.isEmpty {
+                    Section {
+                        ForEach(library.flagged, id: \.reason) { row in
+                            NavigationLink { PhotoGroupView(title: row.reason, ids: row.ids) } label: {
+                                LabeledContent(row.reason, value: row.count.formatted())
+                            }
+                        }
+                    } header: {
+                        Text("On the list, but flagged")
+                    } footer: {
+                        Text("Apple's check wasn't sure about these, so they stay on the list with a flag. Claude makes the final call on the ones it sees; possible swimwear and shirtless photos are sent to Claude only if you turn that on.")
+                    }
                 }
                 Section("How scores work") {
                     Text("Shots less than a minute apart (two at most) count as one moment, and only its best shot is ranked.")
@@ -252,8 +259,17 @@ struct ClaudeSection: View {
     @EnvironmentObject var scanner: PhotoScanner
     @State private var key = ""
     @State private var hasKey = Claude.apiKey != nil
-    @State private var agreed = false
     @AppStorage("autoClaude") private var autoClaude = false
+    @AppStorage("autoClaudeTries") private var autoTries = 0
+    @AppStorage("claudeFast") private var fast = true
+
+    /// Starts scoring and keeps going until everything chosen is scored: if the photo check is running, or new
+    /// photos arrive mid-way, it picks up again by itself when the check finishes and when you come back to the app.
+    private func start() {
+        autoTries = 0
+        autoClaude = true
+        Task { await ClaudeService.runAndTrack(library) }
+    }
 
     var body: some View {
         Section {
@@ -277,8 +293,15 @@ struct ClaudeSection: View {
             if !library.claudeBatches.isEmpty {
                 LabeledContent("Being scored", value: "\(library.claudeBatches.reduce(0) { $0 + $1.photos.count }.formatted()) photos")
             }
+            Picker("Speed", selection: $fast) {
+                Text("Fast").tag(true)
+                Text("Half price").tag(false)
+            }
+            Text(fast ? "Fast: scores come back as each photo is sent, usually seconds apart. Full price."
+                      : "Half price: photos go in batches and Claude's scores usually arrive within an hour.")
+                .font(.footnote).foregroundStyle(.secondary)
             if n > 0 {
-                Text("Estimated cost: about \(Claude.dollars(micros: Claude.costMicros(photos: n, model: library.claudeModel))) at batch prices. This is an estimate (about 1,200 tokens in and about 300 out a photo); your Anthropic bill shows the actual.")
+                Text("Estimated cost: about \(Claude.dollars(micros: Claude.costMicros(photos: n, model: library.claudeModel, fast: fast))) for \(n.formatted()) photos. This is an estimate (about 1,200 tokens in and about 300 out a photo); your Anthropic bill shows the actual.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             if hasKey {
@@ -286,19 +309,22 @@ struct ClaudeSection: View {
             }
             Toggle("Also send possible swimwear or shirtless photos",
                    isOn: Binding(get: { library.claudeSensitive }, set: { library.setClaudeSensitive($0) }))
-            if autoClaude {
-                // The automatic first scoring chosen on the first screen; it can be turned off here (not back on).
-                Toggle("Automatic first scoring (runs once the scan finishes)", isOn: $autoClaude)
+            if claude.busy || autoClaude {
+                Button("Stop scoring") { autoClaude = false; claude.stop() }
+                if !claude.busy {
+                    Text("Scoring continues by itself once the photo check finishes or when you come back to the app.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+            } else {
+                Button(scanner.isScanning ? "Score with Claude (starts after the photo check)" : "Score \(n.formatted()) photos with Claude") { start() }
+                    .disabled(!hasKey || (n == 0 && !scanner.isScanning))
             }
-            Toggle("Send these photos to Claude", isOn: $agreed)
-            Button(claude.busy ? "Working…" : scanner.isScanning ? "Score with Claude (after the scan)" : "Score with Claude") { Task { await claude.send(library) } }
-                .disabled(!hasKey || !agreed || claude.busy || n == 0 || scanner.isScanning)
             let rc = library.claudeRecheckable
             if library.claudeScored > 0 {
-                Button("Check Claude's consistency (re-score \(rc.formatted()) photos, about \(Claude.dollars(micros: Claude.costMicros(photos: rc, model: library.claudeModel))))") {
+                Button("Check Claude's consistency (re-score \(rc.formatted()) photos, about \(Claude.dollars(micros: Claude.costMicros(photos: rc, model: library.claudeModel, fast: fast))))") {
                     Task { await claude.send(library, recheck: true) }
                 }
-                .disabled(!hasKey || !agreed || claude.busy || rc == 0 || scanner.isScanning)
+                .disabled(!hasKey || claude.busy || rc == 0 || scanner.isScanning)
                 if let c = library.consistency {
                     let pts = String(format: "%.1f", (c.gap * 10 + 1e-9).rounded(.toNearestOrAwayFromZero) / 10)
                     let pct = Int((c.withinHalf * 100 + 1e-9).rounded(.toNearestOrAwayFromZero))
@@ -316,13 +342,16 @@ struct ClaudeSection: View {
             if !claude.status.isEmpty { Text(claude.status).font(.footnote).foregroundStyle(.secondary) }
             if library.claudeScored > 0 {
                 LabeledContent("Scored by Claude", value: library.claudeScored.formatted())
-                Button("Go back to on-device scores only", role: .destructive) { library.clearClaude() }
+                Button("Go back to on-device scores only", role: .destructive) {
+                    autoClaude = false; claude.stop()   // so nothing is re-sent by itself afterward
+                    library.clearClaude()
+                }
                     .disabled(claude.busy || !library.claudeBatches.isEmpty)   // not while photos are out being scored
             }
         } header: {
             Text("Score with Claude")
         } footer: {
-            Text("Optional. Claude decides what comes off the list. Your phone scores every photo first and only flags what it isn't sure about (no child spotted, water, swimwear, shirtless, AI or edited files); flagged photos stay listed. Each year's best photos, flagged or not, plus a spread of lower-ranked ones and photos with faces but no child label, are sent to Anthropic's Claude for the final 1–10 score, a description, and the call on whether a photo belongs (bath, undressed or shirtless outside swimwear, AI or edited, no child). Swimsuits at the beach or pool are fine and stay on the list. Photos flagged as possible bath or undressed (by Apple's check or Claude's), and every shot within 10 minutes of one, are never sent, even if you put them back. The check is automatic and can miss some photos. Right before sending, the phone re-reads every photo taken within 10 minutes of each one; if any isn't checked yet (still downloading from iCloud, or new), it waits. With Limited photo access, photos outside your selection can't be checked. Possible swimwear and shirtless photos (and the shots right around them) are sent only if you turn that on above; otherwise they stay listed and Claude just doesn't see them (so when ranking by Claude, they can't rank above Claude's top-scored photos). Photos are sent at most 768 pixels on the long side, without location or file details. It uses your own API key from console.anthropic.com; charges go to your Anthropic account. Anthropic's terms say it doesn't train on what's sent; it normally deletes it within 29–30 days, and can keep anything its safety checks flag for up to 2 years. When ranking by Claude, photos Claude hasn't seen are held at 6 or below (8 or below once there's a learned score).")
+            Text("Optional. Claude decides what comes off the list. Your phone scores every photo first and only flags what it isn't sure about (no child spotted, water, swimwear, shirtless, AI or edited files); flagged photos stay listed. Each year's best photos, flagged or not, plus a spread of lower-ranked ones and photos with faces but no child label, are sent to Anthropic's Claude for the final 1–10 score, a description, and the call on whether a photo belongs (bath, undressed or shirtless outside swimwear, AI or edited, no child). Swimsuits at the beach or pool are fine and stay on the list. Photos flagged as possible bath or undressed (by Apple's check or Claude's), and every shot within 10 minutes of one, are never sent, even if you put them back. The check is automatic and can miss some photos. Right before sending, the phone re-reads every photo taken within 10 minutes of each one; if any isn't checked yet (still downloading from iCloud, or new), it waits. With Limited photo access, photos outside your selection can't be checked. Possible swimwear and shirtless photos (and the shots right around them) are sent only if you turn that on above; otherwise they stay listed and Claude just doesn't see them (so when ranking by Claude, they can't rank above Claude's top-scored photos). Photos are sent at most 768 pixels on the long side, without location or file details. It uses your own API key from console.anthropic.com; charges go to your Anthropic account. Anthropic's terms say it doesn't train on what's sent; it normally deletes it within 30 days, and can keep anything its safety checks flag for up to 2 years. When ranking by Claude, photos Claude hasn't seen are held at 6 or below (8 or below once there's a learned score).")
         }
     }
 }
@@ -492,6 +521,49 @@ struct HeldBackView: View {
     }
 }
 
+/// Every photo in one group (a reason it's left out, or a flag), newest first. Tap one to see it larger.
+struct PhotoGroupView: View {
+    let title: String
+    let ids: [String]
+    @State private var shown = 90
+    @State private var open: OpenPhoto?
+    private let columns = [GridItem(.adaptive(minimum: 104), spacing: 6)]
+    struct OpenPhoto: Identifiable { let id: String }
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 12) {
+                Text("\(ids.count.formatted()) photos").font(.footnote).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                LazyVGrid(columns: columns, spacing: 6) {
+                    ForEach(ids.prefix(shown), id: \.self) { id in
+                        Button { open = OpenPhoto(id: id) } label: {
+                            AssetImage(id: id, targetSide: 120)
+                                .aspectRatio(1, contentMode: .fit)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Photo")
+                    }
+                }
+                if ids.count > shown {
+                    Button("See more") { shown += 90 }.buttonStyle(.bordered).tint(Theme.grapeInk)
+                }
+            }
+            .padding(16)
+        }
+        .background(Theme.background.ignoresSafeArea())
+        .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
+        .sheet(item: $open) { p in
+            NavigationStack {
+                AssetImage(id: p.id, contentMode: .fit, targetSide: 1000, cached: false)
+                    .background(Color.black)
+                    .ignoresSafeArea(edges: .bottom)
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { open = nil } } }
+            }
+        }
+    }
+}
+
 /// Shown the first time the app opens: add a Claude API key, and choose to have every photo scored automatically.
 struct KeySetupView: View {
     let hadKey: Bool
@@ -519,12 +591,12 @@ struct KeySetupView: View {
                 }
                 Toggle("Score every photo with Claude when the first scan finishes", isOn: $scoreAll)
                     .font(.subheadline)
-                Text("Estimated cost with \(Claude.models.first { $0.id == library.claudeModel }?.name ?? "the chosen model"): about \(Claude.dollars(micros: Claude.costMicros(photos: 1_000, model: library.claudeModel))) per 1,000 photos at batch prices (an estimate; your Anthropic bill shows the actual). Photos are sent at most 768 pixels on the long side, without location or file details. You can change all of this in Settings.")
+                Text("Estimated cost with \(Claude.models.first { $0.id == library.claudeModel }?.name ?? "the chosen model"): about \(Claude.dollars(micros: Claude.costMicros(photos: 1_000, model: library.claudeModel, fast: Claude.fast))) per 1,000 photos (an estimate; your Anthropic bill shows the actual). Photos are sent at most 768 pixels on the long side, without location or file details. You can change all of this in Settings.")
                     .font(.footnote).foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 10) {
                     Label("The bath filter can miss photos", systemImage: "exclamationmark.triangle").font(.subheadline.bold())
                     Text("Awwbum holds back photos it thinks may show a child in the bath or undressed, and every shot within 10 minutes of one. It's an automatic guess, not a guarantee, so some of those photos could still be sent to Claude. If that's a worry, turn off scoring every photo above and send fewer photos from Settings, or skip Claude scoring.")
-                    Text("Photos you send go to Anthropic (the company behind Claude), including other people and other families' kids in them. Anthropic's terms say it doesn't train its models on them. It normally deletes them within 30 days (batch jobs, which Awwbum uses, within 29 days), but can keep anything its safety checks flag for up to 2 years.")
+                    Text("Photos you send go to Anthropic (the company behind Claude), including other people and other families' kids in them. Anthropic's terms say it doesn't train its models on them. It normally deletes them within 30 days, but can keep anything its safety checks flag for up to 2 years.")
                 }
                 .font(.footnote).padding(14).frame(maxWidth: .infinity, alignment: .leading)
                 .background(Theme.surface, in: RoundedRectangle(cornerRadius: 14))
@@ -569,10 +641,20 @@ struct DiagnosticsSection: View {
     var body: some View {
         Section {
             ForEach(library.diagnostics) { d in LabeledContent(d.label, value: d.value) }
+            let bg = BackgroundScan.log
+            if !bg.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Background scanning").font(.subheadline)
+                    ForEach(Array(bg.reversed().enumerated()), id: \.offset) { _, line in
+                        Text(line).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
             Button(copied ? "Copied" : "Copy diagnostics") {
                 library.noteMemory()
                 let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
-                UIPasteboard.general.string = (["Awwbum build \(build)"] + library.diagnostics.map { "\($0.label): \($0.value)" })
+                UIPasteboard.general.string = (["Awwbum build \(build)"] + library.diagnostics.map { "\($0.label): \($0.value)" }
+                                               + ["Background scanning:"] + BackgroundScan.log)
                     .joined(separator: "\n")
                 copied = true
             }

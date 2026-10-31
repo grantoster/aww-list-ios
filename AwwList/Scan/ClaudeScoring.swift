@@ -126,6 +126,39 @@ enum Claude {
         return (id, text)
     }
 
+    /// The reply text from a Messages API response (nil if it was cut off or isn't a reply).
+    static func parseMessage(_ data: Data) -> String? {
+        guard let msg = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              msg["stop_reason"] as? String != "max_tokens",
+              let content = msg["content"] as? [[String: Any]] else { return nil }
+        let text = content.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }.joined()
+        return text.isEmpty ? nil : text
+    }
+    /// The error type in an API error response ("invalid_request_error", "billing_error", ...).
+    static func errorType(_ data: Data) -> String? {
+        ((try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? [String: Any])?["type"] as? String
+    }
+    /// The error message in an API error response.
+    static func errorMessage(_ data: Data) -> String? {
+        ((try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? [String: Any])?["message"] as? String
+    }
+
+    /// Fast (on, the default): each photo is its own request, so scores come back in seconds, at full price.
+    /// Off: the Message Batches API, half price, scores usually within an hour.
+    static var fast: Bool { UserDefaults.standard.object(forKey: "claudeFast") as? Bool ?? true }
+    /// Estimated cost at the price of the chosen speed (fast is full price, twice the batch price).
+    static func costMicros(photos: Int, model: String, fast: Bool) -> Int { costMicros(photos: photos, model: model) * (fast ? 2 : 1) }
+
+    /// One photo's request.
+    static func params(model: String, jpeg: Data) -> [String: Any] {
+        ["model": model, "max_tokens": 2000, "system": system,
+         "output_config": ["effort": "low"],
+         "messages": [["role": "user", "content": [
+             ["type": "image", "source": ["type": "base64", "media_type": "image/jpeg", "data": jpeg.base64EncodedString()]],
+             ["type": "text", "text": "Rate this photo."]
+         ]]]]
+    }
+
     /// Displayed 1–10 score: half rounds up.
     static func displayScore(_ v: Double) -> Int { Int((v + 0.5).rounded(.down)) }
 }
@@ -142,6 +175,33 @@ final class ClaudeService: ObservableObject {
     @Published private(set) var lastOutcome = Outcome.notStarted
 
     private let endpoint = URL(string: "https://api.anthropic.com/v1/messages/batches")!
+    private let messagesURL = URL(string: "https://api.anthropic.com/v1/messages")!
+    /// Photos out with Claude right now in fast mode (never offered again while they are).
+    private(set) var inFlight: Set<String> = []
+    /// Photos Claude scored in the current run (fast mode).
+    @Published private(set) var scoredNow = 0
+    /// The last pass got somewhere: Claude scored photos (fast) or a batch was uploaded (half price).
+    private(set) var madeProgress = false
+    /// True while photos are being scored (not for the connection test).
+    @Published private(set) var scoring = false
+    /// Set by Stop: the run ends after the photos already out come back.
+    private var stopRequested = false
+    /// One scoring pass, then whether to keep going by itself (the "autoClaude" setting): off after a pass that
+    /// finished or was stopped, or when the key is rejected; after 6 tries in a row that sent nothing, it gives up.
+    static func runAndTrack(_ library: Library) async {
+        let c = Shared.claude
+        await c.send(library)
+        let d = UserDefaults.standard
+        switch c.lastOutcome {
+        case .notStarted: break                                   // waiting for the photo check, or already sending
+        case .done, .keyRejected: d.set(false, forKey: "autoClaude"); d.set(0, forKey: "autoClaudeTries")
+        case .paused, .retryLater:
+            let tries = c.madeProgress ? 0 : d.integer(forKey: "autoClaudeTries") + 1
+            d.set(tries, forKey: "autoClaudeTries")
+            if tries >= 6 { d.set(false, forKey: "autoClaude") }
+        }
+    }
+    func stop() { stopRequested = true; if busy { status = "Stopping after the photos already sent come back…" } }
 
     /// Its own connection pool: a fresh connection per app session, waits for the network instead of failing,
     /// and generous timeouts for uploads on cellular.
@@ -154,7 +214,7 @@ final class ClaudeService: ObservableObject {
     }()
 
     /// Network hiccups worth another try ("The network connection was lost" is usually a stale connection).
-    private static func transient(_ e: Error) -> Bool {
+    nonisolated private static func transient(_ e: Error) -> Bool {
         guard let u = e as? URLError else { return false }
         return [.networkConnectionLost, .timedOut, .cannotConnectToHost,
                 .dnsLookupFailed, .cannotFindHost].contains(u.code)
@@ -255,7 +315,7 @@ final class ClaudeService: ObservableObject {
     /// `refill`: slots freed by photos the final check held back go to the next-best candidates, not the spread.
     func candidates(_ library: Library, skipping skip: Set<String> = [], refill: Bool = false) -> [Moment] {
         let model = library.claudeModel, n = library.claudeScope
-        let pending = Set(library.claudeBatches.flatMap { $0.photos.values })
+        let pending = Set(library.claudeBatches.flatMap { $0.photos.values }).union(inFlight)
         let sentToModel = library.claudeSent[model] ?? []
         func used(_ p: PhotoScore) -> Bool {
             pending.contains(p.id) || (library.claudeFailures[p.id] ?? 0) >= 2 || sentToModel.contains(p.id)
@@ -352,7 +412,7 @@ final class ClaudeService: ObservableObject {
     /// Photos Claude already scored (kept, with this model) and not yet re-checked, spread across the years.
     func recheckCandidates(_ library: Library) -> [Moment] {
         let model = library.claudeModel
-        let pending = Set(library.claudeBatches.flatMap { $0.photos.values })
+        let pending = Set(library.claudeBatches.flatMap { $0.photos.values }).union(inFlight)
         let pool = library.claudePool.filter { m in
             guard let c = m.best.claude, c.exclude == nil, c.model == model, c.rubric == Claude.rubric, c.rechecked != true else { return false }
             return !pending.contains(m.best.id) && !m.memberIDs.contains(where: library.neverSend.contains)
@@ -366,13 +426,35 @@ final class ClaudeService: ObservableObject {
         lastOutcome = .notStarted   // stays so on the early returns below (a send already running sets its own when done)
         guard !busy else { return }
         // Only once the scan is finished: until then a bath photo near a candidate may not be checked yet.
-        guard !Shared.scanner.isScanning else { status = "Wait for the scan to finish, then send."; return }
+        guard !Shared.scanner.isScanning else { status = "Checking your photos first; Claude scoring starts by itself when that finishes."; return }
         if Shared.scanner.needsScan {
             Shared.scanner.startIfNeeded(library: library)
-            status = "New photos need checking first. Send again when the scan finishes."
+            status = "Checking new photos first; Claude scoring starts by itself when that finishes."
             return
         }
         busy = true; defer { busy = false }
+        stopRequested = false; scoredNow = 0; madeProgress = false
+        scoring = true; defer { scoring = false }
+        let fast = Claude.fast
+        var sinceRefresh = 0
+        var lastPhotoError = ""
+        let model = library.claudeModel
+        // Fast mode: every group's results are recorded at once (never re-offered or re-billed, and saved soon);
+        // the list is re-ranked every ~100 photos and at the end.
+        func record(_ r: FastResult) {
+            if recheck {
+                library.applyRecheck(r.verdicts, failed: r.failed)
+                return
+            }
+            library.markClaudeSent(model: model, Array(r.verdicts.keys) + r.failed)
+            library.recordClaude(r.verdicts)
+            library.noteClaudeFailures(r.failed)
+            library.unsend(model: model, r.failed)   // can be tried again (up to twice in all)
+            sinceRefresh += r.verdicts.count
+            if !r.verdicts.isEmpty { madeProgress = true }
+        }
+        func refresh() { if sinceRefresh > 0 { sinceRefresh = 0; library.refreshAfterClaude() } }
+        defer { refresh() }
         var paused = false, unloadedIDs = Set<String>()
         var failure: Error?
         defer {
@@ -390,7 +472,6 @@ final class ClaudeService: ObservableObject {
             status = recheck ? "No photos left to re-check with this model." : "Everything chosen is already scored by Claude."
             await collect(library); return
         }
-        let model = library.claudeModel
         do {
             status = "Checking your API key…"
             try await checkKey()
@@ -399,7 +480,10 @@ final class ClaudeService: ObservableObject {
             while !queue.isEmpty && !paused && round < 4 {
             round += 1
             toSend = sent + queue.count
-            for chunk in stride(from: 0, to: queue.count, by: 25).map({ Array(queue[$0..<min($0 + 25, queue.count)]) }) {
+            // Fast: 24 photos prepared at a time and sent 6 at once. Batch: 50 photos per batch upload.
+            let size = fast ? 24 : 50
+            for chunk in stride(from: 0, to: queue.count, by: size).map({ Array(queue[$0..<min($0 + size, queue.count)]) }) {
+                if stopRequested { break }
                 // A scan that started meanwhile (new photos) may find a bath photo next to these: stop, send later.
                 if Shared.scanner.isScanning || Shared.scanner.needsScan { paused = true; break }
                 let blocked = library.neverSend
@@ -425,20 +509,32 @@ final class ClaudeService: ObservableObject {
                 if Shared.scanner.isScanning || Shared.scanner.needsScan { paused = true; break }
                 let cleared = Set(chunk.filter { Self.sendable($0, library) }.map(\.best.id))
                 held.formUnion(chunk.map(\.best.id).filter { !cleared.contains($0) })
+                if stopRequested { break }
+                if fast {
+                    var jobs: [(moment: Moment, body: Data)] = []
+                    for (i, m) in chunk.enumerated() {
+                        guard cleared.contains(m.best.id) else { continue }
+                        guard let jpeg = jpegs[i] else { unloadedIDs.insert(m.best.id); held.insert(m.best.id); continue }
+                        jobs.append((m, try JSONSerialization.data(withJSONObject: Claude.params(model: model, jpeg: jpeg),
+                                                                    options: [.withoutEscapingSlashes])))
+                    }
+                    if jobs.isEmpty { continue }
+                    let r = await scoreNow(jobs, model: model, library: library)
+                    held.formUnion(r.held)
+                    record(r)
+                    if !r.firstError.isEmpty { lastPhotoError = r.firstError }
+                    // The first scores show at once; after that the list is re-ranked every ~100 photos.
+                    if sinceRefresh >= 96 || r.error != nil || library.claudeScored == 0 { refresh() }
+                    if let e = r.error { throw e }
+                    if r.paused { paused = true; break }
+                    continue
+                }
                 for (i, m) in chunk.enumerated() {
                     guard cleared.contains(m.best.id) else { continue }
                     guard let jpeg = jpegs[i] else { unloadedIDs.insert(m.best.id); held.insert(m.best.id); continue }
                     let cid = "p\(sent + i)_\(Int(Date().timeIntervalSince1970))"
                     map[cid] = m.best.id
-                    reqs.append(["custom_id": cid, "params": [
-                        "model": model, "max_tokens": 2000, "system": Claude.system,
-                        "output_config": ["effort": "low"],
-                        "messages": [["role": "user", "content": [
-                            ["type": "image", "source": ["type": "base64", "media_type": "image/jpeg",
-                                                         "data": jpeg.base64EncodedString()]],
-                            ["type": "text", "text": "Rate this photo."]
-                        ]]]
-                    ]])
+                    reqs.append(["custom_id": cid, "params": Claude.params(model: model, jpeg: jpeg)])
                 }
                 if reqs.isEmpty { continue }
                 status = "Sending \(reqs.count) photos to Claude…"
@@ -456,7 +552,7 @@ final class ClaudeService: ObservableObject {
                 var aborted = false
                 for attempt in 1...3 where id == nil {
                     // Before a retry (which can come minutes later), check again: new photos may have arrived.
-                    if attempt > 1 && (Shared.scanner.isScanning || Shared.scanner.needsScan
+                    if attempt > 1 && (stopRequested || Shared.scanner.isScanning || Shared.scanner.needsScan
                                        || chunk.contains(where: { cleared.contains($0.best.id) && !Self.sendable($0, library) })) {
                         aborted = true; break
                     }
@@ -480,26 +576,168 @@ final class ClaudeService: ObservableObject {
                 if aborted { paused = true; break }
                 guard let id else { throw URLError(.networkConnectionLost) }
                 library.addClaudeBatch(ClaudeBatch(id: id, model: model, photos: map, sent: Date(), recheck: recheck ? true : nil))
+                madeProgress = true
                 sent += reqs.count
             }
-            queue = held.isEmpty || recheck ? [] : candidates(library, skipping: held, refill: true)
+            queue = held.isEmpty || recheck || stopRequested ? [] : candidates(library, skipping: held, refill: true)
             }
+            refresh()
             let before = status
             await collect(library)
             if paused && !Shared.scanner.isScanning { Shared.scanner.startIfNeeded(library: library) }   // check the changes now
-            if paused {
-                let why = "your photo library changed while sending (new, changed or still-unchecked photos). Send again; the app checks them first."
+            if stopRequested {
+                status = fast ? "Stopped. Claude scored \(scoredNow.formatted()) photos." : "Stopped after sending \(sent.formatted()) photos."
+            } else if paused {
+                let why = "your photo library changed (new, changed or still-unchecked photos). The app checks them first, then scoring picks up by itself."
                 status = sent == 0 ? "Paused before sending: " + why : "Sent \(sent.formatted()) photos, then paused: " + why
             } else if sent == 0 {
                 status = !unloadedIDs.isEmpty
                     ? "Nothing could be sent: \(unloadedIDs.count.formatted()) photos couldn't be loaded (check your connection if they're in iCloud)" + (unloadedIDs.count < toSend ? ", and the rest are held back." : ".")
                     : "Nothing could be sent yet: photos taken near the chosen ones aren't all checked yet, or are near possible bath photos or ones Claude removed."
+            } else if fast {
+                let missed = sent - scoredNow
+                status = "Done. Claude scored \(scoredNow.formatted()) photos" +
+                    (missed > 0 ? "; \(missed.formatted()) couldn't be scored" + (lastPhotoError.isEmpty ? "." : ": \(lastPhotoError)") : ".")
             } else if sent > 0 && status == before {
                 status = "Sent \(sent.formatted()) photos. Claude's scores usually arrive within an hour; they're picked up when you open the app."
             }
         } catch {
             failure = error
             status = Self.describe(error)
+        }
+    }
+
+    /// What came back from one fast-mode group of photos.
+    struct FastResult {
+        var verdicts: [String: ClaudeVerdict] = [:]
+        var failed: [String] = []      // Claude answered but couldn't score the photo (counts toward its 2 tries)
+        var held: Set<String> = []     // not sent: the last check didn't clear it, or the run stopped
+        var paused = false             // the photo library changed meanwhile
+        var error: Error?              // stop the run (key, account, network or busy problem)
+        var firstError = ""
+    }
+
+    /// Fast mode: sends each photo as its own request, 6 at a time. Right before every request (and every retry)
+    /// the photo is checked again exactly as before a batch upload, and nothing new goes out once Stop is tapped
+    /// or the photo library changes. Photos that hit a network problem or a busy Claude aren't recorded as sent.
+    private func scoreNow(_ jobs: [(moment: Moment, body: Data)], model: String, library: Library) async -> FastResult {
+        struct Job { let moment: Moment; let req: URLRequest; var attempt: Int }
+        enum Out { case done(Job, Result<(Data, Int), Error>); case wake(Job) }
+        var out = FastResult()
+        let ids = jobs.map(\.moment.best.id)
+        inFlight.formUnion(ids)
+        defer { inFlight.subtract(ids) }
+        let ended = Once()
+        var bg = UIBackgroundTaskIdentifier.invalid
+        bg = UIApplication.shared.beginBackgroundTask(withName: "Score with Claude") {
+            if ended.claim() { UIApplication.shared.endBackgroundTask(bg) }
+        }
+        defer { if ended.claim() { UIApplication.shared.endBackgroundTask(bg) } }
+        var queue: [Job] = []
+        do { queue = try jobs.map { Job(moment: $0.moment, req: try request(messagesURL, method: "POST", body: $0.body), attempt: 1) } }
+        catch { out.error = error; return out }
+        let session = self.session
+        var busyNow = false, networkError: Error?, accountError: (Int, String)?
+        var rejectedCount = 0   // 4xx answers about the request, not the photo's content
+        await withTaskGroup(of: Out.self) { group in
+            var active = 0   // requests out plus retries waiting their turn (at most 6 in all)
+            var halted: Bool { stopRequested || out.error != nil || accountError != nil || out.paused }
+            // The same last check as a batch upload, right before this request leaves the phone.
+            func launch(_ j: Job) {
+                let id = j.moment.best.id
+                if Shared.scanner.isScanning || Shared.scanner.needsScan { out.paused = true }
+                guard !halted, Self.sendable(j.moment, library) else { out.held.insert(id); return }
+                active += 1
+                group.addTask { .done(j, await ClaudeService.post(j.req, session)) }
+            }
+            func fill() {
+                while active < 6 && !queue.isEmpty && !halted { launch(queue.removeFirst()) }
+                if halted { for j in queue { out.held.insert(j.moment.best.id) }; queue.removeAll() }
+            }
+            func retry(_ j: Job) -> Bool {
+                guard j.attempt < 3, !halted else { return false }
+                let k = Job(moment: j.moment, req: j.req, attempt: j.attempt + 1)
+                let wait = UInt64(j.attempt == 1 ? 2 : 6)
+                active += 1
+                group.addTask { try? await Task.sleep(nanoseconds: wait * 1_000_000_000); return .wake(k) }
+                return true
+            }
+            /// A photo reached its final answer (scored, failed, or set aside).
+            func finished(_ id: String) {
+                sent += 1
+                if out.verdicts[id] != nil { scoredNow += 1 }
+                status = "Claude scored \(scoredNow.formatted()) of \(toSend.formatted()) photos…"
+            }
+            fill()
+            for await o in group {
+                switch o {
+                case .wake(let j):
+                    active -= 1
+                    launch(j)
+                case .done(let j, let r):
+                    active -= 1
+                    let id = j.moment.best.id
+                    switch r {
+                    case .success(let (data, code)):
+                        if code == 200 {
+                            // Answered (and billed): a usable score, or a failure that counts toward its 2 tries.
+                            if let text = Claude.parseMessage(data), let v = Claude.parse(text, model: model) { out.verdicts[id] = v }
+                            else { out.failed.append(id); if out.firstError.isEmpty { out.firstError = "Claude's reply couldn't be read." } }
+                            finished(id)
+                        } else if code == 401 || code == 403 {
+                            if !halted { out.error = ClaudeError.http(401, "") }
+                            out.held.insert(id)
+                        } else if code == 429 || code >= 500 {
+                            if !retry(j) { if !halted { busyNow = true }; out.held.insert(id) }
+                        } else {
+                            // An answer about this photo (an image Claude can't read, one that's too big) counts
+                            // against it; one about the account or request (credit, model, permission) stops the run.
+                            let type = Claude.errorType(data) ?? "", msg = Claude.errorMessage(data) ?? ""
+                            let photoProblem = (type == "invalid_request_error" || type == "request_too_large" || code == 413)
+                                && !msg.lowercased().contains("credit balance") && !msg.lowercased().contains("model")
+                            if photoProblem {
+                                out.failed.append(id); rejectedCount += 1
+                                if out.firstError.isEmpty { out.firstError = msg }
+                                finished(id)
+                            } else {
+                                if !halted { accountError = (code, msg) }
+                                out.held.insert(id)
+                            }
+                        }
+                    case .failure(let e):
+                        if e is CancellationError || halted { out.held.insert(id) }
+                        else if !(Self.transient(e) && retry(j)) { networkError = e; out.held.insert(id) }
+                    }
+                }
+                fill()
+            }
+        }
+        // Claude answered but none of the replies could be read: they're recorded (they were billed), and the run
+        // stops instead of sending (and paying for) more photos the same way.
+        if out.verdicts.isEmpty && out.failed.count - rejectedCount >= 3 && accountError == nil && out.error == nil && !stopRequested {
+            out.error = ClaudeError.http(200, "Claude's replies couldn't be read, so scoring stopped. Try again later or switch the model in Settings.")
+        }
+        // Every request in this group was turned away and nothing was scored: likely a problem with the request
+        // itself, not the photos. Nothing is counted against them.
+        if out.verdicts.isEmpty && rejectedCount >= 3 && rejectedCount == out.failed.count && accountError == nil {
+            accountError = (400, out.firstError); out.held.formUnion(out.failed); out.failed = []
+        }
+        if out.error == nil && !stopRequested {
+            if let accountError { out.error = ClaudeError.http(accountError.0, accountError.1.isEmpty ? "Claude turned the request down." : accountError.1) }
+            else if let networkError { out.error = networkError }
+            else if busyNow { out.error = ClaudeError.http(429, "Claude is busy; the rest are tried again the next time scoring runs.") }
+        }
+        return out
+    }
+
+    /// One request off the main thread, no retries (the caller re-checks the photo before trying again).
+    nonisolated static func post(_ r: URLRequest, _ session: URLSession) async -> Result<(Data, Int), Error> {
+        do {
+            let (data, resp) = try await session.data(for: r)
+            return .success((data, (resp as? HTTPURLResponse)?.statusCode ?? 0))
+        } catch {
+            if error is CancellationError || (error as? URLError)?.code == .cancelled { return .failure(CancellationError()) }
+            return .failure(error)
         }
     }
 

@@ -18,6 +18,17 @@ enum Shared {
 /// - overnight: iOS runs the scan while the phone is charging and idle, so new photos are ranked by morning.
 enum BackgroundScan {
     static var bundle: String { Bundle.main.bundleIdentifier ?? "com.awwlist.app" }
+
+    /// A short record of what background scanning did (last 12 events), shown under Diagnostics, so it's clear
+    /// whether iOS accepted the request, started it, and how it ended.
+    static let logKey = "backgroundScanLog"
+    static var log: [String] { UserDefaults.standard.stringArray(forKey: logKey) ?? [] }
+    static func note(_ event: String) {
+        let f = DateFormatter(); f.dateFormat = "MMM d h:mm:ss a"
+        var l = log
+        l.append("\(f.string(from: Date())): \(event)")
+        UserDefaults.standard.set(Array(l.suffix(12)), forKey: logKey)
+    }
     static var overnightID: String { bundle + ".scan" }
     static var continuedID: String { bundle + ".continued.scan" }
 
@@ -64,6 +75,7 @@ enum BackgroundScan {
     @MainActor private static func runOvernight(_ task: BGTask) {
         scheduleOvernight()   // first, so the next night is asked for even if this one ends early
         guard whenLibraryReady(task, { runOvernight(task) }) else { return }
+        note("Overnight scan started by iOS")
         guard hasAccess else { task.setTaskCompleted(success: true); return }
         let scanner = Shared.scanner
         let done = Once()
@@ -71,6 +83,7 @@ enum BackgroundScan {
         // When iOS needs the time back: stop, save what's done, and report right away (not after the current photo).
         task.expirationHandler = {
             Task { @MainActor in
+                note("Overnight scan stopped by iOS (\(scanner.done.formatted()) photos checked)")
                 scanner.stop(); Shared.library.flush()
                 if done.claim() { taskOwnsScan = false; task.setTaskCompleted(success: false) }
             }
@@ -78,7 +91,7 @@ enum BackgroundScan {
         scanner.start(library: Shared.library)
         scanner.whenFinished {
             Shared.library.flush()
-            if done.claim() { taskOwnsScan = false; task.setTaskCompleted(success: true) }
+            if done.claim() { note("Overnight scan finished"); taskOwnsScan = false; task.setTaskCompleted(success: true) }
         }
     }
 
@@ -97,6 +110,7 @@ enum BackgroundScan {
     static let autoKey = "keepScanningWhenLeaving"
     @MainActor static var autoContinue: Bool { UserDefaults.standard.bool(forKey: autoKey) }
     @MainActor private static var continuedStarted = false
+    @MainActor private static var watching = false
 
     /// Asks iOS to keep the running scan going after the app is left. Called from the button and automatically
     /// whenever the app starts to close mid-scan (it has to be asked while the app is still on screen).
@@ -112,11 +126,18 @@ enum BackgroundScan {
         req.strategy = .queue   // if iOS can't start it this second, it starts as soon as it can
         do {
             try BGTaskScheduler.shared.submit(req)
+            note(userTapped ? "Asked iOS to keep scanning (you tapped)" : "Asked iOS to keep scanning (leaving the app)")
             continuedRunning = true
             // If iOS never got to it before the scan ended, withdraw the request (so it can't start a scan out of the
-            // blue later) and allow asking again for the next scan.
+            // blue later) and allow asking again for the next scan. One watcher at a time.
+            guard !watching else { return true }
+            watching = true
             Shared.scanner.whenFinished {
-                if !continuedStarted {
+                watching = false
+                // Only when the scan really finished: one stopped by the 30-second wrap-up is waiting for iOS to
+                // take it over, so the request must stay in place.
+                if !continuedStarted && !Shared.scanner.stoppedEarly {
+                    note("iOS hadn't started background scanning before the scan ended")
                     continuedRunning = false
                     BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: continuedID)
                 }
@@ -124,14 +145,23 @@ enum BackgroundScan {
             lastError = nil
             return true
         } catch {
+            note("iOS refused background scanning: \(error.localizedDescription)")
             lastError = "iOS didn't allow background scanning just now (\(error.localizedDescription)). It'll pick up overnight while charging, or when you come back."
             return false
         }
     }
 
+    /// Back in the app: a background request iOS never started is withdrawn, so leaving again can ask afresh.
+    @MainActor static func appBecameActive() {
+        guard #available(iOS 26.0, *), continuedRunning, !continuedStarted else { return }
+        BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: continuedID)
+        continuedRunning = false
+    }
+
     @available(iOS 26.0, *)
     @MainActor private static func runContinued(_ task: BGContinuedProcessingTask) {
         guard whenLibraryReady(task, { runContinued(task) }) else { return }
+        note("iOS started background scanning")
         let scanner = Shared.scanner
         let done = Once()
         taskOwnsScan = true
@@ -161,6 +191,7 @@ enum BackgroundScan {
         task.expirationHandler = {
             Task { @MainActor in
                 _ = expired.claim()
+                note("iOS stopped background scanning (\(scanner.done.formatted()) photos checked)")
                 ticker.cancel(); scanner.stop(); Shared.library.flush()
                 finish(false)
             }
@@ -178,6 +209,7 @@ enum BackgroundScan {
                 }
                 ticker.cancel()
                 Shared.library.flush()
+                if !expired.used { note("Background scanning finished") }
                 task.progress.completedUnitCount = task.progress.totalUnitCount
                 finish(true)
             }
@@ -191,13 +223,16 @@ enum BackgroundScan {
         Shared.library.flush()
         let scanner = Shared.scanner
         guard scanner.isScanning, !taskOwnsScan else { return }
+        note("Left the app mid-scan: 30-second wrap-up" + (continuedRunning ? " (waiting for iOS to take over)" : ""))
         let done = Once()
         var id = UIBackgroundTaskIdentifier.invalid
         id = UIApplication.shared.beginBackgroundTask(withName: "Aww List scan") {
             // Runs on the main thread: end the task right away (iOS is waiting), then save in the background queue.
             // Runs on the main thread: queue the save, and end the task as soon as that write finishes.
             MainActor.assumeIsolated {
-                if !taskOwnsScan { scanner.stop() }
+                // Waiting for iOS to start background scanning: leave the scan as it is (iOS pauses the app and the
+                // background task carries on from there); otherwise stop it cleanly.
+                if !taskOwnsScan && !continuedRunning { scanner.stop() }
                 Shared.library.save { if done.claim() { UIApplication.shared.endBackgroundTask(id) } }
             }
         }
