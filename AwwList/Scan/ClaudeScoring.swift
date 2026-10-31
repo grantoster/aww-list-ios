@@ -641,21 +641,21 @@ final class ClaudeService: ObservableObject {
         var rejectedCount = 0   // 4xx answers about the request, not the photo's content
         await withTaskGroup(of: Out.self) { group in
             var active = 0   // requests out plus retries waiting their turn (at most 6 in all)
-            var halted: Bool { stopRequested || out.error != nil || accountError != nil || out.paused }
+            @MainActor func isHalted() -> Bool { stopRequested || out.error != nil || accountError != nil || out.paused }
             // The same last check as a batch upload, right before this request leaves the phone.
-            func launch(_ j: Job) {
+            @MainActor func launch(_ j: Job) {
                 let id = j.moment.best.id
                 if Shared.scanner.isScanning || Shared.scanner.needsScan { out.paused = true }
-                guard !halted, Self.sendable(j.moment, library) else { out.held.insert(id); return }
+                guard !isHalted(), Self.sendable(j.moment, library) else { out.held.insert(id); return }
                 active += 1
                 group.addTask { .done(j, await ClaudeService.post(j.req, session)) }
             }
-            func fill() {
-                while active < 6 && !queue.isEmpty && !halted { launch(queue.removeFirst()) }
-                if halted { for j in queue { out.held.insert(j.moment.best.id) }; queue.removeAll() }
+            @MainActor func fill() {
+                while active < 6 && !queue.isEmpty && !isHalted() { launch(queue.removeFirst()) }
+                if isHalted() { for j in queue { out.held.insert(j.moment.best.id) }; queue.removeAll() }
             }
-            func retry(_ j: Job) -> Bool {
-                guard j.attempt < 3, !halted else { return false }
+            @MainActor func retry(_ j: Job) -> Bool {
+                guard j.attempt < 3, !isHalted() else { return false }
                 let k = Job(moment: j.moment, req: j.req, attempt: j.attempt + 1)
                 let wait = UInt64(j.attempt == 1 ? 2 : 6)
                 active += 1
@@ -663,7 +663,7 @@ final class ClaudeService: ObservableObject {
                 return true
             }
             /// A photo reached its final answer (scored, failed, or set aside).
-            func finished(_ id: String) {
+            @MainActor func finished(_ id: String) {
                 sent += 1
                 if out.verdicts[id] != nil { scoredNow += 1 }
                 status = "Claude scored \(scoredNow.formatted()) of \(toSend.formatted()) photos…"
@@ -685,10 +685,10 @@ final class ClaudeService: ObservableObject {
                             else { out.failed.append(id); if out.firstError.isEmpty { out.firstError = "Claude's reply couldn't be read." } }
                             finished(id)
                         } else if code == 401 || code == 403 {
-                            if !halted { out.error = ClaudeError.http(401, "") }
+                            if !isHalted() { out.error = ClaudeError.http(401, "") }
                             out.held.insert(id)
                         } else if code == 429 || code >= 500 {
-                            if !retry(j) { if !halted { busyNow = true }; out.held.insert(id) }
+                            if !retry(j) { if !isHalted() { busyNow = true }; out.held.insert(id) }
                         } else {
                             // An answer about this photo (an image Claude can't read, one that's too big) counts
                             // against it; one about the account or request (credit, model, permission) stops the run.
@@ -700,12 +700,12 @@ final class ClaudeService: ObservableObject {
                                 if out.firstError.isEmpty { out.firstError = msg }
                                 finished(id)
                             } else {
-                                if !halted { accountError = (code, msg) }
+                                if !isHalted() { accountError = (code, msg) }
                                 out.held.insert(id)
                             }
                         }
                     case .failure(let e):
-                        if e is CancellationError || halted { out.held.insert(id) }
+                        if e is CancellationError || isHalted() { out.held.insert(id) }
                         else if !(Self.transient(e) && retry(j)) { networkError = e; out.held.insert(id) }
                     }
                 }

@@ -1035,12 +1035,12 @@ final class Library: ObservableObject {
             } else { why = "Other" }
             counts[why, default: []].append(p)
         }
-        func groups(_ g: [String: [PhotoScore]]) -> [LeftOut] {
+        func photoGroups(_ g: [String: [PhotoScore]]) -> [LeftOut] {
             g.map { LeftOut(reason: $0.key, count: $0.value.count, ids: $0.value.sorted { $0.date > $1.date }.map(\.id)) }
                 .sorted { $0.count != $1.count ? $0.count > $1.count : $0.reason < $1.reason }
         }
-        leftOut = groups(counts)
-        flagged = groups(flags)
+        leftOut = photoGroups(counts)
+        flagged = photoGroups(flags)
         listedPhotos = shown.count
         ms.sort(by: Library.ranked)
         claudeScored = everyMoment.reduce(0) { $0 + ($1.claudeScore != nil ? 1 : 0) }
