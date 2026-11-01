@@ -4,7 +4,7 @@ main = "src/index.ts"
 compatibility_date = "2026-10-01"
 
 # Monthly photo counts per subscription. Replace the id with the one printed by:
-#   npx wrangler kv namespace create QUOTA
+#   npx wrangler kv namespace create awwbum-QUOTA
 [[kv_namespaces]]
 binding = "QUOTA"
 id = "PASTE_YOUR_KV_NAMESPACE_ID_HERE"

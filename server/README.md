@@ -30,7 +30,7 @@ window opened in this `server` folder.
 4. **Create the storage for monthly photo counts:**
 
    ```
-   npx wrangler kv namespace create QUOTA
+   npx wrangler kv namespace create awwbum-QUOTA
    ```
 
    It prints a few lines that include `id = "…"` (a long string of letters and numbers). Open
