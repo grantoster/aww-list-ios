@@ -38,15 +38,10 @@ jobs:
           if grep -nE 'ChangeRequest|CreationRequest|perform\(|deleteAssets|ContentEditing' "$F" | grep -vE 'PHAssetChangeRequest\(for: [A-Za-z]+\)\.isFavorite = [A-Za-z]+$|PHPhotoLibrary\.shared\(\)\.performChanges \{$'; then echo "::error::$F may only set isFavorite."; exit 1; fi
           [ "$(grep -c 'performChanges' "$F")" -le 1 ] || { echo "::error::$F may make only one kind of change."; exit 1; }
           grep -qE '^[[:space:]]*vc\.excludedActivityTypes = \[\.saveToCameraRoll, .*StreamShareService' AwwList/Views/ViewerView.swift || { echo "::error::The share sheet must keep excluding Save Image and Shared Album."; exit 1; }
-          # The Hidden album: only Scan/HiddenPhotos.swift may look at it (owner-approved: Settings → What's left out → Hidden in Apple Photos; photos added from there are listed but never sent to Claude). Nowhere else.
-          H=AwwList/Scan/HiddenPhotos.swift
-          if grep -nE "includeHiddenAssets *= *[^f ]|isHidden|hiddenAlbum|smartAlbumAllHidden|AllHidden|withLocalIdentifiers|withBurstIdentifier|forKey: *\"includeHiddenAssets" $SRC | grep -vF "$H:"; then echo "::error::Only $H may look in the Hidden album."; exit 1; fi
-          # Claude's photo loader must never be allowed to load hidden photos.
-          if grep -nE "allowHidden|HiddenPhotos\.(asset|addedAssets|all|setBrowsing)" AwwList/Scan/ClaudeScoring.swift; then echo "::error::Photos sent to Claude must never include hidden ones."; exit 1; fi
-          # Browsing the whole Hidden album happens only on the Hidden photos screen in RootView.swift.
-          if grep -nE "HiddenPhotos\.(setBrowsing\(true\)|all\(\))" $SRC | grep -vF "AwwList/Views/RootView.swift:"; then echo "::error::Only the Hidden photos screen may browse the Hidden album."; exit 1; fi
-          if grep -nE "includeHiddenAssets *= *[A-Za-z_]" $SRC | grep -vE "includeHiddenAssets *= *false" | grep -vF "$H:"; then echo "::error::Only $H may look in the Hidden album."; exit 1; fi
-          echo "No photo-library writes (other than favorites); Hidden album only in $H."
+          # Never look in the Hidden album.
+          if grep -nE "isHidden|hiddenAlbum|smartAlbumAllHidden|AllHidden|withLocalIdentifiers|withBurstIdentifier|forKey: *\"includeHiddenAssets" $SRC; then echo "::error::The app must never look in the Hidden album."; exit 1; fi
+          if grep -nE "includeHiddenAssets *=" $SRC | grep -vE "includeHiddenAssets *= *false( |;|$)"; then echo "::error::includeHiddenAssets may only ever be false."; exit 1; fi
+          echo "No photo-library writes (other than favorites) and no Hidden-album access found."
 
   # Tests and the TestFlight build run side by side once the guards pass.
   build-and-test:

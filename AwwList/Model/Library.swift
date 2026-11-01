@@ -51,8 +51,8 @@ final class Library: ObservableObject {
     /// Photos you added back to the list yourself from a "What's left out" group (faces but no child label, removed
     /// by Claude, hidden by the learned filter, ...). They're listed whatever the checks said.
     @Published private(set) var addedBack: Set<String> = []
-    /// Everything you put on the list yourself (added back, plus hidden photos you added back).
-    var manualAdds: Set<String> { addedBack.union(hiddenAdded) }
+    /// Everything you put back on the list yourself.
+    var manualAdds: Set<String> { addedBack }
     func addBack(_ ids: [String]) {
         guard !ids.isEmpty else { return }
         hidden.subtract(ids)        // ones you'd removed from the list
@@ -68,40 +68,6 @@ final class Library: ObservableObject {
         guard !ids.isEmpty else { return }
         addedBack.subtract(ids)
         rebuild(); save()
-    }
-
-    /// Photos from Apple Photos' Hidden album that you added back to your list yourself (Settings → What's left out → Hidden in Apple Photos).
-    /// They're read and ranked on this iPhone like any other photo, but never sent to Claude.
-    @Published private(set) var hiddenAdded: Set<String> = [] {
-        didSet { HiddenPhotos.setAdded(hiddenAdded) }
-    }
-    func addHidden(_ ids: [String]) {
-        guard !ids.isEmpty else { return }
-        takenOffHidden.subtract(ids)
-        hiddenAdded.formUnion(ids)
-        hidden.subtract(ids)   // in case you'd removed it from the list before
-        rebuild(); save()
-        // Read the new ones (after any scan already running).
-        let scanner = Shared.scanner
-        if scanner.isScanning { scanner.whenFinished { [weak self] in if let self { scanner.start(library: self) } } }
-        else { scanner.start(library: self) }
-    }
-    /// Hidden photos taken off this session (a scan already reading one mustn't add it back).
-    private var takenOffHidden = Set<String>()
-    /// After each scan: added photos that are no longer hidden (or were deleted) leave the added set; unhidden
-    /// ones stay on the list as ordinary photos.
-    func pruneHidden(checked: Set<String>, stillHidden: Set<String>) {
-        let gone = hiddenAdded.intersection(checked).subtracting(stillHidden)   // only ones this scan looked for
-        guard !gone.isEmpty else { return }
-        hiddenAdded.subtract(gone)
-        rebuild(); saveSoon()
-    }
-    func removeHidden(_ ids: [String]) {
-        guard !ids.isEmpty else { return }
-        takenOffHidden.formUnion(ids)
-        hiddenAdded.subtract(ids)
-        AssetImage.clearCache()
-        remove(Set(ids))   // its record goes too, so it can't stay listed
     }
 
     /// Your thumbs up (1) or down (-1) by photo id: a quarter point on Claude's or the learned score when ranking
@@ -181,7 +147,6 @@ final class Library: ObservableObject {
         var claudeRemoved: [String: String]?; var claudeSent: [String: [String]]?; var claudeSentYear: [String: Int]?
         var reactions: [String: Int]? = nil
         var notThem: [String: [String]]? = nil; var ignoredFaces: [String]? = nil
-        var hiddenAdded: [String]? = nil
         var addedBack: [String]? = nil
     }
 
@@ -363,8 +328,6 @@ final class Library: ObservableObject {
 
     /// New results from the scanner. The list is re-ranked at most every 30 seconds while scanning.
     func add(_ new: [PhotoScore]) {
-        // A hidden photo you took off the list while a scan was reading it doesn't come back.
-        let new = takenOffHidden.isEmpty ? new : new.filter { !takenOffHidden.contains($0.id) }
         guard !new.isEmpty else { return }
         for p in new {
             whoCache[p.id] = nil
@@ -582,7 +545,6 @@ final class Library: ObservableObject {
     }
     /// Photos whose Claude result could be shared as learning data. Bath and undressed photos are never shared.
     private static func shareable(_ p: PhotoScore) -> Bool {
-        guard !HiddenPhotos.isAdded(p.id) else { return false }   // Hidden-album photos are never shared
         guard let c = p.claude, let f = p.feat, f.count == Learner.featureCount else { return false }
         return c.exclude != "bath" && c.exclude != "undressed"
     }
@@ -865,6 +827,12 @@ final class Library: ObservableObject {
         }
         whoCache = [:]; rebuildSoon(); saveSoon(); learnPeople()
     }
+    /// "These aren't them": faces taken out of a quick check, never counted (or suggested) as this person.
+    func rejectFaces(_ faces: [(photo: String, face: FaceRecord)], for person: Person) {
+        guard !faces.isEmpty else { return }
+        for f in faces { notThem[Library.faceKey(f.photo, f.face), default: []].insert(person.id) }
+        whoCache = [:]; saveSoon(); learnPeople()
+    }
     /// Undoes "that's not them" for one face (it can be counted as them again).
     func restoreFace(_ photo: String, _ face: FaceRecord, to person: Person) {
         let key = Library.faceKey(photo, face)
@@ -1120,9 +1088,7 @@ final class Library: ObservableObject {
         // (possible bath/undressed and their sessions, even after a put back; swimwear/shirtless unless allowed).
         // Once the app has learned, it picks what to send Claude by its prediction of Claude's score.
         func poolValue(_ m: Moment) -> Double { m.learnedScore ?? 10 * m.rankRaw }   // once per moment; not-yet-re-read photos (old scale) sort a bit lower
-        // Hidden-album photos you added are never sent to Claude.
         let forbidden = Scorer.neverSend(Array(photos.values), allowSwimShirtless: claudeSensitive, removed: claudeRemoved)
-            .union(hiddenAdded)
         neverSend = forbidden
         // Photos with faces but no child label: not listed, but offered to Claude too (Apple's labels miss kids).
         let listedIDs = Set(groups.flatMap(\.ids))
@@ -1335,7 +1301,7 @@ final class Library: ObservableObject {
                       claudeRemoved: claudeRemoved, claudeSent: claudeSent.mapValues { Array($0) },
                       claudeSentYear: claudeSentYear, reactions: reactions,
                       notThem: notThem.mapValues { $0.map(\.uuidString) }, ignoredFaces: Array(ignoredFaces),
-                      hiddenAdded: Array(hiddenAdded), addedBack: Array(addedBack))
+                      addedBack: Array(addedBack))
         let u = url, legacy = legacyURL
         // One save at a time, in order, so an older snapshot can never land after a newer one.
         Library.saveQueue.async {
@@ -1388,7 +1354,6 @@ final class Library: ObservableObject {
         reactions = s.reactions ?? [:]
         notThem = (s.notThem ?? [:]).mapValues { Set($0.compactMap(UUID.init(uuidString:))) }
         ignoredFaces = Set(s.ignoredFaces ?? [])
-        hiddenAdded = Set(s.hiddenAdded ?? [])
         addedBack = Set(s.addedBack ?? [])
         claudeSensitive = s.claudeSensitive ?? false
         ownFilter = s.learnedFilter.flatMap { $0.weights.count == Learner.featureCount ? $0 : nil }

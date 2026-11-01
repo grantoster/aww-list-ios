@@ -143,7 +143,7 @@ struct ViewerView: View {
     private func share(_ m: Moment) {
         preparingShare = true
         Task {
-            let r = await AssetImage.load(id: m.best.id, size: CGSize(width: 2048, height: 2048), mode: .aspectFit, allowHidden: true)
+            let r = await AssetImage.load(id: m.best.id, size: CGSize(width: 2048, height: 2048), mode: .aspectFit)
             preparingShare = false
             if let img = r.image, !r.degraded { sharing = img }     // never share a blurry stand-in
             else {

@@ -191,10 +191,6 @@ struct SettingsView: View {
                             LabeledContent("Added back by you", value: library.addedBack.count.formatted())
                         }
                     }
-                    NavigationLink { HiddenPhotosView() } label: {
-                        LabeledContent("Hidden in Apple Photos",
-                                       value: library.hiddenAdded.isEmpty ? "" : "\(library.hiddenAdded.count.formatted()) added")
-                    }
                     Text("Counts are photos, not moments; a moment's other shots in a burst count as on the list.")
                         .font(.footnote).foregroundStyle(.secondary)
                     Text("Left off on the phone: screenshots, documents, and photos with no face and no sign of a child. Photos with faces but no child label stay off the list but are offered to Claude, which can put them on it. Possible bath or undressed photos are listed and scored on the phone (you can keep any out above), but they, and every shot within 10 minutes of one or of any faint bath sign, are never sent to Claude.")
@@ -747,111 +743,5 @@ struct DiagnosticsSection: View {
         } footer: {
             Text("Timings and memory from this session, to help find what makes the app slow. Nothing here is sent anywhere unless you copy it.")
         }
-    }
-}
-
-/// Settings → What's left out → Hidden in Apple Photos: look through the Hidden album like the other groups (tap
-/// a photo to see it larger), and add the ones you want back to your list (Select, or from the larger view).
-struct HiddenPhotosView: View {
-    @EnvironmentObject var library: Library
-    @State private var ids: [String] = []
-    @State private var loading = true
-    @State private var selecting = false
-    @State private var picked = Set<String>()
-    @State private var shown = 90
-    @State private var viewing: PhotoGroupView.OpenPhoto?
-    private let columns = [GridItem(.adaptive(minimum: 104), spacing: 6)]
-
-    var body: some View {
-            ScrollView {
-                VStack(spacing: 12) {
-                    if loading {
-                        ProgressView().padding(.top, 40)
-                    } else if ids.isEmpty {
-                        ContentUnavailableView {
-                            Label("No hidden photos to show", systemImage: "eye.slash")
-                        } description: {
-                            Text("If you have hidden photos: iOS only shares the Hidden album with apps when its lock is off. In the Settings app, go to Photos (Apps → Photos on iOS 18 and later) and turn off Use Face ID (or Use Touch ID / Use Passcode), then come back here.")
-                        }
-                    } else {
-                        Text("\(ids.count.formatted()) photos. These stay off your list unless you add them back. Photos you add back are never sent to Claude.")
-                            .font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
-                        LazyVGrid(columns: columns, spacing: 6) {
-                            ForEach(ids.prefix(shown), id: \.self) { id in
-                                let added = library.hiddenAdded.contains(id), on = picked.contains(id)
-                                Button {
-                                    if selecting { if on { picked.remove(id) } else { picked.insert(id) } }
-                                    else { viewing = PhotoGroupView.OpenPhoto(id: id) }
-                                } label: {
-                                    AssetImage(id: id, targetSide: 120, cached: false)
-                                        .aspectRatio(1, contentMode: .fit)
-                                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                                        .overlay { if on { RoundedRectangle(cornerRadius: 8).stroke(Theme.accent, lineWidth: 4) } }
-                                        .overlay(alignment: .topTrailing) {
-                                            if on || added {
-                                                Image(systemName: on ? "circle.inset.filled" : "checkmark.circle.fill")
-                                                    .font(.title3).foregroundStyle(.white, Theme.accent).padding(4)
-                                            }
-                                        }
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel(added ? "Hidden photo, on your list" : "Hidden photo")
-                                .accessibilityHint(selecting ? (on ? "Picked" : "Not picked") : "Opens it larger")
-                                .accessibilityAddTraits(on ? .isSelected : [])
-                            }
-                        }
-                        if ids.count > shown { Button("See more") { shown += 90 }.buttonStyle(.bordered).tint(Theme.grapeInk) }
-                    }
-                }
-                .padding(16)
-            }
-            .background(Theme.background.ignoresSafeArea())
-            .navigationTitle("Hidden in Apple Photos").navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    if !ids.isEmpty {
-                        Button(selecting ? "Cancel" : "Select") { selecting.toggle(); picked = [] }
-                    }
-                }
-                if selecting {
-                    ToolbarItem(placement: .bottomBar) {
-                        let toAdd = picked.subtracting(library.hiddenAdded), toRemove = picked.intersection(library.hiddenAdded)
-                        HStack {
-                            if !toRemove.isEmpty {
-                                Button("Take \(toRemove.count) off") { library.removeHidden(Array(toRemove)); picked.subtract(toRemove) }
-                            }
-                            Spacer()
-                            Button(toAdd.isEmpty ? "Add back to my list" : "Add \(toAdd.count) back") {
-                                library.addHidden(Array(toAdd)); picked.subtract(toAdd)
-                            }
-                            .buttonStyle(.borderedProminent).disabled(toAdd.isEmpty)
-                        }
-                    }
-                }
-            }
-            .sheet(item: $viewing) { p in
-                let added = library.hiddenAdded.contains(p.id)
-                NavigationStack {
-                    AssetImage(id: p.id, contentMode: .fit, targetSide: 1000, cached: false)
-                        .background(Color.black)
-                        .ignoresSafeArea(edges: .bottom)
-                        .accessibilityLabel(added ? "Hidden photo, on your list" : "Hidden photo")
-                        .toolbar {
-                            ToolbarItem(placement: .cancellationAction) { Button("Close") { viewing = nil } }
-                            ToolbarItem(placement: .confirmationAction) {
-                                Button(added ? "Take off my list" : "Add back to my list") {
-                                    if added { library.removeHidden([p.id]) } else { library.addHidden([p.id]) }
-                                    viewing = nil
-                                }
-                            }
-                        }
-                }
-            }
-        .task {
-            HiddenPhotos.setBrowsing(true)
-            ids = await Task.detached(priority: .userInitiated) { HiddenPhotos.all() }.value
-            loading = false
-        }
-        .onDisappear { HiddenPhotos.setBrowsing(false); AssetImage.clearCache() }
     }
 }

@@ -13,7 +13,7 @@ struct FaceThumb: View {
             .clipShape(Circle())
             .frame(width: size, height: size)
             .task(id: photo + box.map { String($0) }.joined()) {
-                guard let full = await AssetImage.load(id: photo, size: CGSize(width: 900, height: 900), mode: .aspectFit, allowHidden: true).image else { return }
+                guard let full = await AssetImage.load(id: photo, size: CGSize(width: 900, height: 900), mode: .aspectFit).image else { return }
                 let b = box
                 image = await Task.detached(priority: .userInitiated) { Self.crop(full, box: b) }.value
             }
@@ -49,6 +49,8 @@ struct WhoView: View {
     @State private var generation = 0
     /// Groups that look like someone already named: "Is this Maya?"
     @State private var suggestions: [Suggestion] = []
+    /// A quick check opened to see all its faces.
+    @State private var checking: Suggestion?
 
     struct Suggestion: Identifiable {
         let id: String
@@ -122,14 +124,22 @@ struct WhoView: View {
                     Section {
                         ForEach(open) { s in
                             VStack(alignment: .leading, spacing: 10) {
-                                HStack(spacing: -10) {
-                                    ForEach(Array(s.faces.prefix(4).enumerated()), id: \.offset) { _, f in
-                                        FaceThumb(photo: f.photo, box: f.face.box, size: 48)
-                                            .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2))
+                                // Tap the faces to see all of them and take out any that aren't this person.
+                                Button { checking = s } label: {
+                                    HStack(spacing: -10) {
+                                        ForEach(Array(s.faces.prefix(4).enumerated()), id: \.offset) { _, f in
+                                            FaceThumb(photo: f.photo, box: f.face.box, size: 48)
+                                                .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2))
+                                        }
+                                        Spacer(minLength: 16)
+                                        Text("See all \(s.faces.count)").font(.subheadline).foregroundStyle(Theme.grapeInk)
+                                        Image(systemName: "chevron.right").font(.footnote).foregroundStyle(.tertiary)
+                                            .padding(.leading, 6).accessibilityHidden(true)
                                     }
-                                    Spacer(minLength: 16)
-                                    Text("\(s.faces.count) photos").font(.subheadline).foregroundStyle(.secondary)
+                                    .contentShape(Rectangle())
                                 }
+                                .buttonStyle(.borderless)
+                                .accessibilityLabel("See all \(s.faces.count) faces that might be \(s.person.name)")
                                 HStack {
                                     Text("Is this \(s.person.name)?").font(.headline)
                                     Spacer()
@@ -204,6 +214,7 @@ struct WhoView: View {
             .navigationTitle("Who's Who")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
             .sheet(item: $naming, onDismiss: regroup) { g in NameSheet(faces: g.faces) }
+            .sheet(item: $checking, onDismiss: regroup) { s in QuickCheckSheet(suggestion: s) }
             .sheet(item: $editing, onDismiss: regroup) { p in PersonSheet(person: p) }
             .task { regroup() }
             .onReceive(Shared.scanner.$isScanning) { scanning in if !scanning { regroup() } }   // new face prints
@@ -448,5 +459,62 @@ struct RemovableFace: View {
                 .accessibilityLabel(label)
             }
             .accessibilityElement(children: .contain)
+    }
+}
+
+/// "Is this Maya?" with every face shown: take out the ones that aren't her, then say yes for the rest.
+struct QuickCheckSheet: View {
+    let suggestion: WhoView.Suggestion
+    @EnvironmentObject var library: Library
+    @Environment(\.dismiss) private var dismiss
+    @State private var faces: [(photo: String, face: FaceRecord)] = []
+    @State private var removed: [(photo: String, face: FaceRecord)] = []
+    @State private var showAll = false
+
+    /// The person as named now (by id, in case they were renamed).
+    private var person: Person? { library.people.first { $0.id == suggestion.person.id } }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 64), spacing: 8)], spacing: 8) {
+                        ForEach(Array(faces.prefix(showAll ? faces.count : 36).enumerated()), id: \.offset) { _, f in
+                            RemovableFace(photo: f.photo, box: f.face.box, size: 64,
+                                          label: "Not \(suggestion.person.name), take out") {
+                                faces.removeAll { $0.face.vec == f.face.vec && $0.photo == f.photo }
+                                removed.append(f)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                    if faces.count > 36 && !showAll { Button("Show all \(faces.count)") { showAll = true } }
+                    if let last = removed.last {
+                        Button("Undo take out") { removed.removeLast(); faces.insert(last, at: 0) }
+                    }
+                } footer: {
+                    Text("Tap × on any face that isn't \(suggestion.person.name). Those won't be counted or suggested as \(suggestion.person.name) again.")
+                }
+                Section {
+                    Button("Yes, \(faces.count == 1 ? "this is" : "these are") \(suggestion.person.name)") {
+                        guard let p = person else { dismiss(); return }
+                        library.rejectFaces(removed, for: p)
+                        library.name(faces, as: p.name, birthday: nil)
+                        library.declinedChecks.insert(suggestion.id)
+                        dismiss()
+                    }
+                    .disabled(faces.isEmpty)
+                    Button("None of these are \(suggestion.person.name)") {
+                        if let p = person { library.rejectFaces(faces + removed, for: p) }
+                        library.declinedChecks.insert(suggestion.id)
+                        dismiss()
+                    }
+                }
+            }
+            .navigationTitle("Is this \(suggestion.person.name)?")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+            .onAppear { if faces.isEmpty && removed.isEmpty { faces = suggestion.faces } }
+        }
     }
 }
