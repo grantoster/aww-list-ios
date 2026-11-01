@@ -54,7 +54,7 @@ final class Library: ObservableObject {
     func setReaction(_ m: Moment, _ value: Int) {
         for id in m.memberIDs { reactions[id] = nil }
         if value != 0 { reactions[m.best.id] = value }
-        rebuild(); saveSoon()
+        rebuildSoon(); saveSoon()
         // Learning waits until you've stopped tapping for a few seconds (it re-learns from everything).
         reactionRetrain?.cancel()
         reactionRetrain = Task { @MainActor in
@@ -443,8 +443,13 @@ final class Library: ObservableObject {
                 photos[id]?.claude?.score2 = v.score
             }
         }
-        rebuild(); flush()
+        rebuild(); saveNowIfAway()
         retrain()
+    }
+    /// Saves in the background while the app is open (waiting for the write made the screen stall); if the app is
+    /// already in the background, waits for the write, so iOS can't pause the app before Claude's scores are kept.
+    func saveNowIfAway() {
+        if UIApplication.shared.applicationState == .background { flush() } else { save() }
     }
     /// How consistent Claude is with itself: photos scored twice, average distance, share within half a point.
     var consistency: (n: Int, gap: Double, withinHalf: Double)? {
@@ -472,11 +477,11 @@ final class Library: ObservableObject {
             photos[id]?.claude = v
             if let e = v.exclude { claudeRemoved[id] = e }
         }
-        saveSoon()
+        if UIApplication.shared.applicationState == .background { flush() } else { saveSoon() }
     }
     /// Re-ranks with the scores recorded so far, saves, and learns from them.
     func refreshAfterClaude() {
-        rebuild(); flush()
+        rebuild(); saveNowIfAway()
         retrain()
     }
 
@@ -505,7 +510,10 @@ final class Library: ObservableObject {
     /// Use the built-in learning until this phone's own has learned from at least as many verdicts (default),
     /// or only this phone's own learning.
     @Published private(set) var useBuiltInLearning = true
-    func setUseBuiltInLearning(_ v: Bool) { useBuiltInLearning = v; applyLearning(); rebuild(); save() }
+    func setUseBuiltInLearning(_ v: Bool) {
+        useBuiltInLearning = v; applyLearning()
+        prewarmDerived { [weak self] in self?.rebuild(); self?.save() }
+    }
 
     /// This phone's own learning as text (for building into the app); nil until it has learned something.
     var learningText: String? {
@@ -675,8 +683,8 @@ final class Library: ObservableObject {
             let filter = Learner.trainFilter(verdicts)
             await MainActor.run {
                 self.training = false
-                self.retrainBusy = false
                 guard gen == self.generation else {          // cleared while this was running: start over
+                    self.retrainBusy = false
                     self.pendingRetrain = false; self.retrain(); return
                 }
                 self.trainedSignature = signature
@@ -684,9 +692,14 @@ final class Library: ObservableObject {
                 // from at least as many verdicts as the built-in one, or right away if the built-in one is turned off.
                 self.ownModel = model; self.ownFilter = filter
                 self.applyLearning()
-                self.rebuild()
-                if self.pendingRetrain { self.pendingRetrain = false; self.save(); self.retrain() }
-                else { self.save { Task { @MainActor in Shared.library.retrainFinished() } } }   // next step after the save
+                // New learning changes every photo's learned score: work those out off the main thread first, so
+                // the re-rank that follows doesn't stall the screen.
+                self.prewarmDerived {
+                    self.retrainBusy = false   // busy until here, so a second training can't start mid-way
+                    self.rebuild()
+                    if self.pendingRetrain { self.pendingRetrain = false; self.save(); self.retrain() }
+                    else { self.save { Task { @MainActor in Shared.library.retrainFinished() } } }   // next step after the save
+                }
             }
         }
     }
@@ -868,7 +881,19 @@ final class Library: ObservableObject {
         rebuild(); save()
     }
 
+    /// One re-rank shortly, however many changes ask for it in the meantime (quick taps don't each re-rank).
+    private var rebuildPending = false
+    func rebuildSoon() {
+        guard !rebuildPending else { return }
+        rebuildPending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            guard let self, self.rebuildPending else { return }
+            self.rebuild()
+        }
+    }
+
     func rebuild() {
+        rebuildPending = false
         lastRebuild = Date()
         let started = Date()
         defer { note("Last ranking", seconds: Date().timeIntervalSince(started)) }

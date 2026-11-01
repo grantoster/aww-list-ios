@@ -41,6 +41,8 @@ struct HomeView: View {
     /// The filtered list, worked out only when the moments or a filter change (not on every redraw: the screen
     /// redraws often while scanning, and filtering thousands of moments each time made it feel sluggish).
     @State private var pool: [Moment] = []
+    /// The best moments from today's date in earlier years (shown at the top of the Overall list).
+    @State private var onThisDay: [Moment] = []
     /// Fold lower-ranked look-alike shots from the same few minutes under the best one (Settings → Home list).
     @AppStorage("groupSimilar") private var groupSimilar = true
     private var top: [Moment] { Array(pool.prefix(shown)) }
@@ -54,6 +56,15 @@ struct HomeView: View {
             return true
         }
         pool = groupSimilar ? SimilarShots.fold(filtered) : filtered
+        // On this day: same month and day in earlier years, best first, from the same (filtered, folded) list.
+        // Only shown on the Overall list. A Feb 29 photo shows on Feb 29 only.
+        if case .all = scope {
+            let cal = Calendar.current, today = cal.dateComponents([.year, .month, .day], from: Date())
+            onThisDay = Array(pool.lazy.filter { m in
+                let c = cal.dateComponents([.year, .month, .day], from: m.best.date)
+                return c.month == today.month && c.day == today.day && (c.year ?? 0) < (today.year ?? 0)
+            }.prefix(12))
+        } else { onThisDay = [] }
         prefetchImages()
     }
 
@@ -89,6 +100,7 @@ struct HomeView: View {
                         EmptyListView(filtersOn: age != nil || shot != nil || person != nil,
                                       clear: { age = nil; shot = nil; person = nil }).padding(.top, 40)
                     } else {
+                        if scope == .all && !onThisDay.isEmpty { onThisDaySection }
                         topSection
                     }
                 }
@@ -152,6 +164,7 @@ struct HomeView: View {
             .onChange(of: shot) { shown = 30; if !preparing { endSelecting() } }
             .onChange(of: person) { shown = 30; if !preparing { endSelecting() } }
             .onChange(of: groupSimilar) { refreshLists() }
+            .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged).receive(on: RunLoop.main)) { _ in refreshLists() }
             .onChange(of: scope) { refreshLists() }
             .onChange(of: age) { refreshLists() }
             .onChange(of: shot) { refreshLists() }
@@ -240,6 +253,32 @@ struct HomeView: View {
     private var rankChoice: String { library.rankBy == "learned" && library.learned == nil ? "apple" : library.rankBy }
     private var rankLabel: String {
         switch rankChoice { case "learned": "Learned"; case "apple": "Apple"; case "consolidated": "Consolidated"; default: "Claude" }
+    }
+
+    /// A row of the best photos from this date in past years. Tap one to see them all in the viewer.
+    private var onThisDaySection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("On this day").font(Theme.display(22)).accessibilityAddTraits(.isHeader)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(Array(onThisDay.enumerated()), id: \.element.id) { i, m in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Tile(moment: m, rank: nil, picked: pickState(m), onHold: { hold(m) }) { tap(onThisDay, i) }
+                                .frame(width: 120, height: 120)
+                            Text(yearsAgo(m)).font(.caption).foregroundStyle(.secondary).accessibilityHidden(true)
+                        }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityHint(yearsAgo(m))
+                    }
+                }
+            }
+            .scrollClipDisabled()
+        }
+        .padding(.bottom, 4)
+    }
+    private func yearsAgo(_ m: Moment) -> String {
+        let n = Calendar.current.component(.year, from: Date()) - m.year
+        return n == 1 ? "1 year ago" : "\(n) years ago"
     }
 
     private var topSection: some View {
