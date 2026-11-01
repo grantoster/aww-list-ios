@@ -29,6 +29,9 @@ struct HomeView: View {
     @State private var progress = (done: 0, of: 0)
     @State private var sendTask: Task<Void, Never>?
     @State private var sharing: SharePayload?
+    @State private var makingCollage = false
+    @State private var collage: CollageImage?
+    struct CollageImage: Identifiable { let id = UUID(); let image: UIImage }
     @State private var note: (id: UUID, text: String)?
     /// Most photos you can pick at once (each is a full-size photo in memory while it's copied or shared).
     private let maxPick = 20
@@ -159,6 +162,7 @@ struct HomeView: View {
             .sheet(isPresented: $showWho) { WhoView() }
             .sheet(isPresented: $showSearch) { SearchView() }
             .fullScreenCover(item: $viewer) { v in ViewerView(moments: v.list, index: v.index) }
+            .sheet(item: $collage) { c in ShareSheet(image: c.image).presentationDetents([.medium, .large]) }
             .onChange(of: scope) { shown = 30; if !preparing { endSelecting() } }
             .onChange(of: age) { shown = 30; if !preparing { endSelecting() } }
             .onChange(of: shot) { shown = 30; if !preparing { endSelecting() } }
@@ -318,6 +322,12 @@ struct HomeView: View {
                 .accessibilityHidden(selecting)
                 Text(selecting ? "Tap photos to pick up to \(maxPick)." : "Tip: hold any photo to pick several to send.")
                     .font(.caption).foregroundStyle(.secondary)
+                Button { makeCollage() } label: {
+                    Label(makingCollage ? "Making the collage…" : "Share a top 10 collage", systemImage: "square.grid.2x2")
+                        .font(.subheadline)
+                }
+                .disabled(makingCollage || top.isEmpty || selecting)
+                .opacity(selecting ? 0 : 1)
             }
             if let first = top.first {
                 Card(moment: first, rank: 1, height: 380, picked: pickState(first), onHold: { hold(first) }) { tap(top, 0) }
@@ -343,6 +353,24 @@ struct HomeView: View {
                 .accessibilityHint("Shows the next 30 photos, \(shown + 1) to \(min(pool.count, shown + 30)).")
                 .padding(.top, 4)
             }
+        }
+    }
+
+    /// The current list's top 10 (this year or overall, with your filters) as one picture to share. Made on the
+    /// phone and handed to the share sheet; nothing is saved to Photos.
+    private func makeCollage() {
+        let ids = Array(top.prefix(10)).map(\.best.id)
+        let title = scopeTitle + " top \(ids.count)"
+        makingCollage = true
+        Task {
+            var images: [UIImage] = []
+            for id in ids {
+                if let img = await AssetImage.load(id: id, size: CGSize(width: 700, height: 700), mode: .aspectFill).image { images.append(img) }
+            }
+            let result = await Task.detached(priority: .userInitiated) { Collage.render(images, title: title) }.value
+            makingCollage = false
+            if let result { collage = CollageImage(image: result) }
+            else { note = (UUID(), "Couldn't load these photos (they may still be downloading from iCloud).") }
         }
     }
 
@@ -848,5 +876,46 @@ enum SimilarShots {
             }
         }
         return kept
+    }
+}
+
+/// Draws a grid of photos with a title, as one image (2 columns; square, center-cropped tiles).
+enum Collage {
+    static func render(_ images: [UIImage], title: String) -> UIImage? {
+        guard !images.isEmpty else { return nil }
+        let cols = images.count < 4 ? images.count : 2
+        let rows = Int((Double(images.count) / Double(cols)).rounded(.up))
+        let tile: CGFloat = 540, gap: CGFloat = 12, margin: CGFloat = 36, header: CGFloat = 120, footer: CGFloat = 60
+        let width = margin * 2 + CGFloat(cols) * tile + CGFloat(cols - 1) * gap
+        let height = header + CGFloat(rows) * tile + CGFloat(rows - 1) * gap + footer + margin
+        let fmt = UIGraphicsImageRendererFormat(); fmt.scale = 1; fmt.opaque = true
+        return UIGraphicsImageRenderer(size: CGSize(width: width, height: height), format: fmt).image { ctx in
+            UIColor(red: 0.99, green: 0.97, blue: 0.94, alpha: 1).setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+            let titleAttrs: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: 56, weight: .heavy),
+                                                              .foregroundColor: UIColor(red: 0.29, green: 0.16, blue: 0.40, alpha: 1)]
+            (title as NSString).draw(at: CGPoint(x: margin, y: 30), withAttributes: titleAttrs)
+            for (i, img) in images.enumerated() {
+                let r = CGRect(x: margin + CGFloat(i % cols) * (tile + gap),
+                               y: header + CGFloat(i / cols) * (tile + gap), width: tile, height: tile)
+                ctx.cgContext.saveGState()
+                UIBezierPath(roundedRect: r, cornerRadius: 24).addClip()
+                // Fill the square, cropping the longer side around the center.
+                let k = max(tile / img.size.width, tile / img.size.height)
+                let s = CGSize(width: img.size.width * k, height: img.size.height * k)
+                img.draw(in: CGRect(x: r.midX - s.width / 2, y: r.midY - s.height / 2, width: s.width, height: s.height))
+                ctx.cgContext.restoreGState()
+                let n = "\(i + 1)" as NSString
+                let badge: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: 34, weight: .bold), .foregroundColor: UIColor.white]
+                let bs = n.size(withAttributes: badge)
+                let br = CGRect(x: r.minX + 14, y: r.minY + 14, width: max(bs.width + 24, 52), height: 52)
+                UIColor(white: 0, alpha: 0.5).setFill()
+                UIBezierPath(roundedRect: br, cornerRadius: 26).fill()
+                n.draw(at: CGPoint(x: br.midX - bs.width / 2, y: br.midY - bs.height / 2), withAttributes: badge)
+            }
+            let foot: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: 26, weight: .semibold),
+                                                        .foregroundColor: UIColor(white: 0.45, alpha: 1)]
+            ("made with awwbum" as NSString).draw(at: CGPoint(x: margin, y: height - footer - 6), withAttributes: foot)
+        }
     }
 }

@@ -10,6 +10,8 @@ settings:
     VERSIONING_SYSTEM: apple-generic
     AWW_BUNDLE_ID: com.awwlist.app
     AWW_TEAM_ID: ""
+    # Awwbum Plus scoring server (https://...workers.dev), empty until deployed (Plus isn't offered then).
+    AWW_SCORE_SERVER: ""
     MARKETING_VERSION: "1.0"
     CURRENT_PROJECT_VERSION: "1"
     DEVELOPMENT_TEAM: "$(AWW_TEAM_ID)"

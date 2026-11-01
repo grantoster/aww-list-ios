@@ -119,6 +119,7 @@ struct ViewerView: View {
                 if let favNote { Text(favNote).font(Theme.label(14)).foregroundStyle(Theme.sunny) }
                 Text(m.caption).font(Theme.label(18, relativeTo: .headline)).foregroundStyle(.white)
                 Text(bothScores(m)).font(.caption.monospacedDigit()).foregroundStyle(.white.opacity(0.85))
+                Text(whyHere(m)).font(.caption).foregroundStyle(.white.opacity(0.85)).fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 8) {
                     Text(m.best.date.shortDay + (m.shots > 1 ? " · +\(m.shots - 1) in the burst" : "")).font(.caption).foregroundStyle(.white.opacity(0.75))
                     if !m.similar.isEmpty {
@@ -173,6 +174,30 @@ struct ViewerView: View {
         }
     }
 
+    /// Why this photo is where it is: what it's ranked by, its place, and anything you or the app did to it.
+    private func whyHere(_ m: Moment) -> String {
+        var parts: [String] = []
+        if moments.indices.contains(index) && moments.count > 1 { parts.append("No. \(index + 1) of \(moments.count) here") }
+        func one(_ v: Double) -> String { v == v.rounded() ? String(Int(v)) : String(format: "%.1f", v) }
+        switch library.rankBy {
+        case "claude" where library.claudeScored == 0:
+            parts.append("ranked by Apple's score (Claude hasn't scored any photos yet)")
+        case "claude":
+            if let c = m.claudeScore { parts.append("ranked by Claude's \(one(c))") }
+            else if let l = m.learnedScore { parts.append("Claude hasn't seen it; the learned score (\(one(l))) stands in") }
+            else { parts.append("Claude hasn't seen it; ranked by Apple's score") }
+        case "learned": parts.append(m.learnedScore.map { "ranked by the learned score (\(one($0)))" } ?? "ranked by Apple's score")
+        case "consolidated": parts.append("high in more than one ranking (Consolidated)")
+        default: parts.append("ranked by Apple's score")
+        }
+        let r = library.reaction(m)
+        if r > 0 { parts.append("you gave it a thumbs up") } else if r < 0 { parts.append("you gave it a thumbs down") }
+        if m.memberIDs.contains(where: library.addedBack.contains) { parts.append("you added it back") }
+        if !m.similar.isEmpty { parts.append("best of \(m.similar.count + 1) look-alike shots") }
+        if m.shots > 1 { parts.append("best of a \(m.shots)-shot burst") }
+        return "Why it's here: " + parts.joined(separator: " · ")
+    }
+
     /// "Apple 7 · Claude 8.5" (or just Apple's when Claude hasn't seen it).
     private func bothScores(_ m: Moment) -> String {
         var s = m.apple > 0 ? "Apple \(m.apple)" : "Apple: set aside"
@@ -188,6 +213,7 @@ struct ViewerView: View {
 struct ShareSheet: UIViewControllerRepresentable {
     let items: [Any]
     init(image: UIImage) { items = [image] }
+    init(text: String) { items = [text] }
     /// Photo files (JPEGs in the app's own temporary folder).
     init(items: [URL]) { self.items = items }
     func makeUIViewController(context: Context) -> UIActivityViewController {

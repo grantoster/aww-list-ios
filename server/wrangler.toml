@@ -1,0 +1,24 @@
+# Cloudflare Worker settings for the Awwbum scoring server. See README.md for setup.
+name = "awwbum-server"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+
+# Monthly photo counts per subscription. Replace the id with the one printed by:
+#   npx wrangler kv namespace create QUOTA
+[[kv_namespaces]]
+binding = "QUOTA"
+id = "PASTE_YOUR_KV_NAMESPACE_ID_HERE"
+
+[vars]
+BUNDLE_ID = "com.grantoster.awwlist"
+PRODUCT_IDS = "com.grantoster.awwlist.plus.monthly,com.grantoster.awwlist.plus.yearly"
+MONTHLY_LIMIT = "5000"
+ALLOWED_ENVIRONMENTS = "Production,Sandbox"
+
+# ANTHROPIC_API_KEY is a secret, never written in this file. Set it with:
+#   npx wrangler secret put ANTHROPIC_API_KEY
+
+# Persistent Workers Logs stay off on purpose: they record request metadata (including the subscription
+# header). The server's own log lines hold only route, status, timing and a short hash.
+[observability]
+enabled = false

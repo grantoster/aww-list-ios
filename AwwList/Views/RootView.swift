@@ -38,6 +38,7 @@ struct RootView: View {
             KeySetupView(hadKey: hadKey) { askedForKey = true }
         }
         .onChange(of: scanner.isScanning) { autoScore() }
+        .onReceive(Shared.plus.$signedTransaction) { _ in autoScore() }   // Plus confirmed: a waiting run can start
         // While the app is open and photos are with Claude, check for their scores every couple of minutes.
         .task(id: phase == .active) {
             guard phase == .active else { return }
@@ -76,7 +77,7 @@ struct RootView: View {
     private func autoScore() {
         guard autoClaude, phase == .active, status == .authorized || status == .limited,
               !scanner.isScanning, !scanner.needsScan, !claude.busy, !library.photos.isEmpty,
-              Claude.apiKey != nil else { return }
+              Claude.apiKey != nil || ClaudeService.viaPlus else { return }
         Task { await ClaudeService.runAndTrack(library) }
     }
 
@@ -141,9 +142,15 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             List {
+                if PlusStore.available { PlusSection() }
                 ClaudeSection()
                 LearnedSection()
                 BirthdaysSection()
+                Section {
+                    NavigationLink("Send feedback") { FeedbackView() }
+                } footer: {
+                    Text("Tell Grant what's working and what isn't. You choose how to send it (Messages, Mail).")
+                }
                 DiagnosticsSection()
                 Section("Library") {
                     LabeledContent("Photos checked", value: library.photos.count.formatted())
@@ -281,30 +288,45 @@ struct ClaudeSection: View {
     @EnvironmentObject var library: Library
     @EnvironmentObject var claude: ClaudeService
     @EnvironmentObject var scanner: PhotoScanner
+    @EnvironmentObject var plus: PlusStore
     @State private var key = ""
     @State private var hasKey = Claude.apiKey != nil
+    /// Photos can be scored: with Awwbum Plus, or your own API key.
+    private var canScore: Bool { hasKey || onPlus }
+    /// Scoring goes through Awwbum Plus (no charges to an Anthropic account, no batches).
+    private var onPlus: Bool { PlusStore.available && plus.isActive }
     @AppStorage("autoClaude") private var autoClaude = false
     @AppStorage("autoClaudeTries") private var autoTries = 0
     @AppStorage("claudeFast") private var fast = true
+
+    @ViewBuilder private var keyRows: some View {
+        if hasKey {
+            LabeledContent("API key", value: "Saved on this iPhone")
+            Button("Remove key", role: .destructive) { Claude.apiKey = nil; hasKey = false }
+        } else {
+            SecureField("Paste your Claude API key", text: $key)
+                .textInputAutocapitalization(.never).autocorrectionDisabled()
+            Button("Save key") { Claude.apiKey = key; key = ""; hasKey = Claude.apiKey != nil }
+                .disabled(key.trimmingCharacters(in: .whitespaces).isEmpty)
+        }
+    }
 
     /// Starts scoring and keeps going until everything chosen is scored: if the photo check is running, or new
     /// photos arrive mid-way, it picks up again by itself when the check finishes and when you come back to the app.
     private func start() {
         autoTries = 0
         autoClaude = true
+        ClaudeService.askToNotify()   // so a run that finishes while you're away can tell you
         Task { await ClaudeService.runAndTrack(library) }
     }
 
     var body: some View {
         Section {
-            if hasKey {
-                LabeledContent("API key", value: "Saved on this iPhone")
-                Button("Remove key", role: .destructive) { Claude.apiKey = nil; hasKey = false }
+            if PlusStore.available {
+                // With Awwbum Plus, no key is needed; your own key stays an advanced option.
+                DisclosureGroup(hasKey ? "Your own API key (saved)" : "Use your own Anthropic API key") { keyRows }
             } else {
-                SecureField("Paste your Claude API key", text: $key)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                Button("Save key") { Claude.apiKey = key; key = ""; hasKey = Claude.apiKey != nil }
-                    .disabled(key.trimmingCharacters(in: .whitespaces).isEmpty)
+                keyRows
             }
             Picker("Model", selection: Binding(get: { library.claudeModel }, set: { library.setClaude(model: $0) })) {
                 ForEach(Claude.models, id: \.id) { m in Text(m.name).tag(m.id) }
@@ -317,6 +339,7 @@ struct ClaudeSection: View {
             if !library.claudeBatches.isEmpty {
                 LabeledContent("Being scored", value: "\(library.claudeBatches.reduce(0) { $0 + $1.photos.count }.formatted()) photos")
             }
+            if !onPlus {
             Picker("Speed", selection: $fast) {
                 Text("Fast").tag(true)
                 Text("Half price").tag(false)
@@ -324,7 +347,8 @@ struct ClaudeSection: View {
             Text(fast ? "Fast: scores come back as each photo is sent, usually seconds apart. Full price."
                       : "Half price: photos go in batches and Claude's scores usually arrive within an hour.")
                 .font(.footnote).foregroundStyle(.secondary)
-            if n > 0 {
+            }
+            if n > 0 && !onPlus {
                 Text("Estimated cost: about \(Claude.dollars(micros: Claude.costMicros(photos: n, model: library.claudeModel, fast: fast))) for \(n.formatted()) photos. This is an estimate (about 1,200 tokens in and about 300 out a photo); your Anthropic bill shows the actual.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
@@ -341,14 +365,15 @@ struct ClaudeSection: View {
                 }
             } else {
                 Button(scanner.isScanning ? "Score with Claude (starts after the photo check)" : "Score \(n.formatted()) photos with Claude") { start() }
-                    .disabled(!hasKey || (n == 0 && !scanner.isScanning))
+                    .disabled(!canScore || (n == 0 && !scanner.isScanning))
             }
             let rc = library.claudeRecheckable
             if library.claudeScored > 0 {
-                Button("Check Claude's consistency (re-score \(rc.formatted()) photos, about \(Claude.dollars(micros: Claude.costMicros(photos: rc, model: library.claudeModel, fast: fast))))") {
+                Button(onPlus ? "Check Claude's consistency (re-score \(rc.formatted()) photos)"
+                       : "Check Claude's consistency (re-score \(rc.formatted()) photos, about \(Claude.dollars(micros: Claude.costMicros(photos: rc, model: library.claudeModel, fast: fast))))") {
                     Task { await claude.send(library, recheck: true) }
                 }
-                .disabled(!hasKey || claude.busy || rc == 0 || scanner.isScanning)
+                .disabled(!canScore || claude.busy || rc == 0 || scanner.isScanning)
                 if let c = library.consistency {
                     let pts = String(format: "%.1f", (c.gap * 10 + 1e-9).rounded(.toNearestOrAwayFromZero) / 10)
                     let pct = Int((c.withinHalf * 100 + 1e-9).rounded(.toNearestOrAwayFromZero))
@@ -375,7 +400,11 @@ struct ClaudeSection: View {
         } header: {
             Text("Score with Claude")
         } footer: {
+            if onPlus {
+                Text("With Awwbum Plus, photos are scored through Awwbum's server; nothing is charged to an Anthropic account. Claude decides what comes off the list. Photos flagged as possible bath or undressed, and every shot within 10 minutes of one, are never sent. Photos are sent at most 768 pixels on the long side, without location or file details. Anthropic's terms say it doesn't train on what's sent; it normally deletes it within 30 days, and can keep anything its safety checks flag for up to 2 years.")
+            } else {
             Text("Optional. Claude decides what comes off the list. Your phone scores every photo first and only flags what it isn't sure about (no child spotted, water, swimwear, shirtless, AI or edited files); flagged photos stay listed. Each year's best photos, flagged or not, plus a spread of lower-ranked ones and photos with faces but no child label, are sent to Anthropic's Claude for the final 1–10 score, a description, and the call on whether a photo belongs (bath, undressed or shirtless outside swimwear, AI or edited, no child). Swimsuits at the beach or pool are fine and stay on the list. Photos flagged as possible bath or undressed (by Apple's check or Claude's), and every shot within 10 minutes of one, are never sent, even if you put them back. The check is automatic and can miss some photos. Right before sending, the phone re-reads every photo taken within 10 minutes of each one; if any isn't checked yet (still downloading from iCloud, or new), it waits. With Limited photo access, photos outside your selection can't be checked. Possible swimwear and shirtless photos (and the shots right around them) are sent only if you turn that on above; otherwise they stay listed and Claude just doesn't see them (so when ranking by Claude, they can't rank above Claude's top-scored photos). Photos are sent at most 768 pixels on the long side, without location or file details. It uses your own API key from console.anthropic.com; charges go to your Anthropic account. Anthropic's terms say it doesn't train on what's sent; it normally deletes it within 30 days, and can keep anything its safety checks flag for up to 2 years. When ranking by Claude, photos Claude hasn't seen are held at 6 or below (8 or below once there's a learned score).")
+            }
         }
     }
 }
@@ -743,5 +772,117 @@ struct DiagnosticsSection: View {
         } footer: {
             Text("Timings and memory from this session, to help find what makes the app slow. Nothing here is sent anywhere unless you copy it.")
         }
+    }
+}
+
+
+/// Awwbum Plus: Claude scoring without an API key, by subscription.
+struct PlusSection: View {
+    @EnvironmentObject var plus: PlusStore
+    static let terms = URL(string: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")!
+    static let privacy = URL(string: "https://claude.ai/artifact/Ly3jgLyTEJ1JV3QB1EJjzB")!
+
+    var body: some View {
+        Section {
+            if plus.isActive {
+                LabeledContent("Status", value: "Active")
+                if let e = plus.expires {
+                    LabeledContent("Renews or ends", value: e.formatted(date: .abbreviated, time: .omitted))
+                }
+                if let q = plus.quota {
+                    LabeledContent("Photos scored this month", value: "\(q.used.formatted()) of \(q.limit.formatted())")
+                }
+                Link("Manage subscription", destination: URL(string: "https://apps.apple.com/account/subscriptions")!)
+            } else if plus.products.isEmpty {
+                if plus.loadFailed {
+                    Text("Couldn't load the subscription options. Check your connection.").foregroundStyle(.secondary)
+                    Button("Try again") { Task { await plus.load() } }
+                } else {
+                    HStack { ProgressView(); Text("Loading…").foregroundStyle(.secondary) }
+                }
+            } else {
+                ForEach(plus.products, id: \.id) { p in
+                    Button {
+                        Task { await plus.buy(p) }
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(p.displayName).foregroundStyle(.primary)
+                                Text(p.description).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text(p.displayPrice + (p.subscription?.subscriptionPeriod.unit == .year ? "/year" : "/month"))
+                                .font(.subheadline.bold())
+                        }
+                    }
+                    .disabled(plus.busy)
+                }
+            }
+            Button("Restore Purchases") { Task { await plus.restore() } }.disabled(plus.busy)
+            if let m = plus.message { Text(m).font(.footnote).foregroundStyle(.secondary) }
+        } header: {
+            Text("Awwbum Plus")
+        } footer: {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Claude scores your photos with no API key to set up: the photos you send go through Awwbum's server to Anthropic (the company behind Claude) and aren't kept on the server. Same privacy rules as scoring with your own key: photos are sent at most 768 pixels on the long side, without location or file details, and possible bath or undressed photos are never sent. Up to \((plus.quota?.limit ?? 5_000).formatted()) photos a month. Payment is charged to your Apple ID; the subscription renews automatically unless canceled at least 24 hours before the end of the period, and can be managed in your App Store account settings.")
+                HStack(spacing: 16) {
+                    Link("Terms of Use", destination: Self.terms)
+                    Link("Privacy Policy", destination: Self.privacy)
+                }
+            }
+        }
+        .task { await plus.load() }
+    }
+}
+
+
+/// Send feedback: your note, plus (if you leave it on) the build number and the Diagnostics below, handed to the share
+/// sheet so you pick how to send it. No photos are included.
+struct FeedbackView: View {
+    @EnvironmentObject var library: Library
+    @State private var note = ""
+    @State private var includeDiagnostics = true
+    @State private var sharing: SharedText?
+    struct SharedText: Identifiable { let id = UUID(); let text: String }
+
+    private var message: String {
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        var lines = ["Awwbum feedback (build \(build))", "", note.trimmingCharacters(in: .whitespacesAndNewlines)]
+        if includeDiagnostics {
+            library.noteMemory()
+            lines += ["", "Diagnostics:"] + library.diagnostics.map { "\($0.label): \($0.value)" }
+            let bg = BackgroundScan.log
+            if !bg.isEmpty { lines += ["", "Background scanning:"] + bg }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                TextEditor(text: $note).frame(minHeight: 160)
+                    .overlay(alignment: .topLeading) {
+                        if note.isEmpty {
+                            Text("What happened, or what would make it better?").foregroundStyle(.tertiary)
+                                .padding(.top, 8).padding(.leading, 5).allowsHitTesting(false)
+                        }
+                    }
+            } footer: {
+                Text("No photos are included. Screenshots help: you can attach them in Messages or Mail.")
+            }
+            Section {
+                Toggle("Include diagnostics", isOn: $includeDiagnostics)
+            } footer: {
+                Text("Timings, memory, photo counts and background-scanning notes from this iPhone. No photos, names or Claude key.")
+            }
+            Section {
+                Button("Send…") { sharing = SharedText(text: message) }
+                    .disabled(note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .scrollContentBackground(.hidden)
+        .background(Theme.background.ignoresSafeArea())
+        .navigationTitle("Send feedback").navigationBarTitleDisplayMode(.inline)
+        .sheet(item: $sharing) { t in ShareSheet(text: t.text).presentationDetents([.medium, .large]) }
     }
 }

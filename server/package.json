@@ -1,0 +1,23 @@
+{
+  "name": "awwbum-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cloudflare Worker that scores Awwbum subscribers' photos with Claude",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@peculiar/x509": "^3.1.0",
+    "reflect-metadata": "^0.2.2"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261101.1",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5",
+    "wrangler": "^4.156.0"
+  }
+}

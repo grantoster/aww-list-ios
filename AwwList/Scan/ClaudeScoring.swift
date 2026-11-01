@@ -1,4 +1,5 @@
 import Foundation
+import UserNotifications
 import Photos
 import UIKit
 import Security
@@ -184,6 +185,8 @@ final class ClaudeService: ObservableObject {
     private(set) var madeProgress = false
     /// True while photos are being scored (not for the connection test).
     @Published private(set) var scoring = false
+    /// Scoring goes through Awwbum's server (Awwbum Plus) instead of your own API key.
+    static var viaPlus: Bool { PlusStore.available && Shared.plus.isActive }
     /// Set by Stop: the run ends after the photos already out come back.
     private var stopRequested = false
     /// One scoring pass, then whether to keep going by itself (the "autoClaude" setting): off after a pass that
@@ -191,6 +194,11 @@ final class ClaudeService: ObservableObject {
     static func runAndTrack(_ library: Library) async {
         let c = Shared.claude
         await c.send(library)
+        if viaPlus { await Shared.plus.refreshQuota() }
+        // Finished while you were away: say so (only if you allowed notifications).
+        if UIApplication.shared.applicationState != .active && c.scoredNow > 0 {
+            ClaudeService.notify("Claude scored \(c.scoredNow.formatted()) photos", body: "Open Awwbum to see your updated top photos.")
+        }
         let d = UserDefaults.standard
         switch c.lastOutcome {
         case .notStarted: break                                   // waiting for the photo check, or already sending
@@ -299,10 +307,12 @@ final class ClaudeService: ObservableObject {
     }
 
     enum ClaudeError: LocalizedError {
-        case noKey, http(Int, String)
+        case noKey, notSubscribed, quotaUsed, http(Int, String)
         var errorDescription: String? {
             switch self {
-            case .noKey: "Add your Claude API key first."
+            case .noKey: "Add your Claude API key first, or get Awwbum Plus."
+            case .notSubscribed: "Your Awwbum Plus subscription couldn't be confirmed. Tap Restore Purchases in Settings."
+            case .quotaUsed: "This month's Awwbum Plus photos are used up. Tap Score again next month to pick up where it left off."
             case .http(let code, let msg): code == 401 ? "Claude didn't accept the API key. Check it in Settings." : "Claude returned an error (\(code)). \(msg)"
             }
         }
@@ -435,7 +445,11 @@ final class ClaudeService: ObservableObject {
         busy = true; defer { busy = false }
         stopRequested = false; scoredNow = 0; madeProgress = false
         scoring = true; defer { scoring = false }
-        let fast = Claude.fast
+        // With Awwbum Plus, photos go one at a time through Awwbum's server (no batches there). The subscription is
+        // checked first, so a run right after launch doesn't miss it.
+        if PlusStore.available { await Shared.plus.refresh() }
+        let viaPlus = ClaudeService.viaPlus
+        let fast = Claude.fast || viaPlus
         var sinceRefresh = 0
         var lastPhotoError = ""
         let model = library.claudeModel
@@ -462,6 +476,8 @@ final class ClaudeService: ObservableObject {
             else if let failure {
                 if case ClaudeError.http(let code, _) = failure, code == 401 || code == 403 { lastOutcome = .keyRejected }
                 else if case ClaudeError.noKey = failure { lastOutcome = .keyRejected }
+                else if case ClaudeError.notSubscribed = failure { lastOutcome = .keyRejected }
+                else if case ClaudeError.quotaUsed = failure { lastOutcome = .done }   // stops until you tap Score again
                 else { lastOutcome = .retryLater }   // offline, Claude busy and the like
             } else { lastOutcome = .done }
         }
@@ -474,7 +490,13 @@ final class ClaudeService: ObservableObject {
         }
         do {
             status = "Checking your API key…"
-            try await checkKey()
+            if viaPlus {
+                status = "Checking your Awwbum Plus subscription…"
+                await Shared.plus.refresh()
+                guard Shared.plus.isActive else { throw ClaudeError.notSubscribed }
+            } else {
+                try await checkKey()
+            }
             // Photos the final check holds back free their slot for the next candidates (a few rounds at most).
             var held = Set<String>(), queue = list, round = 0
             while !queue.isEmpty && !paused && round < 4 {
@@ -511,12 +533,18 @@ final class ClaudeService: ObservableObject {
                 held.formUnion(chunk.map(\.best.id).filter { !cleared.contains($0) })
                 if stopRequested { break }
                 if fast {
-                    var jobs: [(moment: Moment, body: Data)] = []
+                    var jobs: [(moment: Moment, req: URLRequest)] = []
                     for (i, m) in chunk.enumerated() {
                         guard cleared.contains(m.best.id) else { continue }
                         guard let jpeg = jpegs[i] else { unloadedIDs.insert(m.best.id); held.insert(m.best.id); continue }
-                        jobs.append((m, try JSONSerialization.data(withJSONObject: Claude.params(model: model, jpeg: jpeg),
-                                                                    options: [.withoutEscapingSlashes])))
+                        if viaPlus {
+                            guard let r = Shared.plus.scoreRequest(jpeg: jpeg, model: model) else { throw ClaudeError.notSubscribed }
+                            jobs.append((m, r))
+                        } else {
+                            let body = try JSONSerialization.data(withJSONObject: Claude.params(model: model, jpeg: jpeg),
+                                                                  options: [.withoutEscapingSlashes])
+                            jobs.append((m, try request(messagesURL, method: "POST", body: body)))
+                        }
                     }
                     if jobs.isEmpty { continue }
                     let r = await scoreNow(jobs, model: model, library: library)
@@ -620,7 +648,7 @@ final class ClaudeService: ObservableObject {
     /// Fast mode: sends each photo as its own request, 6 at a time. Right before every request (and every retry)
     /// the photo is checked again exactly as before a batch upload, and nothing new goes out once Stop is tapped
     /// or the photo library changes. Photos that hit a network problem or a busy Claude aren't recorded as sent.
-    private func scoreNow(_ jobs: [(moment: Moment, body: Data)], model: String, library: Library) async -> FastResult {
+    private func scoreNow(_ jobs: [(moment: Moment, req: URLRequest)], model: String, library: Library) async -> FastResult {
         struct Job { let moment: Moment; let req: URLRequest; var attempt: Int }
         enum Out { case done(Job, Result<(Data, Int), Error>); case wake(Job) }
         var out = FastResult()
@@ -633,9 +661,8 @@ final class ClaudeService: ObservableObject {
             if ended.claim() { UIApplication.shared.endBackgroundTask(bg) }
         }
         defer { if ended.claim() { UIApplication.shared.endBackgroundTask(bg) } }
-        var queue: [Job] = []
-        do { queue = try jobs.map { Job(moment: $0.moment, req: try request(messagesURL, method: "POST", body: $0.body), attempt: 1) } }
-        catch { out.error = error; return out }
+        var queue: [Job] = jobs.map { Job(moment: $0.moment, req: $0.req, attempt: 1) }
+        let viaPlus = ClaudeService.viaPlus
         let session = self.session
         var busyNow = false, networkError: Error?, accountError: (Int, String)?
         var rejectedCount = 0   // 4xx answers about the request, not the photo's content
@@ -685,7 +712,11 @@ final class ClaudeService: ObservableObject {
                             else { out.failed.append(id); if out.firstError.isEmpty { out.firstError = "Claude's reply couldn't be read." } }
                             finished(id)
                         } else if code == 401 || code == 403 {
-                            if !isHalted() { out.error = ClaudeError.http(401, "") }
+                            if !isHalted() { out.error = viaPlus ? ClaudeError.notSubscribed : ClaudeError.http(401, "") }
+                            out.held.insert(id)
+                        } else if code == 429 && Claude.errorType(data) == "quota_exceeded" {
+                            // Awwbum Plus's monthly allowance is used up: stop (retrying wouldn't help).
+                            if !isHalted() { out.error = ClaudeError.quotaUsed }
                             out.held.insert(id)
                         } else if code == 429 || code >= 500 {
                             if !retry(j) { if !isHalted() { busyNow = true }; out.held.insert(id) }
@@ -741,6 +772,17 @@ final class ClaudeService: ObservableObject {
         }
     }
 
+    /// Asks once whether Awwbum may tell you when Claude's scores are ready.
+    static func askToNotify() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+    /// A local notification (nothing leaves the phone), shown only if you allowed notifications.
+    static func notify(_ title: String, body: String) {
+        let c = UNMutableNotificationContent()
+        c.title = title; c.body = body; c.sound = .default
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "claude-done", content: c, trigger: nil))
+    }
+
     /// Downloads finished batches and applies the scores.
     private var collecting = false
     func collect(_ library: Library) async {
@@ -786,6 +828,9 @@ final class ClaudeService: ObservableObject {
                     library.unsend(model: b.model, failed)   // can be tried again (up to twice in all)
                 }
                 library.removeClaudeBatch(b.id)
+                if UIApplication.shared.applicationState != .active && !verdicts.isEmpty && b.recheck != true {
+                    ClaudeService.notify("Claude scored \(verdicts.count.formatted()) photos", body: "Open Awwbum to see your updated top photos.")
+                }
                 status = "Claude scored \(verdicts.count.formatted()) photos." +
                     (failed.isEmpty ? "" : " \(failed.count.formatted()) couldn't be scored" + (firstError.isEmpty ? "." : ": \(firstError)"))
             } catch {
