@@ -67,7 +67,7 @@ struct ViewerView: View {
 
     @ViewBuilder private var caption: some View {
         if moments.indices.contains(index) {
-            // The moment as it stands now (a thumbs up or down changes its score while you're looking at it).
+            // The moment as it stands now (it can change while you're looking at it).
             let m = library.everyMoment.first { $0.id == moments[index].id }.map { now in
                 var n = now; n.similar = moments[index].similar; return n
             } ?? moments[index]
@@ -76,7 +76,7 @@ struct ViewerView: View {
                     Text("\(m.score)").font(Theme.display(38)).foregroundStyle(m.score >= 9 ? Theme.sunny : Color.white)
                     Text("/10").foregroundStyle(.white.opacity(0.7))
                     Spacer()
-                    // Your own vote: one point up or down, and it counts toward what the app learns.
+                    // Your own vote: nudges it among similar scores; teaches the app when Claude scored it.
                     let r = library.reaction(m)
                     Button { react(m, r == 1 ? 0 : 1) } label: {
                         Image(systemName: r == 1 ? "hand.thumbsup.fill" : "hand.thumbsup").font(.title3)
@@ -135,8 +135,9 @@ struct ViewerView: View {
     private func react(_ m: Moment, _ value: Int) {
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         library.setReaction(m, value)
-        favNote = value == 1 ? "Thumbs up: one point higher, and it counts toward what the app learns."
-            : value == -1 ? "Thumbs down: one point lower, and it counts toward what the app learns." : nil
+        let learns = m.claudeScore != nil ? " The app learns from it too." : ""
+        favNote = value == 1 ? "Thumbs up: moves it a little higher among photos with similar scores." + learns
+            : value == -1 ? "Thumbs down: moves it a little lower among photos with similar scores." + learns : nil
     }
 
     private func share(_ m: Moment) {

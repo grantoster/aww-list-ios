@@ -173,12 +173,17 @@ enum People {
     ///   photo bridging a baby photo and a kid photo). Every learned face must still be reasonably close to that
     ///   person's named faces, so a chain can't wander into a look-alike sibling.
     /// Indices are into `faces`. Stops early (with what it has) if the task is cancelled.
-    static func learn(_ faces: [[Float]], people: [Person], threshold: Float, rounds: Int = 3)
+    /// `rejected`: faces you said aren't someone (index → those people); they're never matched or learned as
+    /// them, and so never become references that reach further.
+    static func learn(_ faces: [[Float]], people: [Person], threshold: Float, rounds: Int = 3,
+                      rejected: [Int: Set<UUID>] = [:])
         -> (matched: [Int: UUID], learned: [Int: UUID]) {
         let named = Matcher(people)
         var matcher = named
         var matched = [Int: UUID](), learned = [Int: UUID]()
-        for (i, v) in faces.enumerated() { if let id = named.match(v, threshold: threshold) { matched[i] = id } }
+        for (i, v) in faces.enumerated() {
+            if let id = named.match(v, threshold: threshold), rejected[i]?.contains(id) != true { matched[i] = id }
+        }
         // Ordinary matches are known faces too: a sample of them starts the references.
         for (id, idx) in Dictionary(grouping: matched.keys.sorted(), by: { matched[$0]! }) {
             for i in spread(idx, to: 30) { matcher.add(id, faces[i]) }
@@ -197,7 +202,7 @@ enum People {
                         best = (r.id, s)
                     } else if r.id != best?.id { second = max(second, s) }
                 }
-                guard let b = best, b.sim >= bar, second < b.sim - 0.03,
+                guard let b = best, b.sim >= bar, second < b.sim - 0.03, rejected[i]?.contains(b.id) != true,
                       named.closeness(v, to: b.id) >= anchor else { continue }
                 added.append((i, b.id))
             }

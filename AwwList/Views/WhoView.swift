@@ -12,7 +12,7 @@ struct FaceThumb: View {
             .overlay { if let image { Image(uiImage: image).resizable().scaledToFill() } }
             .clipShape(Circle())
             .frame(width: size, height: size)
-            .task(id: photo) {
+            .task(id: photo + box.map { String($0) }.joined()) {
                 guard let full = await AssetImage.load(id: photo, size: CGSize(width: 900, height: 900), mode: .aspectFit).image else { return }
                 let b = box
                 image = await Task.detached(priority: .userInitiated) { Self.crop(full, box: b) }.value
@@ -230,6 +230,10 @@ struct WhoView: View {
         let t = library.threshold
         let named = library.people
         let declined = library.declinedChecks
+        let rejected = library.notThemKeys
+        @Sendable func rejectedFor(_ id: UUID, _ f: (photo: String, face: FaceRecord)) -> Bool {
+            rejected[Library.faceKey(f.photo, f.face)]?.contains(id) == true
+        }
         Task.detached(priority: .userInitiated) {
             let vecs = faces.map { People.floats($0.face.vec) }
             let matcher = People.Matcher(named)   // named faces only
@@ -243,7 +247,10 @@ struct WhoView: View {
                 // Keyed by the group's first photo, so a No sticks even if the group gains or loses a face.
                 let key = p.id.uuidString + ":" + (c.map { faces[$0].photo }.min() ?? "")
                 guard !declined.contains(key) else { return false }   // answered No: show it as an ordinary group
-                asks.append(Suggestion(id: key, person: p, faces: c.map { faces[$0] }))
+                // A face you said isn't them never comes back through a quick "yes".
+                let fs = c.map { faces[$0] }.filter { !rejectedFor(p.id, $0) }
+                guard fs.count >= 3 else { return false }
+                asks.append(Suggestion(id: key, person: p, faces: fs))
                 return true
             }
             let big = all.filter { $0.count >= 5 }
@@ -259,8 +266,11 @@ struct WhoView: View {
 
 /// "Who is this?" — name a group of faces (optionally with a birthday).
 struct NameSheet: View {
-    let faces: [(photo: String, face: FaceRecord)]
+    @State var faces: [(photo: String, face: FaceRecord)]
     @EnvironmentObject var library: Library
+    @State private var showAll = false
+    /// Faces taken out of this group; set aside for good only when you tap Save.
+    @State private var removed: [(photo: String, face: FaceRecord)] = []
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var hasBirthday = false
@@ -271,13 +281,20 @@ struct NameSheet: View {
             Form {
                 Section {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 64), spacing: 8)], spacing: 8) {
-                        ForEach(Array(faces.prefix(12).enumerated()), id: \.offset) { _, f in
-                            FaceThumb(photo: f.photo, box: f.face.box, size: 64)
+                        ForEach(Array(faces.prefix(showAll ? 120 : 24).enumerated()), id: \.offset) { _, f in
+                            RemovableFace(photo: f.photo, box: f.face.box, size: 64, label: "Remove this face from the group") {
+                                faces.removeAll { $0.face.vec == f.face.vec && $0.photo == f.photo }
+                                removed.append(f)
+                            }
                         }
                     }
                     .padding(.vertical, 4)
+                    if faces.count > 24 && !showAll { Button("Show more") { showAll = true } }
+                    if let last = removed.last {
+                        Button("Undo remove") { removed.removeLast(); faces.insert(last, at: 0) }
+                    }
                 } footer: {
-                    Text("\(faces.count) photos. If these aren't all one person, try Stricter grouping.")
+                    Text("\(faces.count) photos. Tap × on a face that doesn't belong; when you save, it isn't asked about again. If many don't belong, try Stricter grouping.")
                 }
                 Section("Name") {
                     TextField("Name", text: $name).textInputAutocapitalization(.words).submitLabel(.done)
@@ -306,10 +323,14 @@ struct NameSheet: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
-                        library.name(faces, as: name, birthday: hasBirthday ? Calendar.current.startOfDay(for: birthday) : nil)
+                        if !faces.isEmpty {
+                            library.name(faces, as: name, birthday: hasBirthday ? Calendar.current.startOfDay(for: birthday) : nil)
+                        }
+                        library.ignoreFaces(removed)
                         dismiss()
                     }
-                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                    // Removing every face (a group of strangers) can be saved without a name.
+                    .disabled(faces.isEmpty ? removed.isEmpty : name.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
         }
@@ -323,6 +344,10 @@ struct PersonSheet: View {
     @EnvironmentObject var library: Library
     @Environment(\.dismiss) private var dismiss
     @State private var confirmForget = false
+    @State private var showAll = false
+    /// This person's faces, worked out once when the sheet opens (and updated as you remove some).
+    @State private var theirs: [(photo: String, face: FaceRecord)] = []
+    @State private var lastRemoved: (photo: String, face: FaceRecord)?
 
     var body: some View {
         NavigationStack {
@@ -335,6 +360,33 @@ struct PersonSheet: View {
                     }
                 }
                 Section("Name") { TextField("Name", text: $person.name).textInputAutocapitalization(.words) }
+                if !theirs.isEmpty || lastRemoved != nil {
+                    Section {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 64), spacing: 8)], spacing: 8) {
+                            ForEach(Array(theirs.prefix(showAll ? 120 : 24).enumerated()), id: \.offset) { _, f in
+                                let photoDate = library.photos[f.photo]?.date.formatted(date: .abbreviated, time: .omitted) ?? ""
+                                RemovableFace(photo: f.photo, box: f.face.box, size: 64,
+                                              label: "Not \(person.name), photo from \(photoDate)") {
+                                    library.removeFace(f.photo, f.face, from: person)
+                                    theirs.removeAll { $0.face.vec == f.face.vec && $0.photo == f.photo }
+                                    lastRemoved = f
+                                }
+                            }
+                        }
+                        .padding(.vertical, 4)
+                        if theirs.count > 24 && !showAll { Button("Show more") { showAll = true } }
+                        if let f = lastRemoved {
+                            Button("Undo remove") {
+                                library.restoreFace(f.photo, f.face, to: person)
+                                theirs.insert(f, at: 0); lastRemoved = nil
+                            }
+                        }
+                    } header: {
+                        Text("Faces counted as \(person.name)")
+                    } footer: {
+                        Text("Tap × on any face that isn't \(person.name). That face is never counted as them again, and the app stops learning from it. No photos are deleted.")
+                    }
+                }
                 Section {
                     Toggle("Birthday", isOn: Binding(get: { person.birthday != nil },
                                                      set: { person.birthday = $0 ? (person.birthday ?? Calendar.current.startOfDay(for: Date())) : nil }))
@@ -357,6 +409,11 @@ struct PersonSheet: View {
             }
             .navigationTitle(person.name)
             .navigationBarTitleDisplayMode(.inline)
+            .onAppear { if theirs.isEmpty { theirs = library.faces(of: person) } }
+            // Opened before face learning finished: fill in once it has (unless you've started removing faces).
+            .onChange(of: library.learningPeople) { _, busy in
+                if !busy && lastRemoved == nil { theirs = library.faces(of: person) }
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
@@ -365,5 +422,31 @@ struct PersonSheet: View {
                 }
             }
         }
+    }
+}
+
+/// A face with a small × to take it out (of a group to name, or of a named person).
+struct RemovableFace: View {
+    let photo: String
+    let box: [Float]
+    var size: CGFloat = 64
+    var label = "Remove this face"
+    let remove: () -> Void
+    var body: some View {
+        FaceThumb(photo: photo, box: box, size: size)
+            .overlay(alignment: .topTrailing) {
+                Button(action: remove) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 20))
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(.white, Color.black.opacity(0.6))
+                        .frame(width: 44, height: 44, alignment: .topTrailing)   // a full-size target over the corner
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .offset(x: 6, y: -6)
+                .accessibilityLabel(label)
+            }
+            .accessibilityElement(children: .contain)
     }
 }

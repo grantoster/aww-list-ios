@@ -48,8 +48,8 @@ final class Library: ObservableObject {
     /// Possible bath or undressed photos are listed and scored on the phone, unless the user keeps one out.
     /// They (and every shot within 10 minutes of one) are never sent to Claude either way.
     @Published private(set) var keptOut: Set<String> = []
-    /// Your thumbs up (1) or down (-1) by photo id. A thumbs up lifts that moment one point (to 10 at most), a
-    /// thumbs down lowers it one point (to 1 at least); both also count toward what the learned score learns.
+    /// Your thumbs up (1) or down (-1) by photo id: a quarter point on Claude's or the learned score when ranking
+    /// (it settles ties in Apple's and Consolidated), and, for photos Claude scored, the learning learns from it.
     @Published private(set) var reactions: [String: Int] = [:]
     func setReaction(_ m: Moment, _ value: Int) {
         for id in m.memberIDs { reactions[id] = nil }
@@ -73,7 +73,7 @@ final class Library: ObservableObject {
         guard r != 0 else { return m }
         var m = m
         m.reaction = r
-        m.score = r > 0 ? min(10, m.score + 1) : max(1, m.score - 1)
+        // The quarter point itself goes into the score behind the list (see rebuild); here it only breaks ties.
         return m
     }
 
@@ -124,6 +124,7 @@ final class Library: ObservableObject {
         var trainedSignatureBits: Int64? = nil
         var claudeRemoved: [String: String]?; var claudeSent: [String: [String]]?; var claudeSentYear: [String: Int]?
         var reactions: [String: Int]? = nil
+        var notThem: [String: [String]]? = nil; var ignoredFaces: [String]? = nil
     }
 
     /// False until the saved library has been read (off the main thread, so a large library can't make iOS end
@@ -644,7 +645,7 @@ final class Library: ObservableObject {
         let gen = generation
         let known = trainedSignature
         let reacts = reactions
-        let scored = photos.values.filter { ($0.claude != nil || reacts[$0.id] != nil) && $0.feat != nil }   // only these are needed
+        let scored = photos.values.filter { $0.claude != nil && $0.feat != nil }   // only these are needed
         // Gathering the examples (decoding thousands of fingerprints) happens off the main thread too.
         Task.detached(priority: .utility) {
             var parts: [String] = []
@@ -653,17 +654,16 @@ final class Library: ObservableObject {
             var averaged = 0
             for p in scored.sorted(by: { $0.id < $1.id }) {
                 guard let f = p.feat, let x = Learner.decode(f) else { continue }
-                // Your thumbs nudge what it learns: a point above (up) or below (down) Claude's score, or 8 / 4
-                // for a photo Claude hasn't scored.
-                if let r = reacts[p.id] {
-                    let base = p.claude.flatMap { c in c.exclude == nil ? (c.score2.map { (c.score + $0) / 2 } ?? c.score) : nil }
-                    let y = r > 0 ? min(10, (base ?? 7) + 1) : max(1, (base ?? 5) - 1)
-                    parts.append("\(p.id)|r\(r)v2|\(p.claude?.score ?? -1)|\(p.claude?.score2 ?? -1)|\(p.claude?.exclude ?? "")")
-                    examples.append((p.date, x, y))
-                    if let c = p.claude { verdicts.append((p.date, x, c.exclude != nil)) }
+                guard let c = p.claude else { continue }
+                // Your thumbs nudge what it learns: a quarter point above (up) or below (down) Claude's score.
+                if let r = reacts[p.id], c.exclude == nil {
+                    let base = c.score2.map { (c.score + $0) / 2 } ?? c.score
+                    parts.append("\(p.id)|r\(r)v4|\(c.score)|\(c.score2 ?? -1)")
+                    verdicts.append((p.date, x, false))
+                    examples.append((p.date, x, min(10, max(1, base + 0.25 * Double(r)))))
+                    if c.score2 != nil { averaged += 1 }
                     continue
                 }
-                guard let c = p.claude else { continue }
                 parts.append("\(p.id)|\(c.score)|\(c.score2 ?? -1)|\(c.exclude ?? "")")
                 verdicts.append((p.date, x, c.exclude != nil))
                 // Where Claude scored a photo twice, learn from the average (closer to its real opinion).
@@ -748,6 +748,94 @@ final class Library: ObservableObject {
     /// Faces (photo id # face number) already known to be someone, so Who's Who doesn't ask about them.
     private var learnedFaces = Set<String>()
     @Published private(set) var learningPeople = false
+    /// Which named person each face is (face key → person), from the last learning pass and your naming.
+    @Published private(set) var faceOwner: [String: UUID] = [:]
+    /// Faces you said aren't someone (face key → people), so they're never counted as them again.
+    private(set) var notThem: [String: Set<UUID>] = [:]
+    /// Faces you removed from "Who is this?" (strangers and the like), so they aren't asked about again.
+    private(set) var ignoredFaces = Set<String>()
+
+    /// A face's lasting key: its photo and where it sits in it (stays the same when the photo is read again).
+    nonisolated static func faceKey(_ photo: String, _ f: FaceRecord) -> String {
+        var h: UInt64 = 14695981039346656037   // FNV-1a over the face print, so the key survives small box changes
+        for b in f.vec { h = (h ^ UInt64(b)) &* 1099511628211 }
+        return photo + "|" + String(h, radix: 36)
+    }
+
+    /// The faces counted as this person, newest photo first.
+    func faces(of person: Person) -> [(photo: String, face: FaceRecord)] {
+        var out: [(photo: String, face: FaceRecord, date: Date)] = []
+        for (key, owner) in faceOwner where owner == person.id {
+            guard let photo = key.split(separator: "|").first.map(String.init), let p = photos[photo],
+                  let f = p.faceRecords?.first(where: { Library.faceKey(photo, $0) == key }) else { continue }
+            out.append((photo, f, p.date))
+        }
+        return out.sorted { $0.date > $1.date }.map { ($0.photo, $0.face) }
+    }
+
+    /// "That's not them": this face is never counted as this person again, and it's taken out of what the app
+    /// learned about them.
+    func removeFace(_ photo: String, _ face: FaceRecord, from person: Person) {
+        let key = Library.faceKey(photo, face)
+        notThem[key, default: []].insert(person.id)
+        if faceOwner[key] == person.id { faceOwner[key] = nil }
+        if let i = people.firstIndex(where: { $0.id == person.id }) {
+            lastFaceRemoval = (key, people[i])   // so Undo puts everything back as it was
+            if var ex = people[i].examples, let j = ex.firstIndex(of: face.vec) {
+                ex.remove(at: j)
+                if let n = people[i].namedExamples, j < n { people[i].namedExamples = n - 1 }
+                people[i].examples = ex
+                if !ex.isEmpty {
+                    people[i].centroid = People.merged([], count: 0, adding: ex.map { People.floats($0) })
+                    people[i].count = max(1, people[i].count - 1)
+                }
+            }
+            // Its picture: another of their faces, if this was the one shown.
+            if people[i].samplePhoto == photo,
+               let other = faceOwner.first(where: { $0.value == person.id }),
+               let ph = other.key.split(separator: "|").first.map(String.init),
+               let f = photos[ph]?.faceRecords?.first(where: { Library.faceKey(ph, $0) == other.key }) {
+                people[i].samplePhoto = ph; people[i].sampleBox = f.box
+            }
+        }
+        // Still them if another face in the photo is.
+        if !faceOwner.contains(where: { $0.value == person.id && $0.key.hasPrefix(photo + "|") }) {
+            learnedWho[photo]?.remove(person.id)
+        }
+        whoCache = [:]; rebuildSoon(); saveSoon(); learnPeople()
+    }
+    /// Undoes "that's not them" for one face (it can be counted as them again).
+    func restoreFace(_ photo: String, _ face: FaceRecord, to person: Person) {
+        let key = Library.faceKey(photo, face)
+        notThem[key]?.remove(person.id)
+        if notThem[key]?.isEmpty == true { notThem[key] = nil }
+        // Undoing the latest removal also brings back what it took out of their learned faces and picture.
+        if let last = lastFaceRemoval, last.key == key, last.person.id == person.id,
+           let i = people.firstIndex(where: { $0.id == person.id }) {
+            people[i].examples = last.person.examples; people[i].namedExamples = last.person.namedExamples
+            people[i].centroid = last.person.centroid; people[i].count = last.person.count
+            people[i].samplePhoto = last.person.samplePhoto; people[i].sampleBox = last.person.sampleBox
+            lastFaceRemoval = nil
+        }
+        faceOwner[key] = person.id
+        whoCache = [:]; rebuildSoon(); saveSoon(); learnPeople()
+    }
+    /// Faces you said aren't someone (a copy for work off the main thread).
+    var notThemKeys: [String: Set<UUID>] { notThem }
+    /// True if you said this face isn't this person.
+    func isRejected(_ photo: String, _ face: FaceRecord, for id: UUID) -> Bool {
+        notThem[Library.faceKey(photo, face)]?.contains(id) == true
+    }
+
+    private var lastFaceRemoval: (key: String, person: Person)?
+
+    /// Takes faces out of "Who is this?" for good (people you don't need to name).
+    func ignoreFaces(_ faces: [(photo: String, face: FaceRecord)]) {
+        guard !faces.isEmpty else { return }
+        for f in faces { ignoredFaces.insert(Library.faceKey(f.photo, f.face)) }
+        saveSoon()
+    }
+
     /// "Is this X?" checks answered No this session (person id : group key), so they aren't asked again.
     var declinedChecks = Set<String>()
     private var peopleGeneration = 0
@@ -788,26 +876,35 @@ final class Library: ObservableObject {
         guard !people.isEmpty, Library.faceConsent else { learnedWho = [:]; learnedFaces = []; whoCache = [:]; learningPeople = false; return }
         let gen = peopleGeneration
         let snapshot = photos.values.filter { !notVisible.contains($0.id) }   // not photos that can't be seen now
-        let named = people, t = threshold
+        let named = people, t = threshold, rejected = notThem
         learningPeople = true
         peopleTask = Task.detached(priority: .utility) {
-            var faces: [[Float]] = [], owners: [String] = [], keys: [String] = []
+            var faces: [[Float]] = [], owners: [String] = [], keys: [String] = [], faceKeys: [String] = []
             for p in snapshot {
                 for (j, f) in (p.faceRecords ?? []).enumerated() where f.vec.count == People.dim {
                     faces.append(People.floats(f.vec)); owners.append(p.id); keys.append(p.id + "#\(j)")
+                    faceKeys.append(Library.faceKey(p.id, f))
                 }
             }
-            let (matched, learned) = People.learn(faces, people: named, threshold: t)
+            var rej: [Int: Set<UUID>] = [:]
+            for (i, k) in faceKeys.enumerated() { if let r = rejected[k] { rej[i] = r } }
+            let (matched, learned) = People.learn(faces, people: named, threshold: t, rejected: rej)
             if Task.isCancelled { return }
-            var who: [String: Set<UUID>] = [:], done = Set<String>(), counts: [UUID: Int] = [:]
-            for (i, id) in matched { who[owners[i], default: []].insert(id); done.insert(keys[i]) }
-            for (i, id) in learned { who[owners[i], default: []].insert(id); done.insert(keys[i]); counts[id, default: 0] += 1 }
-            let result = who, known = done, learnedCounts = counts
+            var who: [String: Set<UUID>] = [:], done = Set<String>(), counts: [UUID: Int] = [:], owner: [String: UUID] = [:]
+            // A face you said isn't someone is never counted as them.
+            for (i, id) in matched where rejected[faceKeys[i]]?.contains(id) != true {
+                who[owners[i], default: []].insert(id); done.insert(keys[i]); owner[faceKeys[i]] = id
+            }
+            for (i, id) in learned where rejected[faceKeys[i]]?.contains(id) != true {
+                who[owners[i], default: []].insert(id); done.insert(keys[i]); counts[id, default: 0] += 1; owner[faceKeys[i]] = id
+            }
+            let result = who, known = done, learnedCounts = counts, owners2 = owner
             await MainActor.run {
                 guard gen == self.peopleGeneration else { return }   // names changed meanwhile: a newer run is coming
                 for k in self.people.indices { self.people[k].learnedCount = learnedCounts[self.people[k].id] ?? 0 }
                 self.learnedWho = result
                 self.learnedFaces = known
+                self.faceOwner = owners2
                 self.whoCache = [:]
                 self.learningPeople = false
                 self.rebuild(); self.save()
@@ -840,6 +937,10 @@ final class Library: ObservableObject {
         for f in faces { if let j = photos[f.photo]?.faceRecords?.firstIndex(of: f.face) { learnedFaces.insert(f.photo + "#\(j)") } }
         if let id = people.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame })?.id {
             for ph in names { learnedWho[ph, default: []].insert(id); whoCache[ph] = nil }
+            for f in faces {   // naming a face as someone overrides an earlier "not them"
+                let k = Library.faceKey(f.photo, f.face)
+                notThem[k]?.remove(id); faceOwner[k] = id
+            }
         }
         rebuild(); save()
         learnPeople()
@@ -866,7 +967,8 @@ final class Library: ObservableObject {
         let centroids = People.Matcher(people.map { p -> Person in var p = p; p.examples = nil; return p })
         for m in everyMoment {
             for (j, f) in (m.best.faceRecords ?? []).enumerated() where f.vec.count == People.dim
-                && !learnedFaces.contains(m.best.id + "#\(j)") && centroids.match(People.floats(f.vec), threshold: t) == nil {
+                && !learnedFaces.contains(m.best.id + "#\(j)") && !ignoredFaces.contains(Library.faceKey(m.best.id, f))
+                && centroids.match(People.floats(f.vec), threshold: t).map({ notThem[Library.faceKey(m.best.id, f)]?.contains($0) == true }) ?? true {
                 out.append((m.best.id, f))
                 if out.count >= limit { return out }
             }
@@ -919,7 +1021,7 @@ final class Library: ObservableObject {
         // Not yet re-read: at most 6, like Apple-only moments in the Claude view (a small group's best isn't a 10).
         for (k, v) in zip(fIdx, Scorer.calibrate(fIdx.map { fallbackVals[$0] }, years: fIdx.map { years[$0] })) { scores[k] = min(v, 6) }
         let rankRaws = groups.indices.map { balancedVals[$0] ?? fallbackVals[$0] }
-        let named = people, t = threshold
+        let named = people, t = threshold, rejected = notThem
         // Centroids only here (fast, on the main thread); the thorough matching comes from learnPeople.
         let matcher = People.Matcher((Library.faceConsent ? named : []).map { p -> Person in var p = p; p.examples = nil; return p })
         let gregorian = Calendar(identifier: .gregorian)
@@ -930,8 +1032,10 @@ final class Library: ObservableObject {
         func makeMoment(_ g: (best: PhotoScore, shots: Int, ids: [String]), _ s: Int, _ rr: Double = 0) -> Moment {
             let who: Set<UUID>
             if let cached = whoCache[g.best.id] { who = cached } else {
-                who = Set((g.best.faceRecords ?? []).compactMap { matcher.match(People.floats($0.vec), threshold: t) })
-                    .union(learnedWho[g.best.id] ?? [])
+                who = Set((g.best.faceRecords ?? []).compactMap { f -> UUID? in
+                    guard let id = matcher.match(People.floats(f.vec), threshold: t) else { return nil }
+                    return rejected[Library.faceKey(g.best.id, f)]?.contains(id) == true ? nil : id
+                }).union(learnedWho[g.best.id] ?? [])
                 whoCache[g.best.id] = who
             }
             // Named people with birthdays give exact ages; otherwise ages come from the birthdays and the photo.
@@ -1021,7 +1125,7 @@ final class Library: ObservableObject {
                 } else if let l = m.learnedScore {
                     v = l
                 }
-                return v + m.rankRaw * 0.001
+                return v + 0.25 * Double(reaction(m)) + m.rankRaw * 0.001   // your thumbs: a quarter point
             }
             let cal = Scorer.calibrate(vals.map { $0 / 10 }, years: ms.map(\.year))
             for i in ms.indices {
@@ -1126,13 +1230,14 @@ final class Library: ObservableObject {
     /// Higher score first; then higher raw score; then the earlier photo.
     nonisolated static func ranked(_ a: Moment, _ b: Moment) -> Bool {
         if a.score != b.score { return a.score > b.score }
-        if a.reaction != b.reaction { return a.reaction > b.reaction }   // your thumbs decide ties: down goes last
         if let fa = a.consolidated, let fb = b.consolidated, fa != fb { return fa > fb }
-        let ca = a.claudeScore ?? 0, cb = b.claudeScore ?? 0
+        // Your thumbs count as a quarter point on Claude's and the learned score, and settle remaining ties.
+        let ca = a.claudeScore.map { $0 + 0.25 * Double(a.reaction) } ?? 0, cb = b.claudeScore.map { $0 + 0.25 * Double(b.reaction) } ?? 0
         if ca != cb { return ca > cb }
-        let la = a.learnedScore ?? 0, lb = b.learnedScore ?? 0
+        let la = a.learnedScore.map { $0 + 0.25 * Double(a.reaction) } ?? 0, lb = b.learnedScore.map { $0 + 0.25 * Double(b.reaction) } ?? 0
         if la != lb { return la > lb }
         if a.apple != b.apple { return a.apple > b.apple }
+        if a.reaction != b.reaction { return a.reaction > b.reaction }
         let ra = a.rankRaw, rb = b.rankRaw
         if ra != rb { return ra > rb }
         return a.best.date < b.best.date
@@ -1159,7 +1264,8 @@ final class Library: ObservableObject {
                       trainedSignature: nil, useBuiltInLearning: useBuiltInLearning,
                       trainedSignatureBits: trainedSignature.map { Int64(bitPattern: $0) },
                       claudeRemoved: claudeRemoved, claudeSent: claudeSent.mapValues { Array($0) },
-                      claudeSentYear: claudeSentYear, reactions: reactions)
+                      claudeSentYear: claudeSentYear, reactions: reactions,
+                      notThem: notThem.mapValues { $0.map(\.uuidString) }, ignoredFaces: Array(ignoredFaces))
         let u = url, legacy = legacyURL
         // One save at a time, in order, so an older snapshot can never land after a newer one.
         Library.saveQueue.async {
@@ -1210,6 +1316,8 @@ final class Library: ObservableObject {
         }
         keptOut = Set(s.keptOut ?? [])
         reactions = s.reactions ?? [:]
+        notThem = (s.notThem ?? [:]).mapValues { Set($0.compactMap(UUID.init(uuidString:))) }
+        ignoredFaces = Set(s.ignoredFaces ?? [])
         claudeSensitive = s.claudeSensitive ?? false
         ownFilter = s.learnedFilter.flatMap { $0.weights.count == Learner.featureCount ? $0 : nil }
         useBuiltInLearning = s.useBuiltInLearning ?? true
