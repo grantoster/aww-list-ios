@@ -76,7 +76,7 @@ struct ViewerView: View {
                     Text("\(m.score)").font(Theme.display(38)).foregroundStyle(m.score >= 9 ? Theme.sunny : Color.white)
                     Text("/10").foregroundStyle(.white.opacity(0.7))
                     Spacer()
-                    // Your own vote: teaches the app your taste (up lifts this moment, down sinks it).
+                    // Your own vote: one point up or down, and it counts toward what the app learns.
                     let r = library.reaction(m)
                     Button { react(m, r == 1 ? 0 : 1) } label: {
                         Image(systemName: r == 1 ? "hand.thumbsup.fill" : "hand.thumbsup").font(.title3)
@@ -135,8 +135,8 @@ struct ViewerView: View {
     private func react(_ m: Moment, _ value: Int) {
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         library.setReaction(m, value)
-        favNote = value == 1 ? "Thumbs up: this one moves up, and it counts toward what the app learns."
-            : value == -1 ? "Thumbs down: this one drops to the bottom, and it counts toward what the app learns." : nil
+        favNote = value == 1 ? "Thumbs up: one point higher, and it counts toward what the app learns."
+            : value == -1 ? "Thumbs down: one point lower, and it counts toward what the app learns." : nil
     }
 
     private func share(_ m: Moment) {

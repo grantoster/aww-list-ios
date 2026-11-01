@@ -48,8 +48,8 @@ final class Library: ObservableObject {
     /// Possible bath or undressed photos are listed and scored on the phone, unless the user keeps one out.
     /// They (and every shot within 10 minutes of one) are never sent to Claude either way.
     @Published private(set) var keptOut: Set<String> = []
-    /// Your thumbs up (1) or down (-1) by photo id. A thumbs up lifts that moment two points (to 10 at most), a
-    /// thumbs down drops it to 1; both also teach the learned score your taste.
+    /// Your thumbs up (1) or down (-1) by photo id. A thumbs up lifts that moment one point (to 10 at most), a
+    /// thumbs down lowers it one point (to 1 at least); both also count toward what the learned score learns.
     @Published private(set) var reactions: [String: Int] = [:]
     func setReaction(_ m: Moment, _ value: Int) {
         for id in m.memberIDs { reactions[id] = nil }
@@ -73,7 +73,7 @@ final class Library: ObservableObject {
         guard r != 0 else { return m }
         var m = m
         m.reaction = r
-        m.score = r > 0 ? min(10, m.score + 2) : 1
+        m.score = r > 0 ? min(10, m.score + 1) : max(1, m.score - 1)
         return m
     }
 
@@ -645,11 +645,12 @@ final class Library: ObservableObject {
             var averaged = 0
             for p in scored.sorted(by: { $0.id < $1.id }) {
                 guard let f = p.feat, let x = Learner.decode(f) else { continue }
-                // Your thumbs teach your taste: up counts as at least a 9.5, down as at most a 2.
+                // Your thumbs nudge what it learns: a point above (up) or below (down) Claude's score, or 8 / 4
+                // for a photo Claude hasn't scored.
                 if let r = reacts[p.id] {
                     let base = p.claude.flatMap { c in c.exclude == nil ? (c.score2.map { (c.score + $0) / 2 } ?? c.score) : nil }
-                    let y = r > 0 ? max(base ?? 0, 9.5) : min(base ?? 10, 2)
-                    parts.append("\(p.id)|r\(r)|\(p.claude?.score ?? -1)|\(p.claude?.score2 ?? -1)|\(p.claude?.exclude ?? "")")
+                    let y = r > 0 ? min(10, (base ?? 7) + 1) : max(1, (base ?? 5) - 1)
+                    parts.append("\(p.id)|r\(r)v2|\(p.claude?.score ?? -1)|\(p.claude?.score2 ?? -1)|\(p.claude?.exclude ?? "")")
                     examples.append((p.date, x, y))
                     if let c = p.claude { verdicts.append((p.date, x, c.exclude != nil)) }
                     continue
