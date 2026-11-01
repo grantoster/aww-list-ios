@@ -132,6 +132,10 @@ struct Moment: Identifiable, Hashable {
     var rankRaw: Double = 0
     /// Ranking by Consolidated: how high this moment sits across the Claude, Learned and Apple rankings (higher is better).
     var consolidated: Double? = nil
+    /// Your thumbs up (1) or down (-1) on this moment, 0 if none.
+    var reaction: Int = 0
+    /// Lower-ranked moments from the same few minutes that look alike, folded under this one on Home (their ids).
+    var similar: [String] = []
     /// Claude's description when it has one, otherwise the on-device one.
     var caption: String {
         if let c = best.claude?.caption, !c.isEmpty { return c.prefix(1).uppercased() + c.dropFirst() }

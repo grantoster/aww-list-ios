@@ -136,6 +136,7 @@ struct SettingsView: View {
     @EnvironmentObject var library: Library
     @EnvironmentObject var scanner: PhotoScanner
     @State private var keepTick = 0
+    @AppStorage("groupSimilar") private var groupSimilar = true
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         NavigationStack {
@@ -158,6 +159,13 @@ struct SettingsView: View {
                             set: { UserDefaults.standard.set($0, forKey: BackgroundScan.autoKey); keepTick += 1 }))
                             .id(keepTick)
                     }
+                }
+                Section {
+                    Toggle("Fold similar shots together", isOn: $groupSimilar)
+                } header: {
+                    Text("Home list")
+                } footer: {
+                    Text("Look-alike photos taken within 5 minutes of a better-ranked one are tucked under it (shown as +3 and so on), so the top lists show more different moments. Tap a photo and \"See similar\" to view them.")
                 }
                 HeldBackSection()
                 Section("What's left out") {

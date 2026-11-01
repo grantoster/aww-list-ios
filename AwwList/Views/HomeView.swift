@@ -41,6 +41,8 @@ struct HomeView: View {
     /// The filtered list, worked out only when the moments or a filter change (not on every redraw: the screen
     /// redraws often while scanning, and filtering thousands of moments each time made it feel sluggish).
     @State private var pool: [Moment] = []
+    /// Fold lower-ranked look-alike shots from the same few minutes under the best one (Settings → Home list).
+    @AppStorage("groupSimilar") private var groupSimilar = true
     private var top: [Moment] { Array(pool.prefix(shown)) }
 
     private func refreshLists(_ moments: [Moment]? = nil) {
@@ -51,7 +53,7 @@ struct HomeView: View {
             if let person, !m.people.contains(person) { return false }
             return true
         }
-        pool = filtered
+        pool = groupSimilar ? SimilarShots.fold(filtered) : filtered
         prefetchImages()
     }
 
@@ -149,6 +151,7 @@ struct HomeView: View {
             .onChange(of: age) { shown = 30; if !preparing { endSelecting() } }
             .onChange(of: shot) { shown = 30; if !preparing { endSelecting() } }
             .onChange(of: person) { shown = 30; if !preparing { endSelecting() } }
+            .onChange(of: groupSimilar) { refreshLists() }
             .onChange(of: scope) { refreshLists() }
             .onChange(of: age) { refreshLists() }
             .onChange(of: shot) { refreshLists() }
@@ -481,6 +484,7 @@ struct Card: View {
                 .overlay { PickMark(picked: picked, cornerRadius: 16) }
                 .overlay(alignment: .topLeading) { RankBadge(rank: rank).padding(8) }
                 .overlay(alignment: .topTrailing) { ScoreBadge(score: moment.score).padding(8) }
+                .overlay(alignment: .bottomLeading) { SimilarBadge(count: moment.similar.count).padding(8) }
             Text(moment.caption).font(Theme.label(16)).lineLimit(2, reservesSpace: true)
             Text(moment.best.date.shortDay).font(.caption).foregroundStyle(.secondary)
         }
@@ -534,6 +538,7 @@ struct Tile: View {
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay(alignment: .topLeading) { if let rank { RankBadge(rank: rank).scaleEffect(0.8).padding(2) } }
             .overlay(alignment: .bottomTrailing) { if picked == nil { ScoreBadge(score: moment.score).scaleEffect(0.85).padding(3) } }
+            .overlay(alignment: .bottomLeading) { SimilarBadge(count: moment.similar.count).scaleEffect(0.85).padding(3) }
             .overlay { PickMark(picked: picked) }
             .contentShape(RoundedRectangle(cornerRadius: 10))
             .scaleEffect(pressing && !reduceMotion ? 0.95 : 1)
@@ -541,7 +546,8 @@ struct Tile: View {
             .onTapGesture(perform: action)
             .onLongPressGesture(minimumDuration: 0.4, perform: onHold, onPressingChanged: { pressing = $0 })
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel((rank.map { "Number \($0), " } ?? "") + "score \(moment.score), \(moment.caption), \(moment.best.date.shortDay)")
+            .accessibilityLabel((rank.map { "Number \($0), " } ?? "") + "score \(moment.score), \(moment.caption), \(moment.best.date.shortDay)"
+                                + (moment.similar.isEmpty ? "" : ", \(moment.similar.count) similar"))
             .accessibilityAddTraits(picked == true ? [.isButton, .isSelected] : .isButton)
             .accessibilityAction(.default, action)
             .accessibilityAction(named: picked == nil ? "Pick photos to send" : "Pick or unpick", onHold)
@@ -744,5 +750,64 @@ struct LimitedAccessBanner: View {
         PHPhotoLibrary.shared().presentLimitedLibraryPicker(from: top) { _ in
             Task { @MainActor in Shared.scanner.start(library: Shared.library) }   // check the newly added photos
         }
+    }
+}
+
+/// "+3" on a photo with look-alike shots folded under it.
+struct SimilarBadge: View {
+    let count: Int
+    var body: some View {
+        if count > 0 {
+            Text("+\(count)")
+                .font(.caption2.bold()).foregroundStyle(.white)
+                .padding(.horizontal, 6).padding(.vertical, 3)
+                .background(.black.opacity(0.55), in: Capsule())
+                .accessibilityLabel("\(count) similar \(count == 1 ? "shot" : "shots")")
+        }
+    }
+}
+
+/// Folds look-alike moments: a lower-ranked moment taken within 5 minutes of a higher-ranked one, whose whole-photo
+/// fingerprint is very close to it, is tucked under that one (shown as "+N", and in the viewer as "See N similar").
+enum SimilarShots {
+    static let window: TimeInterval = 300
+    static let threshold: Float = 0.8
+
+    static func scene(_ p: PhotoScore) -> [Float]? {
+        guard let f = p.feat, f.count == Learner.featureCount else { return nil }
+        let b = [UInt8](f), start = Learner.signalCount
+        let v = (start..<(start + Learner.sceneDims)).map { Float(Int8(bitPattern: b[$0])) }
+        let n = v.reduce(0) { $0 + $1 * $1 }.squareRoot()
+        return n > 0 ? v.map { $0 / n } : nil
+    }
+
+    /// Keeps the list's order; each moment is folded under the first (best-ranked) kept one it matches.
+    static func fold(_ list: [Moment]) -> [Moment] {
+        var kept: [Moment] = []
+        var scenes: [[Float]?] = []
+        var byBucket: [Int: [Int]] = [:]
+        for m in list {
+            let t = m.best.date.timeIntervalSince1970
+            let b = Int((t / window).rounded(.down))
+            let sc = scene(m.best)
+            var host: Int?
+            if let sc {
+                for bb in (b - 1)...(b + 1) {
+                    for k in byBucket[bb] ?? [] where abs(kept[k].best.date.timeIntervalSince1970 - t) <= window && k < (host ?? .max) {
+                        guard let other = scenes[k] else { continue }
+                        var dot: Float = 0
+                        for i in 0..<min(sc.count, other.count) { dot += sc[i] * other[i] }
+                        if dot >= threshold { host = k }   // the best-ranked match wins (kept is in rank order)
+                    }
+                }
+            }
+            if let host {
+                kept[host].similar.append(m.best.id)
+            } else {
+                kept.append(m); scenes.append(sc)
+                byBucket[b, default: []].append(kept.count - 1)
+            }
+        }
+        return kept
     }
 }

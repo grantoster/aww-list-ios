@@ -13,19 +13,23 @@ struct ViewerView: View {
     @State private var favorite: Bool?
     @State private var favNote: String?
     @State private var favBusy = false
+    /// The current photo is zoomed in (swipe-down-to-close is off while panning).
+    @State private var zoomed = false
+    @State private var showSimilar = false
 
     var body: some View {
         ZStack(alignment: .top) {
             Color.black.ignoresSafeArea()
             TabView(selection: $index) {
                 ForEach(Array(moments.enumerated()), id: \.element.id) { i, m in
-                    AssetImage(id: m.best.id, contentMode: .fit, targetSide: 900, cached: false)
+                    ZoomablePhoto(id: m.best.id, zoomed: i == index ? $zoomed : .constant(false))
                         .accessibilityLabel("\(m.caption), score \(m.score) of 10, \(m.best.date.shortDay)")
                         .tag(i)
                         .background(Color.black)
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
+            .scrollDisabled(zoomed)   // panning a zoomed photo doesn't flip to the next one
             .ignoresSafeArea()
 
             HStack {
@@ -37,10 +41,19 @@ struct ViewerView: View {
                 }.accessibilityLabel("Close")
             }.padding(.horizontal, 16)
         }
-        .overlay(alignment: .bottom) { caption }
+        .overlay(alignment: .bottom) { if !zoomed { caption } }
         .simultaneousGesture(DragGesture(minimumDistance: 30).onEnded { v in
-            if v.translation.height > 120 && abs(v.translation.width) < 60 { dismiss() }
-        })
+            if !zoomed && v.translation.height > 120 && abs(v.translation.width) < 60 { dismiss() }
+        }, including: zoomed ? .subviews : .all)
+        .onChange(of: index) { zoomed = false }
+        .sheet(isPresented: $showSimilar) {
+            if moments.indices.contains(index) {
+                NavigationStack {
+                    PhotoGroupView(title: "Similar shots", ids: moments[index].similar)
+                        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showSimilar = false } } }
+                }
+            }
+        }
         .task(id: index) {
             favorite = nil
             favNote = nil
@@ -54,12 +67,29 @@ struct ViewerView: View {
 
     @ViewBuilder private var caption: some View {
         if moments.indices.contains(index) {
-            let m = moments[index]
+            // The moment as it stands now (a thumbs up or down changes its score while you're looking at it).
+            let m = library.everyMoment.first { $0.id == moments[index].id }.map { now in
+                var n = now; n.similar = moments[index].similar; return n
+            } ?? moments[index]
             VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .firstTextBaseline) {
                     Text("\(m.score)").font(Theme.display(38)).foregroundStyle(m.score >= 9 ? Theme.sunny : Color.white)
                     Text("/10").foregroundStyle(.white.opacity(0.7))
                     Spacer()
+                    // Your own vote: teaches the app your taste (up lifts this moment, down sinks it).
+                    let r = library.reaction(m)
+                    Button { react(m, r == 1 ? 0 : 1) } label: {
+                        Image(systemName: r == 1 ? "hand.thumbsup.fill" : "hand.thumbsup").font(.title3)
+                            .foregroundStyle(r == 1 ? Theme.sunny : Color.white).frame(width: 44, height: 44)
+                    }
+                    .accessibilityLabel("Thumbs up")
+                    .accessibilityAddTraits(r == 1 ? .isSelected : [])
+                    Button { react(m, r == -1 ? 0 : -1) } label: {
+                        Image(systemName: r == -1 ? "hand.thumbsdown.fill" : "hand.thumbsdown").font(.title3)
+                            .foregroundStyle(Color.white).frame(width: 44, height: 44)
+                    }
+                    .accessibilityLabel("Thumbs down")
+                    .accessibilityAddTraits(r == -1 ? .isSelected : [])
                     // Always there (dimmed while checking), so the buttons beside it don't shift.
                     Button { if let favorite { toggleFavorite(m, to: !favorite) } } label: {
                         Image(systemName: favorite == true ? "heart.fill" : "heart").font(.title3)
@@ -89,11 +119,24 @@ struct ViewerView: View {
                 if let favNote { Text(favNote).font(Theme.label(14)).foregroundStyle(Theme.sunny) }
                 Text(m.caption).font(Theme.label(18, relativeTo: .headline)).foregroundStyle(.white)
                 Text(bothScores(m)).font(.caption.monospacedDigit()).foregroundStyle(.white.opacity(0.85))
-                Text(m.best.date.shortDay + (m.shots > 1 ? " · +\(m.shots - 1) similar" : "")).font(.caption).foregroundStyle(.white.opacity(0.75))
+                HStack(spacing: 8) {
+                    Text(m.best.date.shortDay + (m.shots > 1 ? " · +\(m.shots - 1) in the burst" : "")).font(.caption).foregroundStyle(.white.opacity(0.75))
+                    if !m.similar.isEmpty {
+                        Button("See \(m.similar.count) similar") { showSimilar = true }
+                            .font(.caption.bold()).foregroundStyle(Theme.sunny)
+                    }
+                }
             }
             .padding(16)
             .background(LinearGradient(colors: [.clear, .black.opacity(0.8)], startPoint: .top, endPoint: .bottom))
         }
+    }
+
+    private func react(_ m: Moment, _ value: Int) {
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        library.setReaction(m, value)
+        favNote = value == 1 ? "Thumbs up: this one moves up, and it counts toward what the app learns."
+            : value == -1 ? "Thumbs down: this one drops to the bottom, and it counts toward what the app learns." : nil
     }
 
     private func share(_ m: Moment) {
@@ -153,4 +196,57 @@ struct ShareSheet: UIViewControllerRepresentable {
         return vc
     }
     func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
+}
+
+/// One photo in the viewer: pinch to zoom (up to 4×), drag to pan while zoomed, double-tap to zoom in or out.
+struct ZoomablePhoto: View {
+    let id: String
+    @Binding var zoomed: Bool
+    @State private var scale: CGFloat = 1
+    @State private var lastScale: CGFloat = 1
+    @State private var offset: CGSize = .zero
+    @State private var lastOffset: CGSize = .zero
+
+    var body: some View {
+        GeometryReader { geo in
+            AssetImage(id: id, contentMode: .fit, targetSide: 1600, cached: false)   // sharp enough to zoom into
+                .frame(width: geo.size.width, height: geo.size.height)
+                .scaleEffect(scale)
+                .offset(offset)
+                .gesture(MagnifyGesture()
+                    .onChanged { v in
+                        scale = min(4, max(1, lastScale * v.magnification))
+                        if scale > 1 { zoomed = true }   // no swipe-to-close mid-pinch
+                    }
+                    .onEnded { _ in
+                        lastScale = scale
+                        if scale <= 1.01 { reset() } else { zoomed = true; clamp(geo.size) }
+                    })
+                .simultaneousGesture(scale > 1 ? DragGesture(coordinateSpace: .global)
+                    .onChanged { v in
+                        offset = CGSize(width: lastOffset.width + v.translation.width, height: lastOffset.height + v.translation.height)
+                    }
+                    .onEnded { _ in clamp(geo.size) } : nil)
+                .onTapGesture(count: 2) {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        if scale > 1 { reset() } else { scale = 2.5; lastScale = 2.5; zoomed = true }
+                    }
+                }
+        }
+        .onDisappear { reset() }
+        .accessibilityAction(named: "Zoom in") { scale = 2.5; lastScale = 2.5; zoomed = true }
+        .accessibilityAction(named: "Zoom out") { reset() }
+    }
+
+    private func reset() {
+        scale = 1; lastScale = 1; offset = .zero; lastOffset = .zero; zoomed = false
+    }
+    /// Keeps the photo from being dragged off screen.
+    private func clamp(_ size: CGSize) {
+        let maxX = size.width * (scale - 1) / 2, maxY = size.height * (scale - 1) / 2
+        withAnimation(.easeOut(duration: 0.15)) {
+            offset = CGSize(width: min(maxX, max(-maxX, offset.width)), height: min(maxY, max(-maxY, offset.height)))
+        }
+        lastOffset = offset
+    }
 }

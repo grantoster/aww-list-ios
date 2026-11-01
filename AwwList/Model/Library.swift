@@ -48,6 +48,35 @@ final class Library: ObservableObject {
     /// Possible bath or undressed photos are listed and scored on the phone, unless the user keeps one out.
     /// They (and every shot within 10 minutes of one) are never sent to Claude either way.
     @Published private(set) var keptOut: Set<String> = []
+    /// Your thumbs up (1) or down (-1) by photo id. A thumbs up lifts that moment two points (to 10 at most), a
+    /// thumbs down drops it to 1; both also teach the learned score your taste.
+    @Published private(set) var reactions: [String: Int] = [:]
+    func setReaction(_ m: Moment, _ value: Int) {
+        for id in m.memberIDs { reactions[id] = nil }
+        if value != 0 { reactions[m.best.id] = value }
+        rebuild(); saveSoon()
+        // Learning waits until you've stopped tapping for a few seconds (it re-learns from everything).
+        reactionRetrain?.cancel()
+        reactionRetrain = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(8))
+            guard !Task.isCancelled else { return }
+            self.retrain()
+        }
+    }
+    private var reactionRetrain: Task<Void, Never>?
+    func reaction(_ m: Moment) -> Int {
+        reactions[m.best.id] ?? m.memberIDs.lazy.compactMap { self.reactions[$0] }.first ?? 0
+    }
+    /// The moment with your thumbs applied to its score.
+    private func reacted(_ m: Moment) -> Moment {
+        let r = reaction(m)
+        guard r != 0 else { return m }
+        var m = m
+        m.reaction = r
+        m.score = r > 0 ? min(10, m.score + 2) : 1
+        return m
+    }
+
     func setPutBack(_ id: String, _ on: Bool) {
         if on { keptOut.remove(id) } else { keptOut.insert(id) }
         rebuild(); save()
@@ -94,6 +123,7 @@ final class Library: ObservableObject {
         /// The same signature stored as a signed number (every save format handles those).
         var trainedSignatureBits: Int64? = nil
         var claudeRemoved: [String: String]?; var claudeSent: [String: [String]]?; var claudeSentYear: [String: Int]?
+        var reactions: [String: Int]? = nil
     }
 
     /// False until the saved library has been read (off the main thread, so a large library can't make iOS end
@@ -605,7 +635,8 @@ final class Library: ObservableObject {
         retrainBusy = true
         let gen = generation
         let known = trainedSignature
-        let scored = photos.values.filter { $0.claude != nil && $0.feat != nil }   // only these are needed
+        let reacts = reactions
+        let scored = photos.values.filter { ($0.claude != nil || reacts[$0.id] != nil) && $0.feat != nil }   // only these are needed
         // Gathering the examples (decoding thousands of fingerprints) happens off the main thread too.
         Task.detached(priority: .utility) {
             var parts: [String] = []
@@ -613,7 +644,17 @@ final class Library: ObservableObject {
             var verdicts: [(date: Date, x: [Double], removed: Bool)] = []
             var averaged = 0
             for p in scored.sorted(by: { $0.id < $1.id }) {
-                guard let c = p.claude, let f = p.feat, let x = Learner.decode(f) else { continue }
+                guard let f = p.feat, let x = Learner.decode(f) else { continue }
+                // Your thumbs teach your taste: up counts as at least a 9.5, down as at most a 2.
+                if let r = reacts[p.id] {
+                    let base = p.claude.flatMap { c in c.exclude == nil ? (c.score2.map { (c.score + $0) / 2 } ?? c.score) : nil }
+                    let y = r > 0 ? max(base ?? 0, 9.5) : min(base ?? 10, 2)
+                    parts.append("\(p.id)|r\(r)|\(p.claude?.score ?? -1)|\(p.claude?.score2 ?? -1)|\(p.claude?.exclude ?? "")")
+                    examples.append((p.date, x, y))
+                    if let c = p.claude { verdicts.append((p.date, x, c.exclude != nil)) }
+                    continue
+                }
+                guard let c = p.claude else { continue }
                 parts.append("\(p.id)|\(c.score)|\(c.score2 ?? -1)|\(c.exclude ?? "")")
                 verdicts.append((p.date, x, c.exclude != nil))
                 // Where Claude scored a photo twice, learn from the average (closer to its real opinion).
@@ -968,6 +1009,7 @@ final class Library: ObservableObject {
         // Consolidated: each year's top 100 by Claude, by the learned score and by Apple, combined into one list.
         // A moment's place is the sum of 1 / (60 + its rank) over the rankings it's in the top 100 of (reciprocal
         // rank fusion), so moments near the top of all three lead, and one that's only in one list sits lower.
+        if !reactions.isEmpty { ms = ms.map { reacted($0) } }
         everyMoment = ms.sorted(by: Library.ranked)
         var outsideTop = Set<String>()
         if useConsolidated {
@@ -992,7 +1034,7 @@ final class Library: ObservableObject {
                     }
                 }
             }
-            let kept = ms.indices.filter { inTop[$0] }
+            let kept = ms.indices.filter { inTop[$0] || reaction(ms[$0]) > 0 }   // a thumbs up always stays
             for i in ms.indices where !inTop[i] { outsideTop.formUnion(ms[i].memberIDs) }
             let best = Double(rankers.count) / 61   // first in every ranking (only a scale; calibration uses the order)
             // Scored against every moment of the year (the ones left out count as last), so a top-100 moment
@@ -1001,6 +1043,7 @@ final class Library: ObservableObject {
             ms = kept.map { i in
                 var m = ms[i]; m.score = cal[i]; m.consolidated = fused[i]; return m
             }
+            if !reactions.isEmpty { ms = ms.map { reacted($0) } }
         }
         // What's left off and why (current photos only; hidden ones are counted separately).
         var counts: [String: [PhotoScore]] = [:]
@@ -1057,6 +1100,7 @@ final class Library: ObservableObject {
     /// Higher score first; then higher raw score; then the earlier photo.
     nonisolated static func ranked(_ a: Moment, _ b: Moment) -> Bool {
         if a.score != b.score { return a.score > b.score }
+        if a.reaction != b.reaction { return a.reaction > b.reaction }   // your thumbs decide ties: down goes last
         if let fa = a.consolidated, let fb = b.consolidated, fa != fb { return fa > fb }
         let ca = a.claudeScore ?? 0, cb = b.claudeScore ?? 0
         if ca != cb { return ca > cb }
@@ -1089,7 +1133,7 @@ final class Library: ObservableObject {
                       trainedSignature: nil, useBuiltInLearning: useBuiltInLearning,
                       trainedSignatureBits: trainedSignature.map { Int64(bitPattern: $0) },
                       claudeRemoved: claudeRemoved, claudeSent: claudeSent.mapValues { Array($0) },
-                      claudeSentYear: claudeSentYear)
+                      claudeSentYear: claudeSentYear, reactions: reactions)
         let u = url, legacy = legacyURL
         // One save at a time, in order, so an older snapshot can never land after a newer one.
         Library.saveQueue.async {
@@ -1139,6 +1183,7 @@ final class Library: ObservableObject {
             claudeModel = "claude-haiku-5-5"
         }
         keptOut = Set(s.keptOut ?? [])
+        reactions = s.reactions ?? [:]
         claudeSensitive = s.claudeSensitive ?? false
         ownFilter = s.learnedFilter.flatMap { $0.weights.count == Learner.featureCount ? $0 : nil }
         useBuiltInLearning = s.useBuiltInLearning ?? true
