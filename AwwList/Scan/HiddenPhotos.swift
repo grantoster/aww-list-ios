@@ -2,7 +2,7 @@ import Foundation
 import Photos
 
 /// The only place Awwbum looks at photos in the Hidden album (allowed by the owner, and checked by the build):
-/// - Settings → Hidden in Apple Photos lists them, only after Face ID or the passcode, and only while that screen is open.
+/// - Settings → What's left out → Hidden in Apple Photos lists them, only after Face ID or the passcode, and only while that screen is open.
 /// - Photos you add from there are the only hidden ones read, ranked and shown in your list.
 /// Hidden photos are never sent to Claude, whether added or not (see Library.neverSend and ClaudeService.jpeg).
 enum HiddenPhotos {

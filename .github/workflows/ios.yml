@@ -38,7 +38,7 @@ jobs:
           if grep -nE 'ChangeRequest|CreationRequest|perform\(|deleteAssets|ContentEditing' "$F" | grep -vE 'PHAssetChangeRequest\(for: [A-Za-z]+\)\.isFavorite = [A-Za-z]+$|PHPhotoLibrary\.shared\(\)\.performChanges \{$'; then echo "::error::$F may only set isFavorite."; exit 1; fi
           [ "$(grep -c 'performChanges' "$F")" -le 1 ] || { echo "::error::$F may make only one kind of change."; exit 1; }
           grep -qE '^[[:space:]]*vc\.excludedActivityTypes = \[\.saveToCameraRoll, .*StreamShareService' AwwList/Views/ViewerView.swift || { echo "::error::The share sheet must keep excluding Save Image and Shared Album."; exit 1; }
-          # The Hidden album: only Scan/HiddenPhotos.swift may look at it (owner-approved: Settings → Hidden photos,
+          # The Hidden album: only Scan/HiddenPhotos.swift may look at it (owner-approved: Settings → What's left out → Hidden in Apple Photos,
           # behind Face ID; photos added from there are listed but never sent to Claude). Nowhere else.
           H=AwwList/Scan/HiddenPhotos.swift
           if grep -nE "includeHiddenAssets *= *[^f ]|isHidden|hiddenAlbum|smartAlbumAllHidden|AllHidden|withLocalIdentifiers|withBurstIdentifier|forKey: *\"includeHiddenAssets" $SRC | grep -vF "$H:"; then echo "::error::Only $H may look in the Hidden album."; exit 1; fi

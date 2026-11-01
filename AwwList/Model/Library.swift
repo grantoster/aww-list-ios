@@ -48,7 +48,7 @@ final class Library: ObservableObject {
     /// Possible bath or undressed photos are listed and scored on the phone, unless the user keeps one out.
     /// They (and every shot within 10 minutes of one) are never sent to Claude either way.
     @Published private(set) var keptOut: Set<String> = []
-    /// Photos from Apple Photos' Hidden album that you added to your list yourself (Settings → Hidden photos).
+    /// Photos from Apple Photos' Hidden album that you added back to your list yourself (Settings → What's left out → Hidden in Apple Photos).
     /// They're read and ranked on this iPhone like any other photo, but never sent to Claude.
     @Published private(set) var hiddenAdded: Set<String> = [] {
         didSet { HiddenPhotos.setAdded(hiddenAdded) }
