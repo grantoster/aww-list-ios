@@ -2,7 +2,8 @@ import Foundation
 import Photos
 
 /// The only place Awwbum looks at photos in the Hidden album (allowed by the owner, and checked by the build):
-/// - Settings → What's left out → Hidden in Apple Photos lists them, only after Face ID or the passcode, and only while that screen is open.
+/// - Settings → What's left out → Hidden in Apple Photos lists them, only while that screen is open. (iOS shares
+///   them only when the Hidden album's lock is off in Settings → Photos.)
 /// - Photos you add from there are the only hidden ones read, ranked and shown in your list.
 /// Hidden photos are never sent to Claude, whether added or not (see Library.neverSend and ClaudeService.jpeg).
 enum HiddenPhotos {
@@ -15,7 +16,7 @@ enum HiddenPhotos {
     static func isAdded(_ id: String) -> Bool { lock.lock(); defer { lock.unlock() }; return added.contains(id) }
     static var addedIDs: Set<String> { lock.lock(); defer { lock.unlock() }; return added }
 
-    /// True only while the Hidden photos screen is open and unlocked.
+    /// True only while the Hidden photos screen is open.
     static func setBrowsing(_ on: Bool) { lock.lock(); browsing = on; lock.unlock() }
     static var isBrowsing: Bool { lock.lock(); defer { lock.unlock() }; return browsing }
 
@@ -25,7 +26,7 @@ enum HiddenPhotos {
         return o
     }
 
-    /// Every photo in the Hidden album, newest first. Only while browsing (after Face ID or the passcode).
+    /// Every photo in the Hidden album, newest first. Only while that screen is open.
     static func all() -> [String] {
         guard isBrowsing else { return [] }
         let o = hiddenOptions()

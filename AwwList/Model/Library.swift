@@ -48,6 +48,28 @@ final class Library: ObservableObject {
     /// Possible bath or undressed photos are listed and scored on the phone, unless the user keeps one out.
     /// They (and every shot within 10 minutes of one) are never sent to Claude either way.
     @Published private(set) var keptOut: Set<String> = []
+    /// Photos you added back to the list yourself from a "What's left out" group (faces but no child label, removed
+    /// by Claude, hidden by the learned filter, ...). They're listed whatever the checks said.
+    @Published private(set) var addedBack: Set<String> = []
+    /// Everything you put on the list yourself (added back, plus hidden photos you added back).
+    var manualAdds: Set<String> { addedBack.union(hiddenAdded) }
+    func addBack(_ ids: [String]) {
+        guard !ids.isEmpty else { return }
+        hidden.subtract(ids)        // ones you'd removed from the list
+        keptOut.subtract(ids)       // possible bath photos you'd kept out (still never sent to Claude)
+        addedBack.formUnion(ids)
+        rebuild(); save()
+    }
+    /// Photos that can't be added back: screenshots, documents and photos with no date.
+    func canAddBack(_ p: PhotoScore) -> Bool {
+        !["Screenshot", "Document", "No date"].contains(p.excluded ?? "") && p.date > Date.distantPast
+    }
+    func takeBack(_ ids: [String]) {
+        guard !ids.isEmpty else { return }
+        addedBack.subtract(ids)
+        rebuild(); save()
+    }
+
     /// Photos from Apple Photos' Hidden album that you added back to your list yourself (Settings → What's left out → Hidden in Apple Photos).
     /// They're read and ranked on this iPhone like any other photo, but never sent to Claude.
     @Published private(set) var hiddenAdded: Set<String> = [] {
@@ -160,6 +182,7 @@ final class Library: ObservableObject {
         var reactions: [String: Int]? = nil
         var notThem: [String: [String]]? = nil; var ignoredFaces: [String]? = nil
         var hiddenAdded: [String]? = nil
+        var addedBack: [String]? = nil
     }
 
     /// False until the saved library has been read (off the main thread, so a large library can't make iOS end
@@ -387,7 +410,7 @@ final class Library: ObservableObject {
 
     /// Removes a whole moment (every shot in its burst) from the list.
     func hide(_ m: Moment) {
-        hidden.formUnion(m.memberIDs); lastHidden = m.memberIDs; rebuild(); saveSoon()
+        hidden.formUnion(m.memberIDs); lastHidden = m.memberIDs; addedBack.subtract(m.memberIDs); rebuild(); saveSoon()
         UIAccessibility.post(notification: .announcement, argument: "Removed from list. Undo is available.")
     }
     /// Undo for "Remove from list".
@@ -665,8 +688,8 @@ final class Library: ObservableObject {
     func learnedScore(for p: PhotoScore) -> Double? { derivedFor(p)?.learned }
 
     /// The balanced on-device score (see Scorer.balanced), for a listed photo with current measurements.
-    private func balancedValue(_ p: PhotoScore, putBack: Set<String>, includePoolOnly: Bool = false) -> Double? {
-        guard Scorer.listedValue(p, putBack: putBack, includePoolOnly: includePoolOnly, manual: hiddenAdded) != nil else { return nil }
+    private func balancedValue(_ p: PhotoScore, putBack: Set<String>, includePoolOnly: Bool = false, manual: Set<String> = []) -> Double? {
+        guard Scorer.listedValue(p, putBack: putBack, includePoolOnly: includePoolOnly, manual: manual) != nil else { return nil }
         return derivedFor(p)?.balanced
     }
 
@@ -1018,6 +1041,7 @@ final class Library: ObservableObject {
     func remove(_ ids: Set<String>) {
         guard !ids.isEmpty else { return }
         ids.forEach { photos[$0] = nil; derived[$0] = nil }
+        addedBack.subtract(ids)
         rebuild(); save()
     }
 
@@ -1045,12 +1069,13 @@ final class Library: ObservableObject {
         let pb = putBack
         // Photos outside a Limited Access selection are kept but left out of the list (see notVisible).
         let seen = notVisible.isEmpty ? Array(photos.values) : photos.values.filter { !notVisible.contains($0.id) }
-        let groups = Scorer.moments(from: seen, hidden: hidden, version: Scorer.version, putBack: pb, manual: hiddenAdded)
+        let manual = manualAdds
+        let groups = Scorer.moments(from: seen, hidden: hidden, version: Scorer.version, putBack: pb, manual: manual)
         let cal = Calendar.current
         // Photos with a current set of saved measurements are ranked by the balanced score; the rest (until they're
         // re-read) by the old one, against each other only, since the two scales don't line up.
-        let balancedVals = groups.map { balancedValue($0.best, putBack: pb) }
-        let fallbackVals = groups.map { Scorer.rankValue($0.best, putBack: pb, manual: hiddenAdded) ?? 0 }
+        let balancedVals = groups.map { balancedValue($0.best, putBack: pb, manual: manual) }
+        let fallbackVals = groups.map { Scorer.rankValue($0.best, putBack: pb, manual: manual) ?? 0 }
         let years = groups.map { cal.component(.year, from: $0.best.date) }
         var scores = Array(repeating: 1, count: groups.count)
         let bIdx = groups.indices.filter { balancedVals[$0] != nil }, fIdx = groups.indices.filter { balancedVals[$0] == nil }
@@ -1126,10 +1151,12 @@ final class Library: ObservableObject {
         // screen watching it re-filter thousands of moments thousands of times (the app froze and closed).
         var ms: [Moment] = all.compactMap { m in
             var m = m
-            // Claude's removal sticks to the whole burst, even if a different shot becomes its best later.
-            if m.memberIDs.contains(where: { photos[$0]?.claude?.exclude != nil }) { return nil }
+            // Claude's removal sticks to the whole burst, even if a different shot becomes its best later (unless you
+            // added it back yourself).
+            // (only when the shot leading the burst is one you added back, so a shot Claude removed never leads it).
+            if m.memberIDs.contains(where: { photos[$0]?.claude?.exclude != nil }) && !manual.contains(m.best.id) { return nil }
             if claudeLed && m.best.claude == nil
-                && !m.memberIDs.contains(where: hiddenAdded.contains)   // you added it yourself: never filtered
+                && !m.memberIDs.contains(where: manual.contains)   // you added it yourself: never filtered
                 && !m.memberIDs.contains(where: { Scorer.heldBack.contains(photos[$0]?.excluded ?? "") || photos[$0]?.privacyHold == true })
                 && learnedRemoves(m.best) {   // you chose to keep possible bath photos
                 filtered += 1; filteredIDs.formUnion(m.memberIDs); return nil
@@ -1206,7 +1233,7 @@ final class Library: ObservableObject {
                 }
             }
             // A thumbs up, or a hidden photo you added yourself, always stays.
-            let kept = ms.indices.filter { inTop[$0] || reaction(ms[$0]) > 0 || ms[$0].memberIDs.contains(where: hiddenAdded.contains) }
+            let kept = ms.indices.filter { inTop[$0] || reaction(ms[$0]) > 0 || ms[$0].memberIDs.contains(where: manual.contains) }
             for i in ms.indices where !inTop[i] { outsideTop.formUnion(ms[i].memberIDs) }
             let best = Double(rankers.count) / 61   // first in every ranking (only a scale; calibration uses the order)
             // Scored against every moment of the year (the ones left out count as last), so a top-100 moment
@@ -1308,7 +1335,7 @@ final class Library: ObservableObject {
                       claudeRemoved: claudeRemoved, claudeSent: claudeSent.mapValues { Array($0) },
                       claudeSentYear: claudeSentYear, reactions: reactions,
                       notThem: notThem.mapValues { $0.map(\.uuidString) }, ignoredFaces: Array(ignoredFaces),
-                      hiddenAdded: Array(hiddenAdded))
+                      hiddenAdded: Array(hiddenAdded), addedBack: Array(addedBack))
         let u = url, legacy = legacyURL
         // One save at a time, in order, so an older snapshot can never land after a newer one.
         Library.saveQueue.async {
@@ -1362,6 +1389,7 @@ final class Library: ObservableObject {
         notThem = (s.notThem ?? [:]).mapValues { Set($0.compactMap(UUID.init(uuidString:))) }
         ignoredFaces = Set(s.ignoredFaces ?? [])
         hiddenAdded = Set(s.hiddenAdded ?? [])
+        addedBack = Set(s.addedBack ?? [])
         claudeSensitive = s.claudeSensitive ?? false
         ownFilter = s.learnedFilter.flatMap { $0.weights.count == Learner.featureCount ? $0 : nil }
         useBuiltInLearning = s.useBuiltInLearning ?? true

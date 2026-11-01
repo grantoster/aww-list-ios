@@ -1,7 +1,6 @@
 import SwiftUI
 import Photos
 import UIKit
-import LocalAuthentication
 
 /// Asks for photo access the first time, then shows the list and keeps the scan going.
 struct RootView: View {
@@ -138,7 +137,6 @@ struct SettingsView: View {
     @EnvironmentObject var scanner: PhotoScanner
     @State private var keepTick = 0
     @AppStorage("groupSimilar") private var groupSimilar = true
-    @State private var showHidden = false
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         NavigationStack {
@@ -173,11 +171,30 @@ struct SettingsView: View {
                 Section("What's left out") {
                     LabeledContent("On the list", value: "\(library.listedPhotos.formatted()) photos")
                     ForEach(library.leftOut, id: \.reason) { row in
-                        NavigationLink { PhotoGroupView(title: row.reason, ids: row.ids) } label: {
+                        // Photos can be added back from every group except ones the app can't read or see yet.
+                        let fixed = row.reason.hasPrefix("Not in your Limited") || row.reason.hasPrefix("Waiting")
+                            || row.reason.hasPrefix("Couldn't be loaded")
+                        NavigationLink {
+                            // Screenshots, documents and undated photos are never added back.
+                            let ok = fixed ? [] : row.ids.filter { id in library.photos[id].map(library.canAddBack) ?? false }
+                            PhotoGroupView(title: row.reason, ids: row.ids, action: ok.isEmpty ? .none : .addBack, addable: Set(ok))
+                        } label: {
                             LabeledContent(row.reason, value: row.count.formatted())
                         }
                     }
-                    HiddenAlbumRow(open: $showHidden)
+                    if !library.addedBack.isEmpty {
+                        NavigationLink {
+                            PhotoGroupView(title: "Added back by you",
+                                           ids: library.addedBack.sorted { (library.photos[$0]?.date ?? .distantPast) > (library.photos[$1]?.date ?? .distantPast) },
+                                           action: .takeOff)
+                        } label: {
+                            LabeledContent("Added back by you", value: library.addedBack.count.formatted())
+                        }
+                    }
+                    NavigationLink { HiddenPhotosView() } label: {
+                        LabeledContent("Hidden in Apple Photos",
+                                       value: library.hiddenAdded.isEmpty ? "" : "\(library.hiddenAdded.count.formatted()) added")
+                    }
                     Text("Counts are photos, not moments; a moment's other shots in a burst count as on the list.")
                         .font(.footnote).foregroundStyle(.secondary)
                     Text("Left off on the phone: screenshots, documents, and photos with no face and no sign of a child. Photos with faces but no child label stay off the list but are offered to Claude, which can put them on it. Possible bath or undressed photos are listed and scored on the phone (you can keep any out above), but they, and every shot within 10 minutes of one or of any faint bath sign, are never sent to Claude.")
@@ -214,8 +231,6 @@ struct SettingsView: View {
             .scrollContentBackground(.hidden)
             .background(Theme.background.ignoresSafeArea())
             .navigationTitle("Settings")
-            // On the list itself (not a row), so it stays open while the rows change as photos are added back.
-            .fullScreenCover(isPresented: $showHidden) { HiddenPhotosView() }
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
     }
@@ -538,24 +553,58 @@ struct HeldBackView: View {
 struct PhotoGroupView: View {
     let title: String
     let ids: [String]
+    /// What you can do with these photos: add them back to the list, take ones you added back off, or nothing.
+    enum Action { case none, addBack, takeOff }
+    var action: Action = .none
+    /// With add back: the photos that may be added back (nil means all of them).
+    var addable: Set<String>? = nil
+    private func can(_ id: String) -> Bool { action != .none && (addable?.contains(id) ?? true) }
+    @EnvironmentObject var library: Library
     @State private var shown = 90
     @State private var open: OpenPhoto?
+    @State private var selecting = false
+    @State private var picked = Set<String>()
+    /// Done this visit (the group itself updates when you go back).
+    @State private var done = Set<String>()
     private let columns = [GridItem(.adaptive(minimum: 104), spacing: 6)]
     struct OpenPhoto: Identifiable { let id: String }
+
+    private var verb: String { action == .takeOff ? "Take off my list" : "Add back to my list" }
+    private func apply(_ list: [String]) {
+        guard !list.isEmpty else { return }
+        if action == .takeOff { library.takeBack(list) } else { library.addBack(list) }
+        done.formUnion(list); picked.subtract(list)
+    }
+
     var body: some View {
         ScrollView {
             VStack(spacing: 12) {
-                Text("\(ids.count.formatted()) photos").font(.footnote).foregroundStyle(.secondary)
+                Text("\(ids.count.formatted()) photos" + (action == .addBack ? ". Tap one to see it larger; add back any you want on your list." : ""))
+                    .font(.footnote).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 LazyVGrid(columns: columns, spacing: 6) {
                     ForEach(ids.prefix(shown), id: \.self) { id in
-                        Button { open = OpenPhoto(id: id) } label: {
+                        let on = picked.contains(id), isDone = done.contains(id)
+                        Button {
+                            if selecting && !isDone && can(id) { if on { picked.remove(id) } else { picked.insert(id) } }
+                            else { open = OpenPhoto(id: id) }
+                        } label: {
                             AssetImage(id: id, targetSide: 120)
                                 .aspectRatio(1, contentMode: .fit)
                                 .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .overlay { if on { RoundedRectangle(cornerRadius: 8).stroke(Theme.accent, lineWidth: 4) } }
+                                .overlay(alignment: .topTrailing) {
+                                    if on || isDone {
+                                        Image(systemName: isDone ? "checkmark.circle.fill" : "circle.inset.filled")
+                                            .font(.title3).foregroundStyle(.white, Theme.accent).padding(4)
+                                    }
+                                }
+                                .opacity(isDone && action == .takeOff ? 0.4 : 1)
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("Photo")
+                        .accessibilityLabel(isDone ? (action == .takeOff ? "Photo, taken off" : "Photo, added back") : "Photo")
+                        .accessibilityHint(selecting ? (on ? "Picked" : "Not picked") : "Opens it larger")
+                        .accessibilityAddTraits(on ? .isSelected : [])
                     }
                 }
                 if ids.count > shown {
@@ -566,12 +615,34 @@ struct PhotoGroupView: View {
         }
         .background(Theme.background.ignoresSafeArea())
         .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if action != .none && !ids.isEmpty {
+                ToolbarItem(placement: .primaryAction) {
+                    Button(selecting ? "Cancel" : "Select") { selecting.toggle(); picked = [] }
+                }
+            }
+            if selecting {
+                ToolbarItem(placement: .bottomBar) {
+                    Button(picked.isEmpty ? verb : (action == .takeOff ? "Take \(picked.count) off" : "Add \(picked.count) back")) {
+                        apply(Array(picked))
+                    }
+                    .buttonStyle(.borderedProminent).disabled(picked.isEmpty)
+                }
+            }
+        }
         .sheet(item: $open) { p in
             NavigationStack {
                 AssetImage(id: p.id, contentMode: .fit, targetSide: 1000, cached: false)
                     .background(Color.black)
                     .ignoresSafeArea(edges: .bottom)
-                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { open = nil } } }
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) { Button("Done") { open = nil } }
+                        if can(p.id) && !done.contains(p.id) {
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button(verb) { apply([p.id]); open = nil }
+                            }
+                        }
+                    }
             }
         }
     }
@@ -679,53 +750,10 @@ struct DiagnosticsSection: View {
     }
 }
 
-/// "What's left out" → Hidden in Apple Photos: the Hidden album, behind Face ID or the passcode. Hidden photos stay
-/// off your list; you look through them and add back the ones you want (never sent to Claude).
-struct HiddenAlbumRow: View {
-    @EnvironmentObject var library: Library
-    @Binding var open: Bool
-    @State private var failed: String?
-    var body: some View {
-        Button { unlock() } label: {
-            HStack {
-                Text("Hidden in Apple Photos").foregroundStyle(.primary)
-                Spacer()
-                Text(library.hiddenAdded.isEmpty ? "Locked" : "\(library.hiddenAdded.count.formatted()) added")
-                    .foregroundStyle(.secondary)
-                Image(systemName: "chevron.right").font(.footnote.bold()).foregroundStyle(.tertiary)
-                    .accessibilityHidden(true)
-            }
-        }
-        .accessibilityHint("Unlocks with Face ID, Touch ID or your passcode")
-        if let failed { Text(failed).font(.footnote).foregroundStyle(.secondary) }
-    }
-
-    private func unlock() {
-        failed = nil
-        let ctx = LAContext()
-        var error: NSError?
-        guard ctx.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {
-            failed = "Set a passcode on this iPhone to see hidden photos here."
-            return
-        }
-        ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "See the photos in your Hidden album") { ok, error in
-            let code = (error as? LAError)?.code
-            Task { @MainActor in
-                if ok { open = true }
-                else if code != .userCancel && code != .appCancel && code != .systemCancel {
-                    failed = "Couldn't unlock the hidden photos. Try again."
-                }
-            }
-        }
-    }
-}
-
-/// The Hidden album, unlocked: look through it like the other groups (tap a photo to see it larger), and add the
-/// ones you want back to your list (Select, or from the larger view).
+/// Settings → What's left out → Hidden in Apple Photos: look through the Hidden album like the other groups (tap
+/// a photo to see it larger), and add the ones you want back to your list (Select, or from the larger view).
 struct HiddenPhotosView: View {
     @EnvironmentObject var library: Library
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.scenePhase) private var phase
     @State private var ids: [String] = []
     @State private var loading = true
     @State private var selecting = false
@@ -735,13 +763,16 @@ struct HiddenPhotosView: View {
     private let columns = [GridItem(.adaptive(minimum: 104), spacing: 6)]
 
     var body: some View {
-        NavigationStack {
             ScrollView {
                 VStack(spacing: 12) {
                     if loading {
                         ProgressView().padding(.top, 40)
                     } else if ids.isEmpty {
-                        ContentUnavailableView("No hidden photos", systemImage: "eye.slash")
+                        ContentUnavailableView {
+                            Label("No hidden photos to show", systemImage: "eye.slash")
+                        } description: {
+                            Text("If you have hidden photos: iOS only shares the Hidden album with apps when its lock is off. In the Settings app, go to Photos (Apps → Photos on iOS 18 and later) and turn off Use Face ID (or Use Touch ID / Use Passcode), then come back here.")
+                        }
                     } else {
                         Text("\(ids.count.formatted()) photos. These stay off your list unless you add them back. Photos you add back are never sent to Claude.")
                             .font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
@@ -777,7 +808,6 @@ struct HiddenPhotosView: View {
             .background(Theme.background.ignoresSafeArea())
             .navigationTitle("Hidden in Apple Photos").navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
                 ToolbarItem(placement: .primaryAction) {
                     if !ids.isEmpty {
                         Button(selecting ? "Cancel" : "Select") { selecting.toggle(); picked = [] }
@@ -816,23 +846,12 @@ struct HiddenPhotosView: View {
                             }
                         }
                 }
-                // Covered at once when the app goes to the background, like the grid behind it.
-                .overlay { if phase != .active { Color.black.ignoresSafeArea() } }
             }
-        }
         .task {
             HiddenPhotos.setBrowsing(true)
             ids = await Task.detached(priority: .userInitiated) { HiddenPhotos.all() }.value
             loading = false
         }
         .onDisappear { HiddenPhotos.setBrowsing(false); AssetImage.clearCache() }
-        // Covered at once when the app goes to the background (before the app switcher's snapshot), then closed.
-        .overlay { if phase != .active { Theme.background.ignoresSafeArea() } }
-        .onChange(of: phase) {
-            guard phase != .active else { return }
-            var t = Transaction(); t.disablesAnimations = true
-            withTransaction(t) { viewing = nil }
-            dismiss()
-        }
     }
 }
