@@ -294,14 +294,14 @@ enum Scorer {
     /// keeps the shot Claude scored.
     /// The old on-device value for ranking, for photos without a current set of saved measurements: the listed value
     /// with the old pair bonus taken off. Ranked only against other such photos (see Library.rebuild).
-    static func rankValue(_ p: PhotoScore, putBack: Set<String> = [], includePoolOnly: Bool = false) -> Double? {
-        guard let v = listedValue(p, putBack: putBack, includePoolOnly: includePoolOnly) else { return nil }
+    static func rankValue(_ p: PhotoScore, putBack: Set<String> = [], includePoolOnly: Bool = false, manual: Set<String> = []) -> Double? {
+        guard let v = listedValue(p, putBack: putBack, includePoolOnly: includePoolOnly, manual: manual) else { return nil }
         return max(0, v - pairAdjustment(p))
     }
 
     /// The balanced on-device score for a listed photo that has a current set of saved measurements (nil otherwise).
-    static func balancedValue(_ p: PhotoScore, putBack: Set<String> = [], includePoolOnly: Bool = false) -> Double? {
-        guard listedValue(p, putBack: putBack, includePoolOnly: includePoolOnly) != nil,
+    static func balancedValue(_ p: PhotoScore, putBack: Set<String> = [], includePoolOnly: Bool = false, manual: Set<String> = []) -> Double? {
+        guard listedValue(p, putBack: putBack, includePoolOnly: includePoolOnly, manual: manual) != nil,
               let f = p.feat, let x = Learner.decode(f) else { return nil }
         return balanced(x, special: p.special ?? specialFromCaption(p.caption))
     }
@@ -368,8 +368,10 @@ enum Scorer {
         p.noPairBonus == true ? 0 : ((p.mainFaces ?? p.faces ?? 0) >= 2 ? 0.20 : 0)
     }
 
-    static func listedValue(_ p: PhotoScore, putBack: Set<String> = [], includePoolOnly: Bool = false) -> Double? {
+    /// `manual`: photos you added to the list yourself (Settings): always listed, with whatever score there is.
+    static func listedValue(_ p: PhotoScore, putBack: Set<String> = [], includePoolOnly: Bool = false, manual: Set<String> = []) -> Double? {
         if let r = p.raw { return r }
+        if manual.contains(p.id) { return p.soft ?? 0.2 }
         guard let e = p.excluded else { return nil }
         if includePoolOnly && poolOnly.contains(e) { return p.soft }
         if softReasons.contains(e) || (heldBack.contains(e) && putBack.contains(p.id)) { return p.soft }
@@ -391,8 +393,8 @@ enum Scorer {
     /// Flagged photos are grouped with their listed value (see listedValue); held-back photos the user put back
     /// count too, and neither they nor anything else they're near holds back the shots around them.
     static func moments(from photos: [PhotoScore], hidden: Set<String> = [], version: Int? = nil,
-                        putBack: Set<String> = [], includePoolOnly: Bool = false) -> [(best: PhotoScore, shots: Int, ids: [String])] {
-        func value(_ p: PhotoScore) -> Double? { listedValue(p, putBack: putBack, includePoolOnly: includePoolOnly) }
+                        putBack: Set<String> = [], includePoolOnly: Bool = false, manual: Set<String> = []) -> [(best: PhotoScore, shots: Int, ids: [String])] {
+        func value(_ p: PhotoScore) -> Double? { listedValue(p, putBack: putBack, includePoolOnly: includePoolOnly, manual: manual) }
         // A put-back photo stops holding back its neighbors only when it can actually be listed (has a score).
         // Nothing is taken off the list for being near a possible bath photo any more (those shots are only kept
         // from Claude, by neverSend); a photo the user keeps out drops only itself.

@@ -98,7 +98,7 @@ final class PhotoScanner: ObservableObject {
             let opts = PHFetchOptions()
             opts.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
             opts.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
-            opts.includeHiddenAssets = false   // the Hidden album is never looked at
+            opts.includeHiddenAssets = false   // the Hidden album only through HiddenPhotos (photos you added)
             let assets = PHAsset.fetchAssets(with: opts)
             changes.watch(assets)
             var todo: [PHAsset] = []
@@ -107,6 +107,15 @@ final class PhotoScanner: ObservableObject {
                 alive.insert(a.localIdentifier)
                 if !known.contains(a.localIdentifier) { todo.append(a) }
             }
+            // Hidden-album photos you added to your list yourself (the only hidden ones ever read).
+            let checkedHidden = HiddenPhotos.addedIDs
+            let addedHidden = HiddenPhotos.addedAssets(checkedHidden)
+            let stillHidden = Set(addedHidden.map(\.localIdentifier))
+            for a in addedHidden where !alive.contains(a.localIdentifier) {
+                alive.insert(a.localIdentifier)
+                if !known.contains(a.localIdentifier) { todo.append(a) }
+            }
+            Task { @MainActor in library.pruneHidden(checked: checkedHidden, stillHidden: stillHidden) }
             // Includes photos moved to the Hidden album since the last scan: their records are dropped. With
             // Limited access, photos outside the selection only look gone: they're kept, just not listed.
             let gone = all.subtracting(alive)

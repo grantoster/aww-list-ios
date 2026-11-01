@@ -415,7 +415,7 @@ struct HomeView: View {
             var jpegs: [Data] = []
             for id in ids {
                 if Task.isCancelled { break }
-                if let img = await AssetImage.load(id: id, size: CGSize(width: 1600, height: 1600), mode: .aspectFit).image,
+                if let img = await AssetImage.load(id: id, size: CGSize(width: 1600, height: 1600), mode: .aspectFit, allowHidden: true).image,
                    let data = await Task.detached(priority: .userInitiated, operation: { img.jpegData(compressionQuality: 0.85) }).value {
                     jpegs.append(data)
                 }

@@ -1,6 +1,7 @@
 import SwiftUI
 import Photos
 import UIKit
+import LocalAuthentication
 
 /// Asks for photo access the first time, then shows the list and keeps the scan going.
 struct RootView: View {
@@ -167,6 +168,7 @@ struct SettingsView: View {
                 } footer: {
                     Text("Look-alike photos taken within 5 minutes of a better-ranked one are tucked under it (shown as +3 and so on), so the top lists show more different moments. Tap a photo and \"See similar\" to view them.")
                 }
+                HiddenAlbumSection()
                 HeldBackSection()
                 Section("What's left out") {
                     LabeledContent("On the list", value: "\(library.listedPhotos.formatted()) photos")
@@ -671,5 +673,126 @@ struct DiagnosticsSection: View {
         } footer: {
             Text("Timings and memory from this session, to help find what makes the app slow. Nothing here is sent anywhere unless you copy it.")
         }
+    }
+}
+
+/// Settings → Hidden photos: photos in Apple Photos' Hidden album are never read on their own. Here, after Face ID
+/// or the passcode, you can add some to your list yourself. Added ones are ranked like any other photo but never
+/// sent to Claude.
+struct HiddenAlbumSection: View {
+    @EnvironmentObject var library: Library
+    @State private var open = false
+    @State private var failed: String?
+    var body: some View {
+        Section {
+            Button("Show hidden photos") { unlock() }
+            if !library.hiddenAdded.isEmpty {
+                LabeledContent("Added to your list", value: library.hiddenAdded.count.formatted())
+            }
+            if let failed { Text(failed).font(.footnote).foregroundStyle(.secondary) }
+        } header: {
+            Text("Hidden in Apple Photos")
+        } footer: {
+            Text("Photos in your Hidden album stay out of Awwbum unless you add them here. Added photos are ranked on this iPhone and shown in your list, but are never sent to Claude.")
+        }
+        .fullScreenCover(isPresented: $open) { HiddenPhotosView() }
+    }
+
+    private func unlock() {
+        failed = nil
+        let ctx = LAContext()
+        var error: NSError?
+        guard ctx.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {
+            failed = "Set a passcode on this iPhone to see hidden photos here."
+            return
+        }
+        ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "See the photos in your Hidden album") { ok, error in
+            let code = (error as? LAError)?.code
+            Task { @MainActor in
+                if ok { open = true }
+                else if code != .userCancel && code != .appCancel && code != .systemCancel {
+                    failed = "Couldn't unlock the hidden photos. Try again."
+                }
+            }
+        }
+    }
+}
+
+/// The Hidden album, unlocked: pick photos to add to your list (or take added ones off).
+struct HiddenPhotosView: View {
+    @EnvironmentObject var library: Library
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var phase
+    @State private var ids: [String] = []
+    @State private var loading = true
+    @State private var picked = Set<String>()
+    @State private var shown = 90
+    private let columns = [GridItem(.adaptive(minimum: 104), spacing: 6)]
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 12) {
+                    if loading {
+                        ProgressView().padding(.top, 40)
+                    } else if ids.isEmpty {
+                        ContentUnavailableView("No hidden photos", systemImage: "eye.slash")
+                    } else {
+                        Text("Tap photos to pick them, then add them to your list. Added photos are never sent to Claude.")
+                            .font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+                        LazyVGrid(columns: columns, spacing: 6) {
+                            ForEach(ids.prefix(shown), id: \.self) { id in
+                                let added = library.hiddenAdded.contains(id), on = picked.contains(id)
+                                Button { if on { picked.remove(id) } else { picked.insert(id) } } label: {
+                                    AssetImage(id: id, targetSide: 120, cached: false)
+                                        .aspectRatio(1, contentMode: .fit)
+                                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                                        .overlay {
+                                            if on { RoundedRectangle(cornerRadius: 8).stroke(Theme.accent, lineWidth: 4) }
+                                        }
+                                        .overlay(alignment: .topTrailing) {
+                                            if on || added {
+                                                Image(systemName: added ? "checkmark.circle.fill" : "circle.inset.filled")
+                                                    .font(.title3).foregroundStyle(.white, Theme.accent).padding(4)
+                                            }
+                                        }
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(added ? "On your list" : "Hidden photo")
+                                .accessibilityAddTraits(on ? .isSelected : [])
+                            }
+                        }
+                        if ids.count > shown { Button("See more") { shown += 90 }.buttonStyle(.bordered).tint(Theme.grapeInk) }
+                    }
+                }
+                .padding(16)
+            }
+            .background(Theme.background.ignoresSafeArea())
+            .navigationTitle("Hidden photos").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
+                ToolbarItem(placement: .bottomBar) {
+                    let toAdd = picked.subtracting(library.hiddenAdded), toRemove = picked.intersection(library.hiddenAdded)
+                    HStack {
+                        if !toRemove.isEmpty {
+                            Button("Take \(toRemove.count) off") { library.removeHidden(Array(toRemove)); picked.subtract(toRemove) }
+                        }
+                        Spacer()
+                        Button(toAdd.isEmpty ? "Add to my list" : "Add \(toAdd.count) to my list") { library.addHidden(Array(toAdd)); picked.subtract(toAdd) }
+                            .buttonStyle(.borderedProminent).disabled(toAdd.isEmpty)
+                    }
+                }
+            }
+        }
+        .task {
+            HiddenPhotos.setBrowsing(true)
+            ids = await Task.detached(priority: .userInitiated) { HiddenPhotos.all() }.value
+            loading = false
+        }
+        .onDisappear { HiddenPhotos.setBrowsing(false); AssetImage.clearCache() }
+        // Covered at once when the app goes to the background (before the app switcher's snapshot), then closed.
+        .overlay { if phase != .active { Theme.background.ignoresSafeArea() } }
+        // Locks again when you leave the app, like Photos.
+        .onChange(of: phase) { if phase != .active { dismiss() } }
     }
 }

@@ -48,7 +48,7 @@ struct AssetImage: View {
             defer { run.end() }   // a preview arriving after this run ends (or moved on) is ignored
             let mode: PHImageContentMode = contentMode == .fit ? .aspectFit : .aspectFill
             let r = await withTaskCancellationHandler {
-                await Self.load(id: id, size: CGSize(width: px, height: px), mode: mode,
+                await Self.load(id: id, size: CGSize(width: px, height: px), mode: mode, allowHidden: true,
                                 preview: { img in Task { @MainActor in if run.live, image == nil { image = img } } })
             } onCancel: { run.end() }
             guard !Task.isCancelled else { return }   // this view has moved on to another photo
@@ -78,8 +78,8 @@ struct AssetImage: View {
         thumbs.removeAllObjects()
     }
 
-    /// Looks photos up by id the same way the scan does, so the Hidden album is never looked at: a photo that's
-    /// hidden simply isn't found.
+    /// Looks photos up by id the same way the scan does, without the Hidden album: a hidden photo isn't found here
+    /// (only HiddenPhotos finds the ones you added).
     /// Asks Photos to get the photos about to be shown ready ahead of time (the same sizes the list draws), so
     /// scrolling doesn't wait on each one. Off the main thread; replaces the previous set.
     nonisolated static func prefetch(_ ids: [String], side: CGFloat, mode: PHImageContentMode = .aspectFill) {
@@ -104,9 +104,11 @@ struct AssetImage: View {
     }
 
     /// Loads one image. Cancelled automatically when the view scrolls away; returns the best image delivered.
-    nonisolated static func load(id: String, size: CGSize, mode: PHImageContentMode,
+    /// `allowHidden`: also a Hidden-album photo you added to your list (or any, while the unlocked Hidden photos
+    /// screen is open). Off for everything that leaves the phone (Claude) or reads faces.
+    nonisolated static func load(id: String, size: CGSize, mode: PHImageContentMode, allowHidden: Bool = false,
                      preview: (@Sendable (UIImage) -> Void)? = nil) async -> (image: UIImage?, degraded: Bool) {
-        guard let asset = visible([id]).firstObject else { return (nil, false) }
+        guard let asset = visible([id]).firstObject ?? (allowHidden ? HiddenPhotos.asset(id) : nil) else { return (nil, false) }
         let opts = PHImageRequestOptions()
         opts.deliveryMode = .opportunistic
         opts.isNetworkAccessAllowed = true

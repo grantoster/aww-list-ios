@@ -377,7 +377,9 @@ final class ClaudeService: ObservableObject {
     /// no photo within 2 minutes may be one Claude removed (the same burst, however it's grouped now).
     /// Photos outside a Limited Access selection can't be seen, so they can't be checked.
     static func sendable(_ m: Moment, _ library: Library) -> Bool {
-        // The Hidden album is never looked at: a photo moved there isn't found, so its moment isn't sent.
+        // Hidden-album photos are never sent, even ones you added to your list.
+        if m.memberIDs.contains(where: HiddenPhotos.isAdded) { return false }
+        // A photo moved to the Hidden album isn't found here, so its moment isn't sent.
         let live = AssetImage.visible(m.memberIDs)
         var dates: [Date] = []
         live.enumerateObjects { a, _, _ in if let d = a.creationDate { dates.append(d) } }

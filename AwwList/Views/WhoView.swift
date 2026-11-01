@@ -13,7 +13,7 @@ struct FaceThumb: View {
             .clipShape(Circle())
             .frame(width: size, height: size)
             .task(id: photo + box.map { String($0) }.joined()) {
-                guard let full = await AssetImage.load(id: photo, size: CGSize(width: 900, height: 900), mode: .aspectFit).image else { return }
+                guard let full = await AssetImage.load(id: photo, size: CGSize(width: 900, height: 900), mode: .aspectFit, allowHidden: true).image else { return }
                 let b = box
                 image = await Task.detached(priority: .userInitiated) { Self.crop(full, box: b) }.value
             }

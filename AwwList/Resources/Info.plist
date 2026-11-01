@@ -24,6 +24,8 @@
 	<true/>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Face ID unlocks the photos in your Hidden album inside Awwbum, the same way Photos does.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Awwbum reads your photos to find and rank your cutest moments. It never edits, adds or deletes photos. The only change it can make is the heart: favoriting a photo in Awwbum favorites it in Photos too. Photos leave this iPhone only if you choose to have Claude score them (on the first screen or in Settings).</string>
 	<key>PHPhotoLibraryPreventAutomaticLimitedAccessAlert</key>
