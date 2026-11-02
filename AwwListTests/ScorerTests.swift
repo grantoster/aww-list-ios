@@ -395,10 +395,18 @@ final class LearnerTests: XCTestCase {
     func testLearnMyLikes() {
         // Votes that follow one measurement (up when it's high): the taste learns it and nudges new photos.
         func photo(_ k: Int) -> [Double] {
-            (0..<Learner.featureCount).map { j in j == 0 ? Double(k % 2) * 0.8 + 0.1 : sin(Double(k * 31 + j * 7)) * 0.5 }
+            var x = [Double](repeating: 0, count: Learner.featureCount)
+            for j in x.indices {
+                let wave: Double = sin(Double(k * 31 + j * 7)) * 0.5
+                x[j] = j == 0 ? Double(k % 2) * 0.8 + 0.1 : wave
+            }
+            return x
         }
-        let day = 86_400.0
-        let votes = (0..<80).map { k in (date: Date(timeIntervalSince1970: Double(k) * day * 3), x: photo(k), vote: k % 2 == 1 ? 1 : -1) }
+        var votes: [(date: Date, x: [Double], vote: Int)] = []
+        for k in 0..<80 {
+            let when = Date(timeIntervalSince1970: Double(k) * 86_400.0 * 3)
+            votes.append((date: when, x: photo(k), vote: k % 2 == 1 ? 1 : -1))
+        }
         XCTAssertNil(Learner.trainTaste(Array(votes.prefix(20))))                         // too few votes
         XCTAssertNil(Learner.trainTaste(votes.filter { $0.vote > 0 }))                    // all one way
         guard let t = Learner.trainTaste(votes) else { return XCTFail("no taste model") }
