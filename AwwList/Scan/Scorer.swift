@@ -323,9 +323,10 @@ enum Scorer {
     }()
 
     /// The balanced on-device score (0...1), from a photo's saved measurements (Learner.encode). Weights as set by the owner:
-    /// expression 25%, eyes open and looking at the camera 10%, photo quality (Apple's quality score and sharpness) 15%,
+    /// expression 25%, eyes open and looking at the camera 10%, photo quality (Apple's quality score and sharpness) 12%,
     /// how big the child is in the frame 10%, how clearly a child is the subject 10%, action and play 5%,
-    /// a special moment or outing 5%, pure "aww" 5%, pure joy 5%, candid 5%, best smile, grin or mischief 5%.
+    /// a special moment or outing 5%, pure "aww" 5%, pure joy 5%, candid 5%, best smile, grin or mischief 5%,
+    /// unposed fun 3% (having fun and not posing for the camera; mess and imperfect framing don't count against it).
     /// Crowds of more than 5 faces count a little less. No bonus for extra faces.
     /// `special` is nil only in tests now (Scorer.balancedValue always supplies it).
     static func balanced(_ x: [Double], special: Double? = nil) -> Double {
@@ -353,8 +354,15 @@ enum Scorer {
         let mischief = hasShape && smileCurve > 0.6 && mouthOpen < 0.3 ? min(1, smileCurve * (0.6 + headTilt)) : 0
         let cheeky = max(grin, mischief)
         let sp = min(1, max(0, special ?? 0))
-        var raw = 0.25 * expression + 0.10 * eyes + 0.15 * photo + 0.10 * presence + 0.10 * child + 0.05 * action
-            + 0.05 * sp + 0.05 * aww + 0.05 * joy + 0.05 * candid + 0.05 * cheeky
+        // Unposed fun: clearly having fun (smiling, laughing or arms up) while not posing for the camera (looking away,
+        // mid-action, or the whole body in the shot running around). Taken from photo quality, so a messy, imperfect
+        // shot of real fun isn't held back by polish.
+        let fun = max(smile > 0.5 ? 0.6 + 0.4 * mouthOpen : 0, armsUp)
+        let wholeBody = at(24)
+        let unposed = max(hasShape ? min(1, 2 * headTurn) : 0, action, wholeBody > 0.5 ? 0.6 : 0)
+        let unposedFun = fun * unposed
+        var raw = 0.25 * expression + 0.10 * eyes + 0.12 * photo + 0.10 * presence + 0.10 * child + 0.05 * action
+            + 0.05 * sp + 0.05 * aww + 0.05 * joy + 0.05 * candid + 0.05 * cheeky + 0.03 * unposedFun
         if faces > 5.5 { raw *= 0.85 }
         return max(0, min(1, raw))
     }

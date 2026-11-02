@@ -47,7 +47,8 @@ enum Claude {
     Score 1 to 10 (one decimal allowed). Genuine emotion counts most (laughter, delight, sweetness, wonder), then \
     connection between people, then the moment itself; sharpness and framing only break ties. Closed eyes, backs \
     of heads and blur lose points; crying or tantrums score low. Use the whole scale: 5 is an ordinary nice photo, \
-    8 is a favorite, 9 and 10 are rare, truly exceptional moments.
+    8 is a favorite, 9 and 10 are rare, truly exceptional moments. Candid, unposed moments of kids having fun count \
+    in their favor, even when messy (food on faces, mud, wild hair) or imperfectly framed.
     Leave the photo out (set "exclude") if: no child is the subject ("no_child"); a child is in a bath ("bath"), or \
     undressed beyond a diaper, including shirtless children past the baby stage unless they're in swimwear at the \
     beach, pool or splash pad ("undressed"); it is a screenshot, meme, document, collage, or a photo of a screen or print ("screenshot"); or \
