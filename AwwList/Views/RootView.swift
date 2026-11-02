@@ -144,6 +144,7 @@ struct SettingsView: View {
             List {
                 if PlusStore.available { PlusSection() }
                 ClaudeSection()
+                LikesSection()
                 LearnedSection()
                 BirthdaysSection()
                 Section {

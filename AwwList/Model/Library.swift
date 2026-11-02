@@ -71,12 +71,14 @@ final class Library: ObservableObject {
     }
 
     /// Your thumbs up (1) or down (-1) by photo id: a quarter point on Claude's or the learned score when ranking
-    /// (it settles ties in Apple's and Consolidated), and, for photos Claude scored, the learning learns from it.
+    /// (it settles ties in Apple's and Consolidated); for photos Claude scored, the learning learns from it; and
+    /// Learn my Likes learns your taste from all of them.
     @Published private(set) var reactions: [String: Int] = [:]
-    func setReaction(_ m: Moment, _ value: Int) {
+    func setReaction(_ m: Moment, _ value: Int, learnSoon: Bool = true) {
         for id in m.memberIDs { reactions[id] = nil }
         if value != 0 { reactions[m.best.id] = value }
         rebuildSoon(); saveSoon()
+        guard learnSoon else { return }   // Learn my Likes learns once, when you finish
         // Learning waits until you've stopped tapping for a few seconds (it re-learns from everything).
         reactionRetrain?.cancel()
         reactionRetrain = Task { @MainActor in
@@ -151,6 +153,8 @@ final class Library: ObservableObject {
         var addedBack: [String]? = nil
         var confirmedFaces: [String: String]? = nil
         var skippedFaces: [String]? = nil
+        var taste: TasteModel? = nil
+        var tasteSignatureBits: Int64? = nil
     }
 
     /// False until the saved library has been read (off the main thread, so a large library can't make iOS end
@@ -312,14 +316,14 @@ final class Library: ObservableObject {
     /// Fills the per-photo cache (decoded measurements, learned score, removal check, balanced score) off the
     /// main thread, then calls `then` on the main thread.
     private func prewarmDerived(then: @escaping () -> Void) {
-        let snapshot = Array(photos.values), model = learned, filter = learnedFilter, epoch = learningEpoch
+        let snapshot = Array(photos.values), model = learned, filter = learnedFilter, epoch = learningEpoch, likes = taste
         let t0 = Date()
         Task.detached(priority: .userInitiated) { [weak self] in
             var out: [String: Derived] = [:]
             out.reserveCapacity(snapshot.count)
             for p in snapshot {
                 guard let f = p.feat, let x = Learner.decode(f) else { continue }
-                out[p.id] = Library.derive(p, f, x, model: model, filter: filter, epoch: epoch)
+                out[p.id] = Library.derive(p, f, x, model: model, filter: filter, taste: likes, epoch: epoch)
             }
             let took = Date().timeIntervalSince(t0)
             let result = out
@@ -520,6 +524,10 @@ final class Library: ObservableObject {
     @Published private(set) var training = false
     /// The app's model of Claude's removals, and how many unseen photos it's keeping off the list right now.
     @Published private(set) var learnedFilter: LearnedFilter?
+    /// What "Learn my Likes" learned from your thumbs up and down (nudges every learned score; see Learner.trainTaste).
+    @Published private(set) var taste: TasteModel?
+    /// Photos you've given a thumbs up or down that can be learned from.
+    var votesCount: Int { reactions.keys.filter { photos[$0]?.feat != nil }.count }
     @Published private(set) var filteredOut = 0
     /// The learning built into the app (from Resources/BuiltInLearning.json, when present): new installs start
     /// with it, and this phone's own Claude scores replace each part once there are enough of them.
@@ -634,15 +642,19 @@ final class Library: ObservableObject {
         let sp = p.special ?? Scorer.specialFromCaption(p.caption)   // a new caption can change this without new measurements
         if let d = derived[p.id], d.epoch == learningEpoch, d.special == sp, d.feat == f { return d }
         guard let x = Learner.decode(f) else { return nil }
-        let d = Library.derive(p, f, x, model: learned, filter: learnedFilter, epoch: learningEpoch)
+        let d = Library.derive(p, f, x, model: learned, filter: learnedFilter, taste: taste, epoch: learningEpoch)
         derived[p.id] = d
         return d
     }
 
     nonisolated private static func derive(_ p: PhotoScore, _ f: Data, _ x: [Double], model: LearnedModel?,
-                                           filter: LearnedFilter?, epoch: Int) -> Derived {
+                                           filter: LearnedFilter?, taste: TasteModel?, epoch: Int) -> Derived {
         let sp = p.special ?? Scorer.specialFromCaption(p.caption)
-        let learnedV = model.map { (Learner.predict($0, x) * 10).rounded(.toNearestOrAwayFromZero) / 10 }
+        // Learn my Likes moves it up to half a point toward what you like.
+        let learnedV = model.map { m -> Double in
+            let v = max(1, min(10, Learner.predict(m, x) + Learner.tasteNudge(taste, x)))
+            return (v * 10).rounded(.toNearestOrAwayFromZero) / 10
+        }
         let removes = filter.map { $0.useful && Learner.removalChance($0, x) >= Learner.removeAt } ?? false
         return Derived(feat: f, epoch: epoch, special: sp, learned: learnedV, removes: removes,
                        balanced: Scorer.balanced(x, special: sp))
@@ -663,6 +675,8 @@ final class Library: ObservableObject {
     /// arrive and after a scan adds fingerprints; skipped when nothing changed since the last run (even across launches).
     private var pendingRetrain = false
     private var trainedSignature: UInt64?
+    /// The votes Learn my Likes last learned from (worked out again once per launch; it's quick).
+    private var tasteSignature: UInt64?
     /// Bumped by "Go back to on-device scores only", so a training run that started before it is ignored.
     private var generation = 0
 
@@ -670,9 +684,10 @@ final class Library: ObservableObject {
         guard !retrainBusy else { pendingRetrain = true; return }   // run again once the current one finishes
         retrainBusy = true
         let gen = generation
-        let known = trainedSignature
+        let known = trainedSignature, knownLikes = tasteSignature, hadTaste = taste != nil
         let reacts = reactions
         let scored = photos.values.filter { $0.claude != nil && $0.feat != nil }   // only these are needed
+        let voted = photos.values.filter { reacts[$0.id] != nil && $0.feat != nil }   // for Learn my Likes
         // Gathering the examples (decoding thousands of fingerprints) happens off the main thread too.
         Task.detached(priority: .utility) {
             var parts: [String] = []
@@ -697,27 +712,41 @@ final class Library: ObservableObject {
                 if c.exclude == nil { examples.append((p.date, x, c.score2.map { (c.score + $0) / 2 } ?? c.score)) }
                 if c.exclude == nil && c.score2 != nil { averaged += 1 }
             }
-            let signature = Learner.stableHash(parts)
-            if signature == known {                             // nothing new to learn from (also across launches)
+            // Learn my Likes: every photo you voted on, Claude-scored or not.
+            var votes: [(date: Date, x: [Double], vote: Int)] = [], likeParts: [String] = []
+            for p in voted.sorted(by: { $0.id < $1.id }) {
+                guard let f = p.feat, let x = Learner.decode(f), let r = reacts[p.id], r != 0 else { continue }
+                likeParts.append("\(p.id)|\(r)")
+                votes.append((p.date, x, r > 0 ? 1 : -1))
+            }
+            let signature = Learner.stableHash(parts), likeSignature = Learner.stableHash(likeParts)
+            let claudeChanged = signature != known
+            // Too few votes to learn from, and nothing learned before: just note them (no "Learning…", no re-rank).
+            let tooFew = votes.count < Learner.minimumVotes
+            let likesChanged = likeSignature != knownLikes && !(tooFew && !hadTaste)
+            if !claudeChanged && !likesChanged {                // nothing new to learn from (also across launches)
                 await MainActor.run {
+                    if likeSignature != knownLikes { self.tasteSignature = likeSignature }
                     self.retrainBusy = false
                     if self.pendingRetrain { self.pendingRetrain = false; self.retrain() } else { self.retrainFinished() }
                 }
                 return
             }
             await MainActor.run { self.training = true }      // shown in Settings only while really learning
-            let model = Learner.train(examples, averaged: averaged)
-            let filter = Learner.trainFilter(verdicts)
+            // Only what changed is learned again (votes alone don't re-learn Claude's scoring).
+            let model = claudeChanged ? Learner.train(examples, averaged: averaged) : nil
+            let filter = claudeChanged ? Learner.trainFilter(verdicts) : nil
+            let likes = likesChanged ? Learner.trainTaste(votes) : nil
             await MainActor.run {
                 self.training = false
                 guard gen == self.generation else {          // cleared while this was running: start over
                     self.retrainBusy = false
                     self.pendingRetrain = false; self.retrain(); return
                 }
-                self.trainedSignature = signature
                 // This phone's own learning is always kept (and can be copied out); it's used once it has learned
                 // from at least as many verdicts as the built-in one, or right away if the built-in one is turned off.
-                self.ownModel = model; self.ownFilter = filter
+                if claudeChanged { self.trainedSignature = signature; self.ownModel = model; self.ownFilter = filter }
+                if likesChanged { self.tasteSignature = likeSignature; self.taste = likes }
                 self.applyLearning()
                 // New learning changes every photo's learned score: work those out off the main thread first, so
                 // the re-rank that follows doesn't stall the screen.
@@ -1384,7 +1413,8 @@ final class Library: ObservableObject {
                       claudeSentYear: claudeSentYear, reactions: reactions,
                       notThem: notThem.mapValues { $0.map(\.uuidString) }, ignoredFaces: Array(ignoredFaces),
                       addedBack: Array(addedBack), confirmedFaces: confirmedFaces.mapValues(\.uuidString),
-                      skippedFaces: Array(skippedFaces))
+                      skippedFaces: Array(skippedFaces), taste: taste,
+                      tasteSignatureBits: tasteSignature.map { Int64(bitPattern: $0) })
         let u = url, legacy = legacyURL
         // One save at a time, in order, so an older snapshot can never land after a newer one.
         Library.saveQueue.async {
@@ -1459,6 +1489,8 @@ final class Library: ObservableObject {
         }
         // A filter saved before its check counted removals would stay switched off: learn again once.
         if let f = ownFilter, f.testRemovals == nil { trainedSignature = nil }
+        taste = s.taste.flatMap { $0.weights.count == Learner.featureCount ? $0 : nil }
+        tasteSignature = s.tasteSignatureBits.map { UInt64(bitPattern: $0) }
         ownModel = s.learned.flatMap { m -> LearnedModel? in
             guard m.weights.count == Learner.featureCount else { return nil }
             var m = m

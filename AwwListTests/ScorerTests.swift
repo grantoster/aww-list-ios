@@ -392,6 +392,24 @@ final class PeopleTests: XCTestCase {
 }
 
 final class LearnerTests: XCTestCase {
+    func testLearnMyLikes() {
+        // Votes that follow one measurement (up when it's high): the taste learns it and nudges new photos.
+        func photo(_ k: Int) -> [Double] {
+            (0..<Learner.featureCount).map { j in j == 0 ? Double(k % 2) * 0.8 + 0.1 : sin(Double(k * 31 + j * 7)) * 0.5 }
+        }
+        let day = 86_400.0
+        let votes = (0..<80).map { k in (date: Date(timeIntervalSince1970: Double(k) * day * 3), x: photo(k), vote: k % 2 == 1 ? 1 : -1) }
+        XCTAssertNil(Learner.trainTaste(Array(votes.prefix(20))))                         // too few votes
+        XCTAssertNil(Learner.trainTaste(votes.filter { $0.vote > 0 }))                    // all one way
+        guard let t = Learner.trainTaste(votes) else { return XCTFail("no taste model") }
+        XCTAssertEqual(t.votes, 80); XCTAssertEqual(t.ups, 40)
+        XCTAssertGreaterThan(t.agreement, 0.9)
+        XCTAssertTrue(t.useful)
+        let liked = Learner.tasteNudge(t, photo(201)), disliked = Learner.tasteNudge(t, photo(200))
+        XCTAssertGreaterThan(liked, 0); XCTAssertLessThan(disliked, 0)
+        XCTAssertLessThanOrEqual(abs(liked), Learner.maxTasteNudge); XCTAssertLessThanOrEqual(abs(disliked), Learner.maxTasteNudge)
+        XCTAssertEqual(Learner.tasteNudge(nil, photo(1)), 0)
+    }
     func testFingerprintRoundTrip() {
         let sig: [Float] = [1, 0.5, 0, 1, 0.25, 0.9, 0.1, 0.8, 0.33, 0, 0.7, 1]
         let scene = Data((0..<Learner.sceneDims).map { UInt8(bitPattern: Int8($0 % 100 - 50)) })

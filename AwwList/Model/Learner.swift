@@ -65,7 +65,27 @@ struct LearnedFilter: Codable, Equatable {
     var useful: Bool { (testRemovals ?? 0) >= Learner.minimumTestRemovals && accuracy + 1e-9 >= baselineAccuracy + 0.02 }
 }
 
-/// Turns photos into fingerprints and learns Claude's scoring from them. Pure math, so it's unit tested.
+/// What the app learned from your own thumbs up and down ("Learn my Likes"): a ridge regression from each
+/// photo's fingerprint to your vote, used to nudge every photo's learned score toward what you like.
+struct TasteModel: Codable, Equatable {
+    var mean: [Double]
+    var std: [Double]
+    var weights: [Double]
+    /// The average vote (−1 down … +1 up); nudges are measured from it, so voting mostly up doesn't lift everything.
+    var bias: Double
+    var lambda: Double
+    var votes: Int
+    var ups: Int
+    /// The honest check: each quarter of the days predicted by learning from the other three.
+    var agreement: Double
+    /// The same check for always guessing your more common vote.
+    var baseline: Double
+    var date: Date
+    /// Used only when it clearly beats always guessing your more common vote.
+    var useful: Bool { agreement >= 0.6 && agreement >= baseline + 0.05 }
+}
+
+
 enum Learner {
     /// Apple's measurements (each 0...1): the 12 original ones, then Apple's photo-quality score (and whether
     /// there is one), the "utility photo" flag, six measurements of the main face's shape, and nine of the bodies
@@ -368,6 +388,55 @@ enum Learner {
             }
         }
         return val != nil ? (best.net, best.epoch) : (net(), epochs)
+    }
+
+    // MARK: Learn my Likes
+
+    static let minimumVotes = 30, minimumEachWay = 8
+    /// Most a photo's learned score moves for your taste, in points (each photo you vote on also gets its own quarter
+    /// point, as before).
+    static let maxTasteNudge = 0.5
+
+    /// How far toward up (+) or down (−) your votes say this photo is, from your average vote.
+    static func tasteLean(_ t: TasteModel, _ x: [Double]) -> Double {
+        var s = 0.0
+        for j in 0..<min(x.count, t.weights.count) { s += t.weights[j] * z(x[j], t.mean[j], t.std[j]) }
+        return s
+    }
+    /// The nudge to a photo's learned score: up to ±0.5 points, and none until the check says it's useful.
+    static func tasteNudge(_ t: TasteModel?, _ x: [Double]) -> Double {
+        guard let t, t.useful else { return 0 }
+        return maxTasteNudge * max(-1, min(1, tasteLean(t, x)))
+    }
+
+    /// Learns your taste from (photo date, fingerprint, vote ±1). Nil until there are enough votes of each kind.
+    /// The regularization is picked on four day-grouped folds, and the same folds give the honest agreement check.
+    static func trainTaste(_ examples: [(date: Date, x: [Double], vote: Int)]) -> TasteModel? {
+        let ups = examples.filter { $0.vote > 0 }.count, downs = examples.count - ups
+        guard examples.count >= minimumVotes, ups >= minimumEachWay, downs >= minimumEachWay else { return nil }
+        func fold(_ d: Date) -> UInt64 { group(d) % 4 }
+        func lean(_ f: Fit, _ x: [Double]) -> Double {
+            var s = 0.0
+            for j in 0..<min(x.count, f.w.count) { s += f.w[j] * z(x[j], f.mean[j], f.std[j]) }
+            return s
+        }
+        var best: (lambda: Double, agree: Double)? = nil
+        for lambda in [30.0, 100, 300, 1000] {
+            var right = 0, count = 0
+            for k in 0..<UInt64(4) {
+                let fitPart = examples.filter { fold($0.date) != k }, checkPart = examples.filter { fold($0.date) == k }
+                guard !checkPart.isEmpty, Set(fitPart.map(\.vote)).count == 2,
+                      let f = fit(fitPart.map(\.x), fitPart.map { Double($0.vote) }, lambda: lambda) else { continue }
+                for e in checkPart { right += (f.bias + lean(f, e.x) >= 0) == (e.vote > 0) ? 1 : 0; count += 1 }
+            }
+            guard count > 0 else { continue }
+            let a = Double(right) / Double(count)
+            if a > (best?.agree ?? -1) { best = (lambda, a) }
+        }
+        guard let best, let f = fit(examples.map(\.x), examples.map { Double($0.vote) }, lambda: best.lambda) else { return nil }
+        return TasteModel(mean: f.mean, std: f.std, weights: f.w, bias: f.bias, lambda: best.lambda, votes: examples.count,
+                          ups: ups, agreement: best.agree, baseline: Double(max(ups, downs)) / Double(examples.count),
+                          date: Date())
     }
 
     /// The filter's chance (0...1) that Claude would remove a photo; it removes at 0.5 or more.
