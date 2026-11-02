@@ -573,15 +573,15 @@ struct Card: View {
                 .overlay(alignment: .topLeading) { RankBadge(rank: rank).padding(8) }
                 .overlay(alignment: .topTrailing) { ScoreBadge(score: moment.score).padding(8) }
                 .overlay(alignment: .bottomLeading) { SimilarBadge(count: moment.similar.count).padding(8) }
-            Text(moment.caption).font(Theme.label(16)).lineLimit(2, reservesSpace: true)
-            Text(moment.best.date.shortDay).font(.caption).foregroundStyle(.secondary)
         }
         .contentShape(Rectangle())
         .scaleEffect(pressing && !reduceMotion ? 0.97 : 1)
         .animation(.easeOut(duration: 0.15), value: pressing)
         .onTapGesture(perform: action)
         .onLongPressGesture(minimumDuration: 0.4, perform: onHold, onPressingChanged: { pressing = $0 })
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Number \(rank), score \(moment.score), \(moment.caption), \(moment.best.date.shortDay)"
+                            + (moment.similar.isEmpty ? "" : ", \(moment.similar.count) similar"))
         .accessibilityAddTraits(picked == true ? [.isButton, .isSelected] : .isButton)
         .accessibilityAction(.default, action)
         .accessibilityAction(named: picked == nil ? "Pick photos to send" : "Pick or unpick", onHold)

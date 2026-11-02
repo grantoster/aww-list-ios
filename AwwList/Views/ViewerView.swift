@@ -16,6 +16,7 @@ struct ViewerView: View {
     /// The current photo is zoomed in (swipe-down-to-close is off while panning).
     @State private var zoomed = false
     @State private var showSimilar = false
+    @State private var tagging: String?
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -53,6 +54,9 @@ struct ViewerView: View {
                         .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showSimilar = false } } }
                 }
             }
+        }
+        .sheet(item: Binding(get: { tagging.map(TagTarget.init) }, set: { tagging = $0?.id })) { t in
+            TagPeopleSheet(photo: t.id)
         }
         .task(id: index) {
             favorite = nil
@@ -110,6 +114,7 @@ struct ViewerView: View {
                     .disabled(preparingShare)
                     .accessibilityLabel("Share")
                     Menu {
+                        Button { tagging = m.best.id } label: { Label("Tag people", systemImage: "person.crop.square") }
                         // Can be undone from Home right after, so it isn't shown as destructive.
                         Button { library.hide(m); dismiss() } label: { Label("Remove from list", systemImage: "eye.slash") }
                     } label: {

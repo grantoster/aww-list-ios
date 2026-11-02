@@ -629,3 +629,96 @@ struct ReviewFacesView: View {
         yes = []; no = []
     }
 }
+
+/// Which photo the Tag people sheet is open for.
+struct TagTarget: Identifiable { let id: String }
+
+/// Tag people: name (or un-name) each face in one photo. Every tag counts as a face you confirmed in Who's Who, so
+/// it's never asked about again and it teaches the recognizer.
+struct TagPeopleSheet: View {
+    let photo: String
+    @EnvironmentObject var library: Library
+    @Environment(\.dismiss) private var dismiss
+    @State private var newFor: FaceRecord?
+    @State private var newName = ""
+
+    private var faces: [FaceRecord] {
+        (library.photos[photo]?.faceRecords ?? []).filter { $0.vec.count == People.dim && $0.box.count == 4 }
+            .sorted { $0.box[0] < $1.box[0] }   // left to right, as in the photo
+    }
+    private func owner(_ f: FaceRecord) -> Person? {
+        library.faceOwner[Library.faceKey(photo, f)].flatMap { id in library.people.first { $0.id == id } }
+    }
+    private var sortedPeople: [Person] {
+        library.people.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if !Library.faceConsent {
+                    Text("Turn on Who's Who first (in Who's Who), so the app can tell faces apart.")
+                        .foregroundStyle(.secondary)
+                } else if faces.isEmpty {
+                    Text(library.photos[photo]?.faceRecords == nil
+                         ? "This photo's faces haven't been read yet. Try again after the scan finishes."
+                         : "No faces were found in this photo.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Section {
+                        ForEach(faces, id: \.self) { f in row(f) }
+                    } footer: {
+                        Text("Tags count as faces you confirmed in Who's Who, so they're never asked about again and they help it recognize everyone else.")
+                    }
+                }
+            }
+            .navigationTitle("Tag people")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .alert("New person", isPresented: Binding(get: { newFor != nil }, set: { if !$0 { newFor = nil } })) {
+                TextField("Name", text: $newName).textInputAutocapitalization(.words)
+                Button("Cancel", role: .cancel) { newFor = nil; newName = "" }
+                Button("Tag") {
+                    if let f = newFor { tag(f, as: newName) }
+                    newFor = nil; newName = ""
+                }
+            } message: { Text("Who is this?") }
+        }
+    }
+
+    private func row(_ f: FaceRecord) -> some View {
+        let who = owner(f)
+        return HStack(spacing: 12) {
+            FaceThumb(photo: photo, box: f.box, size: 56)
+            Text(who?.name ?? "Not tagged")
+                .font(Theme.label(17)).foregroundStyle(who == nil ? HierarchicalShapeStyle.secondary : HierarchicalShapeStyle.primary)
+            Spacer()
+            Menu {
+                ForEach(sortedPeople) { p in
+                    if p.id != who?.id { Button(p.name) { tag(f, as: p.name) } }
+                }
+                Button { newName = ""; newFor = f } label: { Label("New person…", systemImage: "plus") }
+                if let who {
+                    Button { library.removeFace(photo, f, from: who) } label: {
+                        Label("Not \(who.name)", systemImage: "xmark")
+                    }
+                }
+            } label: {
+                Text(who == nil ? "Tag" : "Change").font(.body.bold())
+                    .frame(minWidth: 44, minHeight: 44)
+            }
+            .accessibilityLabel(who == nil ? "Tag this face" : "Change who this is")
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private func tag(_ f: FaceRecord, as name: String) {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        // Moving a face from one person to another: it's no longer the first person.
+        if let old = owner(f), old.name.caseInsensitiveCompare(name) != .orderedSame {
+            library.removeFace(photo, f, from: old)
+        }
+        library.name([(photo, f)], as: name, birthday: nil)
+    }
+}
