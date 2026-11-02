@@ -103,6 +103,22 @@ struct WhoView: View {
     private var whoBody: some View {
         NavigationStack {
             List {
+                let tally = library.faceTally
+                if tally.total > 0 {
+                    Section {
+                        HStack(spacing: 0) {
+                            TallyCell(value: tally.unidentified, label: "Unidentified")
+                            TallyCell(value: tally.named, label: "Named")
+                            TallyCell(value: tally.setAside, label: "Set aside")
+                        }
+                        .accessibilityElement(children: .combine)
+                    } header: {
+                        Text("\(tally.total.formatted()) faces found")
+                    } footer: {
+                        let pct = Int((Double(tally.named) * 100 / Double(tally.total)).rounded(.toNearestOrAwayFromZero))
+                        Text("\(pct)% of faces have a name. Unidentified includes strangers and faces in the background; tap × on those in Who is this? to set them aside.")
+                    }
+                }
                 // The fastest way to teach it: one face at a time, most likely first.
                 let reviewable = library.people.filter { !(library.reviewFaces[$0.id] ?? []).isEmpty }
                 if !reviewable.isEmpty {
@@ -720,5 +736,19 @@ struct TagPeopleSheet: View {
             library.removeFace(photo, f, from: old)
         }
         library.name([(photo, f)], as: name, birthday: nil)
+    }
+}
+
+/// One number in the Who's Who face count.
+struct TallyCell: View {
+    let value: Int
+    let label: String
+    var body: some View {
+        VStack(spacing: 2) {
+            Text(value.formatted()).font(Theme.label(22, relativeTo: .title3)).monospacedDigit()
+            Text(label).font(.caption).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 4)
     }
 }

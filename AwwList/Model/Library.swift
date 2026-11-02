@@ -119,6 +119,7 @@ final class Library: ObservableObject {
         guard ids != notVisible else { return }
         notVisible = ids
         rebuild()
+        learnPeople()   // faces in photos that just became visible (or hidden) are counted and recognized again
     }
 
     private static let saveQueue = DispatchQueue(label: "aww.save", qos: .utility)
@@ -786,6 +787,22 @@ final class Library: ObservableObject {
         if !yes.isEmpty { name(yes, as: p.name, birthday: nil) }
     }
 
+    /// Faces found in the photos you can see: how many have a name, how many you set aside, and how many don't yet.
+    struct FaceTally: Equatable { var total = 0, named = 0, setAside = 0; var unidentified: Int { total - named - setAside } }
+    @Published private(set) var faceTally = FaceTally()
+    func updateFaceTally() {
+        var t = FaceTally()
+        guard Library.faceConsent else { faceTally = t; return }
+        for p in photos.values where !notVisible.contains(p.id) {
+            for f in p.faceRecords ?? [] where f.vec.count == People.dim {
+                t.total += 1
+                let k = Library.faceKey(p.id, f)
+                if faceOwner[k] != nil { t.named += 1 } else if ignoredFaces.contains(k) { t.setAside += 1 }
+            }
+        }
+        faceTally = t
+    }
+
     /// Which named person each face is (face key → person), from the last learning pass and your naming.
     @Published private(set) var faceOwner: [String: UUID] = [:]
     /// Faces you skipped in Review faces (not asked about again; they can still be named in Who is this?).
@@ -889,7 +906,10 @@ final class Library: ObservableObject {
     /// Takes faces out of "Who is this?" for good (people you don't need to name).
     func ignoreFaces(_ faces: [(photo: String, face: FaceRecord)]) {
         guard !faces.isEmpty else { return }
-        for f in faces { ignoredFaces.insert(Library.faceKey(f.photo, f.face)) }
+        for f in faces {
+            let k = Library.faceKey(f.photo, f.face)
+            if ignoredFaces.insert(k).inserted, faceOwner[k] == nil, faceTally.total > 0 { faceTally.setAside += 1 }
+        }
         saveSoon()
     }
 
@@ -931,7 +951,8 @@ final class Library: ObservableObject {
         peopleGeneration += 1
         peopleTask?.cancel()
         guard !people.isEmpty, Library.faceConsent else {
-            learnedWho = [:]; learnedFaces = []; whoCache = [:]; reviewFaces = [:]; learningPeople = false; return
+            learnedWho = [:]; learnedFaces = []; whoCache = [:]; reviewFaces = [:]; learningPeople = false
+            updateFaceTally(); return
         }
         let gen = peopleGeneration
         let snapshot = photos.values.filter { !notVisible.contains($0.id) }   // not photos that can't be seen now
@@ -940,10 +961,10 @@ final class Library: ObservableObject {
         learningPeople = true
         peopleTask = Task.detached(priority: .utility) {
             var faces: [[Float]] = [], owners: [String] = [], keys: [String] = [], faceKeys: [String] = []
-            var records: [FaceRecord] = []
+            var records: [FaceRecord] = [], dates: [Date] = []
             for p in snapshot {
                 for (j, f) in (p.faceRecords ?? []).enumerated() where f.vec.count == People.dim {
-                    faces.append(People.floats(f.vec)); owners.append(p.id); keys.append(p.id + "#\(j)")
+                    faces.append(People.floats(f.vec)); owners.append(p.id); keys.append(p.id + "#\(j)"); dates.append(p.date)
                     faceKeys.append(Library.faceKey(p.id, f)); records.append(f)
                 }
             }
@@ -964,7 +985,7 @@ final class Library: ObservableObject {
             }
             let remembered = backfill
             let (matched, learned, review) = People.learn(faces, people: named, threshold: t, rejected: rej, owners: owners,
-                                                          ignored: ign, confirmed: conf)
+                                                          ignored: ign, confirmed: conf, dates: dates)
             if Task.isCancelled { return }
             // Faces to ask about in Review faces: most likely first, at most 100 per person.
             var toReview: [UUID: [(photo: String, face: FaceRecord, chance: Float)]] = [:]
@@ -993,6 +1014,7 @@ final class Library: ObservableObject {
                 for (k, id) in remembered where self.confirmedFaces[k] == nil { self.confirmedFaces[k] = id }
                 self.whoCache = [:]
                 self.learningPeople = false
+                self.updateFaceTally()
                 self.rebuild(); self.save()
             }
         }

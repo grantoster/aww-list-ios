@@ -375,6 +375,19 @@ final class PeopleTests: XCTestCase {
         let both = [aFaces[4], aFaces[5]]
         let res = People.learn(both, people: [maya], threshold: t, owners: ["p1", "p1"])
         XCTAssertEqual(res.matched.count + res.learned.count, 1)
+        // Siblings in one photo: the face you confirmed is Maya, so the other is compared only with Leo.
+        var leo = Person(name: "Leo", centroid: People.merged([], count: 0, adding: Array(aFaces[0..<4])), count: 4,
+                         samplePhoto: "y", sampleBox: [0, 0, 1, 1])
+        leo.examples = maya.examples
+        let pair = People.learn([aFaces[4], aFaces[5]], people: [maya, leo], threshold: t, owners: ["p2", "p2"],
+                                confirmed: [0: maya.id])
+        XCTAssertEqual(pair.matched[0], maya.id)
+        XCTAssertEqual(pair.matched[1] ?? pair.learned[1], leo.id)
+        // A reference more than two years from the photo counts a little less (kids' faces change).
+        let refs = [People.Ref(p: 0, v: aFaces[0], t: 0)]
+        let near = People.closeness([aFaces[0]], [0], when: [86_400], refs: refs, people: 1)[0]
+        let later = People.closeness([aFaces[0]], [0], when: [3 * 365 * 86_400], refs: refs, people: 1)[0]
+        XCTAssertEqual(near - later, People.agePenalty, accuracy: 0.0001)
     }
 }
 
