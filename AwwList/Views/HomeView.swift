@@ -35,6 +35,8 @@ struct HomeView: View {
     @State private var note: (id: UUID, text: String)?
     /// Most photos you can pick at once (each is a full-size photo in memory while it's copied or shared).
     private let maxPick = 20
+    /// "Copy" and "Share" offer the top 20 or the top 40 (only the sizes the list has room for).
+    private var shareSizes: [Int] { pool.count >= 30 ? [20, 40] : [20] }
 
     struct SharePayload: Identifiable {
         let id = UUID()
@@ -238,8 +240,8 @@ struct HomeView: View {
         if library.claudeScored > 0 || library.learned != nil || library.rankBy == "consolidated" || rankChoice == "claude" {
             Menu {
                 Picker("Rank by", selection: Binding(get: { rankChoice }, set: { library.setRankBy($0) })) {
-                    Text("Claude").tag("claude")
                     if library.learned != nil { Text("Learned").tag("learned") }
+                    Text("Claude").tag("claude")
                     Text("Apple").tag("apple")
                     Text("Consolidated").tag("consolidated")
                 }
@@ -301,29 +303,45 @@ struct HomeView: View {
             }
             // While picking, this row stays (blank) so the photos don't jump under your finger.
             Group {
-                let n = min(maxPick, top.count)
+                // Top 20 or top 40 of the list as it's shown (look-alike shots folded), as photos to copy or share.
                 HStack(spacing: 8) {
-                    Button { send(Array(top.prefix(maxPick)).map(\.best.id), copy: true) } label: {
-                        Label("Copy top \(n)", systemImage: "doc.on.doc").frame(maxWidth: .infinity)
+                    Menu {
+                        ForEach(shareSizes, id: \.self) { k in
+                            Button("Copy top \(min(k, pool.count))") { send(Array(pool.prefix(k)).map(\.best.id), copy: true, limit: k) }
+                        }
+                    } label: {
+                        Label("Copy", systemImage: "doc.on.doc").frame(maxWidth: .infinity)
                     }
-                    Button { send(Array(top.prefix(maxPick)).map(\.best.id), copy: false) } label: {
-                        Label("Share top \(n)", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
+                    .accessibilityLabel("Copy top photos")
+                    Menu {
+                        ForEach(shareSizes, id: \.self) { k in
+                            Button("Share top \(min(k, pool.count))") { send(Array(pool.prefix(k)).map(\.best.id), copy: false, limit: k) }
+                        }
+                    } label: {
+                        Label("Share", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
                     }
+                    .accessibilityLabel("Share top photos")
                 }
                 .buttonStyle(.bordered).controlSize(.regular).tint(Theme.grapeInk).disabled(preparing || top.isEmpty || selecting)
                 .overlay {
                     if preparing && !selecting {
-                        Text("Getting \(progress.done) of \(progress.of)…").font(.subheadline.bold())
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                        HStack(spacing: 12) {
+                            Text("Getting \(progress.done) of \(progress.of)…").font(.subheadline.bold())
+                            Button("Cancel") { sendTask?.cancel(); preparing = false }.font(.subheadline)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
                     }
                 }
                 .opacity(selecting ? 0 : 1)
                 .accessibilityHidden(selecting)
                 Text(selecting ? "Tap photos to pick up to \(maxPick)." : "Tip: hold any photo to pick several to send.")
                     .font(.caption).foregroundStyle(.secondary)
-                Button { makeCollage() } label: {
-                    Label(makingCollage ? "Making the collage…" : "Share a top 10 collage", systemImage: "square.grid.2x2")
+                Menu {
+                    Button("Top 10 collage") { makeCollage(10) }
+                    if pool.count > 10 { Button("Top 20 collage") { makeCollage(20) } }
+                } label: {
+                    Label(makingCollage ? "Making the collage…" : "Share a collage", systemImage: "square.grid.2x2")
                         .font(.subheadline)
                 }
                 .disabled(makingCollage || top.isEmpty || selecting)
@@ -356,18 +374,21 @@ struct HomeView: View {
         }
     }
 
-    /// The current list's top 10 (this year or overall, with your filters) as one picture to share. Made on the
+    /// The current list's top 10 or top 20 (this year or overall, with your filters) as one picture to share. Made on the
     /// phone and handed to the share sheet; nothing is saved to Photos.
-    private func makeCollage() {
-        let ids = Array(top.prefix(10)).map(\.best.id)
+    private func makeCollage(_ count: Int) {
+        let ids = Array(pool.prefix(count)).map(\.best.id)
         let title = scopeTitle + " top \(ids.count)"
         makingCollage = true
         Task {
-            var images: [UIImage] = []
-            for id in ids {
-                if let img = await AssetImage.load(id: id, size: CGSize(width: 700, height: 700), mode: .aspectFill).image { images.append(img) }
+            var images: [UIImage] = [], ranks: [Int] = []
+            for (n, id) in ids.enumerated() {
+                if let img = await AssetImage.load(id: id, size: CGSize(width: 700, height: 700), mode: .aspectFill).image {
+                    images.append(img); ranks.append(n + 1)   // keeps each photo's real rank if one can't load
+                }
             }
-            let result = await Task.detached(priority: .userInitiated) { Collage.render(images, title: title) }.value
+            let imgs = images, nums = ranks
+            let result = await Task.detached(priority: .userInitiated) { Collage.render(imgs, ranks: nums, title: title) }.value
             makingCollage = false
             if let result { collage = CollageImage(image: result) }
             else { note = (UUID(), "Couldn't load these photos (they may still be downloading from iCloud).") }
@@ -433,8 +454,8 @@ struct HomeView: View {
 
     /// Loads the photos (read only, never changed), turns them into JPEGs off the main thread, and either copies them
     /// for pasting into a text or opens the share sheet. Nothing is written to the photo library.
-    private func send(_ ids: [String], copy: Bool) {
-        let ids = Array(ids.prefix(maxPick))
+    private func send(_ ids: [String], copy: Bool, limit: Int? = nil) {
+        let ids = Array(ids.prefix(limit ?? maxPick))
         guard !ids.isEmpty, !preparing else { return }
         preparing = true
         progress = (0, ids.count)
@@ -881,9 +902,10 @@ enum SimilarShots {
 
 /// Draws a grid of photos with a title, as one image (2 columns; square, center-cropped tiles).
 enum Collage {
-    static func render(_ images: [UIImage], title: String) -> UIImage? {
+    static func render(_ images: [UIImage], ranks: [Int] = [], title: String) -> UIImage? {
         guard !images.isEmpty else { return nil }
-        let cols = images.count < 4 ? images.count : 2
+        // Up to 12 photos: 2 across; more (a top 20): 4 across, so it stays a shareable shape.
+        let cols = images.count < 4 ? images.count : (images.count > 12 ? 4 : 2)
         let rows = Int((Double(images.count) / Double(cols)).rounded(.up))
         let tile: CGFloat = 540, gap: CGFloat = 12, margin: CGFloat = 36, header: CGFloat = 120, footer: CGFloat = 60
         let width = margin * 2 + CGFloat(cols) * tile + CGFloat(cols - 1) * gap
@@ -905,7 +927,7 @@ enum Collage {
                 let s = CGSize(width: img.size.width * k, height: img.size.height * k)
                 img.draw(in: CGRect(x: r.midX - s.width / 2, y: r.midY - s.height / 2, width: s.width, height: s.height))
                 ctx.cgContext.restoreGState()
-                let n = "\(i + 1)" as NSString
+                let n = "\(i < ranks.count ? ranks[i] : i + 1)" as NSString
                 let badge: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: 34, weight: .bold), .foregroundColor: UIColor.white]
                 let bs = n.size(withAttributes: badge)
                 let br = CGRect(x: r.minX + 14, y: r.minY + 14, width: max(bs.width + 24, 52), height: 52)

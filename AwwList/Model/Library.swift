@@ -21,8 +21,8 @@ final class Library: ObservableObject {
     @Published private(set) var claudeModel = "claude-haiku-5-5"
     @Published private(set) var claudeScope = 300
     @Published private(set) var claudeBatches: [ClaudeBatch] = []
-    /// Which score orders the lists once Claude has scored something: "claude" or "apple".
-    @Published private(set) var rankBy = "claude"
+    /// Which score orders the lists: "learned" (the main one), "claude", "apple" or "consolidated".
+    @Published private(set) var rankBy = "learned"
     /// Off unless the user turns it on: also send Claude photos Apple flagged as possible swimwear or shirtless
     /// (and the shots right around them). Either way they stay listed; off, Claude just never sees them.
     @Published private(set) var claudeSensitive = false
@@ -222,10 +222,13 @@ final class Library: ObservableObject {
         case .none: applyLearning()                                     // a fresh install
         }
         note("Apply saved library", seconds: Date().timeIntervalSince(t0))
-        // The ranking chosen last time (remembered on its own); with none, Claude only once it has scored photos.
+        // The ranking chosen last time (remembered on its own); Learned by default.
         if let r = UserDefaults.standard.string(forKey: "rankBy") { rankBy = r }
-        else if !(hadSaved && photos.values.contains { $0.claude != nil }) && rankBy == "claude" {
-            rankBy = learned != nil ? "learned" : "apple"   // a choice saved by an older build (not Claude) is kept
+        // Learned is the main ranking: switched to once on this update (you can still pick another in the menu).
+        if !UserDefaults.standard.bool(forKey: "learnedPrimary") {
+            UserDefaults.standard.set(true, forKey: "learnedPrimary")
+            rankBy = "learned"
+            UserDefaults.standard.set("learned", forKey: "rankBy")
         }
         // Work out every photo's scores off the main thread first, so the first ranking is quick.
         prewarmDerived { [weak self] in self?.finishLoadingRanked(hadSaved: hadSaved, failedBlock: failedBlock) }
@@ -495,8 +498,6 @@ final class Library: ObservableObject {
     /// keeps them), without re-ranking yet: fast scoring calls this for every group and re-ranks every ~100.
     func recordClaude(_ verdicts: [String: ClaudeVerdict]) {
         guard !verdicts.isEmpty else { return }
-        // Claude's first scores: switch to ranking by Claude, unless a ranking was chosen in the menu.
-        if UserDefaults.standard.string(forKey: "rankBy") == nil && claudeScored == 0 { rankBy = "claude" }
         for (id, v) in verdicts {
             photos[id]?.claude = v
             if let e = v.exclude { claudeRemoved[id] = e }
@@ -737,7 +738,7 @@ final class Library: ObservableObject {
         claudeSent = [:]   // starting over: each year's budget is available again (removals are kept, never re-sent)
         ownModel = nil; ownFilter = nil; trainedSignature = nil; generation += 1
         applyLearning()
-        if rankBy != "apple" { rankBy = "apple"; UserDefaults.standard.set("apple", forKey: "rankBy") }
+        if rankBy != "learned" { rankBy = "learned"; UserDefaults.standard.set("learned", forKey: "rankBy") }   // falls back to Apple without learning
         rebuild(); save()
     }
     /// Worked out once per re-rank (screens read these on every redraw; counting thousands of moments each time

@@ -454,7 +454,7 @@ struct LearnedSection: View {
                 if let w = f.wronglyRemoved { LabeledContent("Would wrongly remove", value: pct(w) + " of keepers") }
                 Text(!f.useful
                      ? "Checked on \(f.tested.formatted()) photos from days it didn't learn from. It isn't clearly better than keeping everything yet (it needs at least \(Learner.minimumTestRemovals) of Claude's removals in that check, too), so it isn't hiding anything."
-                     : library.rankBy == "apple"
+                     : library.rankBy == "apple" || (library.rankBy == "learned" && library.learned == nil)
                      ? "Checked on \(f.tested.formatted()) photos from days it didn't learn from. It hides photos only when ranking by Claude, by the learned score or by Consolidated; ranking by Apple shows everything."
                      : "Checked on \(f.tested.formatted()) photos from days it didn't learn from. It's hiding \(library.filteredOut.formatted()) photos Claude hasn't seen.")
                     .font(.footnote).foregroundStyle(.secondary)
