@@ -386,7 +386,7 @@ final class PeopleTests: XCTestCase {
         // A reference more than two years from the photo counts a little less (kids' faces change).
         let refs = [People.Ref(p: 0, v: aFaces[0], t: 0)]
         let near = People.closeness([aFaces[0]], [0], when: [86_400], refs: refs, people: 1)[0]
-        let later = People.closeness([aFaces[0]], [0], when: [3 * 365 * 86_400], refs: refs, people: 1)[0]
+        let later = People.closeness([aFaces[0]], [0], when: [Double(3 * 365 * 86_400)], refs: refs, people: 1)[0]
         XCTAssertEqual(near - later, People.agePenalty, accuracy: 0.0001)
     }
 }
