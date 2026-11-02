@@ -165,24 +165,95 @@ enum People {
         }
     }
 
+    /// A small recognizer for one named person: a weighted sum of the 256 fingerprint numbers, trained on the faces
+    /// you named (and the app learned) as them versus everyone else's and the ones you said aren't them.
+    struct Recognizer: Sendable {
+        var w: [Float]; var b: Float
+        func chance(_ v: [Float]) -> Float {
+            var s = b
+            for i in 0..<min(w.count, v.count) { s += w[i] * v[i] }
+            return 1 / (1 + exp(-s))
+        }
+    }
+
+    /// Key in `negatives` for faces that aren't anyone named (strangers), used against every person.
+    static let nobody = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
+
+    /// Trains one recognizer per named person (with at least 4 of their faces and 4 that aren't them).
+    /// `negatives`: extra faces that aren't a given person (the ones you rejected).
+    static func trainRecognizers(_ people: [Person], negatives: [UUID: [[Float]]] = [:]) -> [UUID: Recognizer] {
+        var pos: [UUID: [[Float]]] = [:]
+        for p in people {
+            var v = (p.examples ?? []).filter { $0.count == dim }.map(floats)
+            if p.centroid.count == dim { v.append(p.centroid) }
+            pos[p.id] = v
+        }
+        var out: [UUID: Recognizer] = [:]
+        for p in people {
+            let yes = pos[p.id] ?? []
+            // Other people's faces, the ones you rejected, and (shared) faces far from everyone named.
+            let no = spread(people.filter { $0.id != p.id }.flatMap { pos[$0.id] ?? [] } + (negatives[p.id] ?? [])
+                            + (negatives[People.nobody] ?? []), to: 400)
+            guard yes.count >= 4, no.count >= 4 else { continue }
+            out[p.id] = train(yes: yes, no: no)
+        }
+        return out
+    }
+
+    /// Logistic regression with the two sides weighted equally and a little shrinkage (few examples, 256 numbers).
+    static func train(yes: [[Float]], no: [[Float]], epochs: Int = 150, rate: Float = 0.5, l2: Float = 0.01) -> Recognizer {
+        let d = dim
+        var w = [Float](repeating: 0, count: d), b: Float = 0
+        let rows = yes.map { ($0, Float(1), Float(0.5) / Float(yes.count)) } + no.map { ($0, Float(0), Float(0.5) / Float(no.count)) }
+        for _ in 0..<epochs {
+            if Task.isCancelled { break }
+            var gw = [Float](repeating: 0, count: d), gb: Float = 0
+            for (x, y, wt) in rows {
+                var s = b
+                for i in 0..<min(d, x.count) { s += w[i] * x[i] }
+                let e = (1 / (1 + exp(-s)) - y) * wt
+                for i in 0..<min(d, x.count) { gw[i] += e * x[i] }
+                gb += e
+            }
+            for i in 0..<d { w[i] -= rate * (gw[i] * 4 + l2 * w[i]) }   // ×4: the weights sum to 1 across all rows
+            b -= rate * gb * 4
+        }
+        return Recognizer(w: w, b: b)
+    }
+
     /// Who each face is, from the faces you named.
     /// - `matched`: faces close enough to someone's named faces (ordinary matching).
     /// - `learned`: faces the app worked out on its own. A face very close to faces already known to be someone (a
     ///   bit stricter than ordinary matching, and clearly closer to them than to anyone else) is taken as that
     ///   person, and a sample of those join the references, so the next round reaches a little further (a toddler
-    ///   photo bridging a baby photo and a kid photo). Every learned face must still be reasonably close to that
-    ///   person's named faces, so a chain can't wander into a look-alike sibling.
+    ///   photo bridging a baby photo and a kid photo). A face each person's own recognizer is very sure about is taken
+    ///   too. Every learned face must still be reasonably close to that person's named faces, so a chain can't wander
+    ///   into a look-alike sibling.
+    /// - `review`: faces that might be someone but aren't sure enough, with how likely (for Review faces).
+    /// - `owners`: each face's photo; one person is counted at most once per photo (the closest face wins).
     /// Indices are into `faces`. Stops early (with what it has) if the task is cancelled.
     /// `rejected`: faces you said aren't someone (index → those people); they're never matched or learned as
     /// them, and so never become references that reach further.
     static func learn(_ faces: [[Float]], people: [Person], threshold: Float, rounds: Int = 3,
-                      rejected: [Int: Set<UUID>] = [:])
-        -> (matched: [Int: UUID], learned: [Int: UUID]) {
+                      rejected: [Int: Set<UUID>] = [:], owners: [String] = [], ignored: Set<Int> = [])
+        -> (matched: [Int: UUID], learned: [Int: UUID], review: [Int: (id: UUID, chance: Float)]) {
         let named = Matcher(people)
         var matcher = named
         var matched = [Int: UUID](), learned = [Int: UUID]()
+        var sims = [Int: Float]()
         for (i, v) in faces.enumerated() {
-            if let id = named.match(v, threshold: threshold), rejected[i]?.contains(id) != true { matched[i] = id }
+            if let b = named.best(v), b.sim >= threshold, rejected[i]?.contains(b.id) != true { matched[i] = b.id; sims[i] = b.sim }
+        }
+        // Each person's recognizer, trained on their named faces against everyone else's and your rejections.
+        var negatives: [UUID: [[Float]]] = [:]
+        for (i, ids) in rejected { for id in ids { negatives[id, default: []].append(faces[i]) } }
+        // Faces far from everyone named teach each recognizer what "not them" looks like (strangers, other kids).
+        let far = faces.indices.filter { i in (named.best(faces[i])?.sim ?? -2) < threshold - 0.2 }
+        negatives[People.nobody] = spread(far, to: 300).map { faces[$0] }
+        if Task.isCancelled { return ([:], [:], [:]) }
+        let recognizers = trainRecognizers(people, negatives: negatives)
+        func chances(_ v: [Float]) -> [(id: UUID, p: Float)] {
+            recognizers.map { (id: $0.key, p: $0.value.chance(v)) }.sorted { $0.p > $1.p }
         }
         // Ordinary matches are known faces too: a sample of them starts the references.
         for (id, idx) in Dictionary(grouping: matched.keys.sorted(), by: { matched[$0]! }) {
@@ -202,9 +273,23 @@ enum People {
                         best = (r.id, s)
                     } else if r.id != best?.id { second = max(second, s) }
                 }
-                guard let b = best, b.sim >= bar, second < b.sim - 0.03, rejected[i]?.contains(b.id) != true,
-                      named.closeness(v, to: b.id) >= anchor else { continue }
-                added.append((i, b.id))
+                if let b = best, b.sim >= bar, second < b.sim - 0.03, rejected[i]?.contains(b.id) != true,
+                   named.closeness(v, to: b.id) >= anchor {
+                    added.append((i, b.id)); sims[i] = b.sim
+                    continue
+                }
+                // The person's own recognizer is very sure (and no one else's is), the face is nearly close enough to
+                // their named faces anyway (just under the Grouping setting's bar), and clearly closer to them than
+                // to anyone else named — so a look-alike sibling isn't swept in.
+                let c = chances(v)
+                if let top = c.first, top.p >= 0.97, (c.dropFirst().first?.p ?? 0) < 0.3,
+                   rejected[i]?.contains(top.id) != true {
+                    let close = named.closeness(v, to: top.id)
+                    let rival = people.filter { $0.id != top.id }.map { named.closeness(v, to: $0.id) }.max() ?? -2
+                    if close >= threshold - 0.05 && close - rival >= 0.05 {
+                        added.append((i, top.id)); sims[i] = close
+                    }
+                }
             }
             if added.isEmpty { break }
             for (i, id) in added { learned[i] = id }
@@ -213,7 +298,33 @@ enum People {
                 for (i, _) in spread(idx, to: 30) { matcher.add(id, faces[i]) }
             }
         }
-        return (matched, learned)
+        // One person per photo: if two faces in a photo were both taken as the same person, only the closest stays.
+        if owners.count == faces.count {
+            var bestIn: [String: Int] = [:]   // "photo|person" → face index
+            for (i, id) in matched.merging(learned, uniquingKeysWith: { a, _ in a }) {
+                let k = owners[i] + "|" + id.uuidString
+                if let j = bestIn[k] {
+                    let keep = (sims[i] ?? 0) > (sims[j] ?? 0) ? i : j, drop = keep == i ? j : i
+                    bestIn[k] = keep; matched[drop] = nil; learned[drop] = nil
+                } else { bestIn[k] = i }
+            }
+        }
+        // Faces left over that someone's recognizer thinks might be them: offered in Review faces.
+        var review: [Int: (id: UUID, chance: Float)] = [:]
+        if !recognizers.isEmpty {
+            // People already counted in each photo (a second face there isn't asked about for them).
+            var inPhoto = Set<String>()
+            if owners.count == faces.count {
+                for (i, id) in matched.merging(learned, uniquingKeysWith: { a, _ in a }) { inPhoto.insert(owners[i] + "|" + id.uuidString) }
+            }
+            for (i, v) in faces.enumerated() where matched[i] == nil && learned[i] == nil && !ignored.contains(i) {
+                guard let top = chances(v).first(where: { rejected[i]?.contains($0.id) != true }), top.p >= 0.6,
+                      named.closeness(v, to: top.id) >= anchor else { continue }
+                if owners.count == faces.count && inPhoto.contains(owners[i] + "|" + top.id.uuidString) { continue }
+                review[i] = (top.id, top.p)
+            }
+        }
+        return (matched, learned, review)
     }
 
     /// Keeps at most `n` items, spread evenly.

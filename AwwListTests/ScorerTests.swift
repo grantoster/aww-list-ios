@@ -358,6 +358,24 @@ final class PeopleTests: XCTestCase {
         XCTAssertEqual(People.spread(Array(0..<100), to: 4), [0, 25, 50, 75])
         XCTAssertEqual(People.spread([1, 2], to: 4), [1, 2])
     }
+    func testRecognizerAndOnePersonPerPhoto() {
+        // Two people's faces around two different fingerprints; a recognizer tells them apart.
+        let a = (0..<768).map { Float(sin(Double($0))) }, b = (0..<768).map { Float(cos(Double($0) * 1.3)) }
+        func noisy(_ v: [Float], _ k: Int) -> [Float] { v.enumerated().map { $1 + Float(sin(Double($0 * (k + 3)))) * 0.15 } }
+        let aFaces = (0..<8).map { People.floats(People.embed(noisy(a, $0))) }
+        let bFaces = (0..<8).map { People.floats(People.embed(noisy(b, $0 + 20))) }
+        let r = People.train(yes: aFaces, no: bFaces)
+        XCTAssertGreaterThan(r.chance(People.floats(People.embed(noisy(a, 40)))), 0.8)
+        XCTAssertLessThan(r.chance(People.floats(People.embed(noisy(b, 41)))), 0.2)
+        // Two faces in one photo that both look like Maya: only the closer one counts as her.
+        var maya = Person(name: "Maya", centroid: People.merged([], count: 0, adding: Array(aFaces[0..<4])), count: 4,
+                          samplePhoto: "x", sampleBox: [0, 0, 1, 1])
+        maya.examples = aFaces[0..<4].map { v in Data(v.map { UInt8(bitPattern: Int8(max(-127, min(127, ($0 * 127).rounded())))) }) }
+        let t = People.threshold(strictness: 2)
+        let both = [aFaces[4], aFaces[5]]
+        let res = People.learn(both, people: [maya], threshold: t, owners: ["p1", "p1"])
+        XCTAssertEqual(res.matched.count + res.learned.count, 1)
+    }
 }
 
 final class LearnerTests: XCTestCase {

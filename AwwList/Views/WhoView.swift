@@ -103,6 +103,29 @@ struct WhoView: View {
     private var whoBody: some View {
         NavigationStack {
             List {
+                // The fastest way to teach it: one face at a time, most likely first.
+                let reviewable = library.people.filter { !(library.reviewFaces[$0.id] ?? []).isEmpty }
+                if !reviewable.isEmpty {
+                    Section {
+                        ForEach(reviewable) { p in
+                            NavigationLink {
+                                ReviewFacesView(person: p)
+                            } label: {
+                                HStack(spacing: 12) {
+                                    FaceThumb(photo: p.samplePhoto, box: p.sampleBox, size: 36)
+                                    Text("Is this \(p.name)?")
+                                    Spacer()
+                                    let n = (library.reviewFaces[p.id] ?? []).count
+                                    Text("\(n) face\(n == 1 ? "" : "s")").foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    } header: {
+                        Text("Review faces")
+                    } footer: {
+                        Text("One face at a time, most likely first. Every answer teaches the app, so it recognizes more on its own.")
+                    }
+                }
                 if !library.people.isEmpty {
                     Section("Named") {
                         ForEach(library.people) { p in
@@ -516,5 +539,86 @@ struct QuickCheckSheet: View {
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
             .onAppear { if faces.isEmpty && removed.isEmpty { faces = suggestion.faces } }
         }
+    }
+}
+
+/// Review faces: one possible face of a person at a time, with the photo it's from. Yes, No or Skip; the answers
+/// are applied every 15 and when you leave, and each round teaches the app more about them.
+struct ReviewFacesView: View {
+    let person: Person
+    @EnvironmentObject var library: Library
+    @State private var queue: [(photo: String, face: FaceRecord)] = []
+    @State private var index = 0
+    @State private var yes: [(photo: String, face: FaceRecord)] = []
+    @State private var no: [(photo: String, face: FaceRecord)] = []
+    @State private var history: [Bool?] = []   // per answered face: yes, no, or skipped (nil), for Undo
+    @State private var started = false
+
+    var body: some View {
+        VStack(spacing: 18) {
+            if index < queue.count {
+                let f = queue[index]
+                Text("\(index + 1) of \(queue.count)").font(.footnote).foregroundStyle(.secondary)
+                FaceThumb(photo: f.photo, box: f.face.box, size: 220)
+                AssetImage(id: f.photo, contentMode: .fit, targetSide: 300, cached: false)
+                    .frame(height: 160).clipShape(RoundedRectangle(cornerRadius: 10))
+                    .accessibilityHidden(true)
+                Text("Is this \(person.name)?").font(Theme.label(22, relativeTo: .title2))
+                    .accessibilityLabel("Is this face \(person.name)? From a photo taken \(library.photos[f.photo]?.date.formatted(date: .abbreviated, time: .omitted) ?? "")")
+                HStack(spacing: 12) {
+                    Button { answer(false) } label: { Text("No").frame(maxWidth: .infinity, minHeight: 44) }
+                        .buttonStyle(.bordered)
+                    Button { answer(true) } label: { Text("Yes").frame(maxWidth: .infinity, minHeight: 44) }
+                        .buttonStyle(.borderedProminent)
+                }
+                HStack {
+                    Button("Undo") { undo() }.disabled(history.isEmpty)
+                    Spacer()
+                    Button("Skip") { history.append(nil); index += 1 }
+                }
+                .font(.subheadline)
+            } else {
+                ContentUnavailableView {
+                    Label(queue.isEmpty ? "Nothing to review" : "All done", systemImage: "checkmark.circle")
+                } description: {
+                    Text("Thanks! The app is learning from your answers; new faces to check show up here as it finds them.")
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(Theme.background.ignoresSafeArea())
+        .navigationTitle(person.name).navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            guard !started else { return }
+            started = true
+            queue = library.reviewFaces[person.id] ?? []
+        }
+        .onDisappear { apply() }
+    }
+
+    private func answer(_ isThem: Bool) {
+        let f = queue[index]
+        if isThem { yes.append(f) } else { no.append(f) }
+        history.append(isThem)
+        index += 1
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        if yes.count + no.count >= 15 { apply(); history = [] }   // Undo only goes back to the last batch handed over
+    }
+
+    private func undo() {
+        guard let last = history.popLast() else { return }
+        index -= 1
+        let f = queue[index]
+        let same = { (g: (photo: String, face: FaceRecord)) in g.photo == f.photo && g.face.vec == f.face.vec }
+        if last == true { yes.removeAll(where: same) }
+        else if last == false { no.removeAll(where: same) }
+    }
+
+    /// Hands the answers so far to the app (it re-learns in the background).
+    private func apply() {
+        guard !yes.isEmpty || !no.isEmpty else { return }
+        library.applyReview(person: person, yes: yes, no: no)
+        yes = []; no = []
     }
 }

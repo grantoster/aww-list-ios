@@ -772,6 +772,18 @@ final class Library: ObservableObject {
     /// Faces (photo id # face number) already known to be someone, so Who's Who doesn't ask about them.
     private var learnedFaces = Set<String>()
     @Published private(set) var learningPeople = false
+    /// Faces that might be each named person but weren't sure enough to count (Who's Who → Review faces).
+    @Published private(set) var reviewFaces: [UUID: [(photo: String, face: FaceRecord)]] = [:]
+
+    /// Applies a round of Review faces at once: the yeses are named as the person, the nos never count as them.
+    func applyReview(person: Person, yes: [(photo: String, face: FaceRecord)], no: [(photo: String, face: FaceRecord)]) {
+        guard let p = people.first(where: { $0.id == person.id }) else { return }
+        let decided = Set((yes + no).map { Library.faceKey($0.photo, $0.face) })
+        reviewFaces[p.id]?.removeAll { decided.contains(Library.faceKey($0.photo, $0.face)) }
+        if !no.isEmpty { rejectFaces(no, for: p) }
+        if !yes.isEmpty { name(yes, as: p.name, birthday: nil) }
+    }
+
     /// Which named person each face is (face key → person), from the last learning pass and your naming.
     @Published private(set) var faceOwner: [String: UUID] = [:]
     /// Faces you said aren't someone (face key → people), so they're never counted as them again.
@@ -903,23 +915,35 @@ final class Library: ObservableObject {
     func learnPeople() {
         peopleGeneration += 1
         peopleTask?.cancel()
-        guard !people.isEmpty, Library.faceConsent else { learnedWho = [:]; learnedFaces = []; whoCache = [:]; learningPeople = false; return }
+        guard !people.isEmpty, Library.faceConsent else {
+            learnedWho = [:]; learnedFaces = []; whoCache = [:]; reviewFaces = [:]; learningPeople = false; return
+        }
         let gen = peopleGeneration
         let snapshot = photos.values.filter { !notVisible.contains($0.id) }   // not photos that can't be seen now
-        let named = people, t = threshold, rejected = notThem
+        let named = people, t = threshold, rejected = notThem, ignoredKeys = ignoredFaces
         learningPeople = true
         peopleTask = Task.detached(priority: .utility) {
             var faces: [[Float]] = [], owners: [String] = [], keys: [String] = [], faceKeys: [String] = []
+            var records: [FaceRecord] = []
             for p in snapshot {
                 for (j, f) in (p.faceRecords ?? []).enumerated() where f.vec.count == People.dim {
                     faces.append(People.floats(f.vec)); owners.append(p.id); keys.append(p.id + "#\(j)")
-                    faceKeys.append(Library.faceKey(p.id, f))
+                    faceKeys.append(Library.faceKey(p.id, f)); records.append(f)
                 }
             }
-            var rej: [Int: Set<UUID>] = [:]
-            for (i, k) in faceKeys.enumerated() { if let r = rejected[k] { rej[i] = r } }
-            let (matched, learned) = People.learn(faces, people: named, threshold: t, rejected: rej)
+            var rej: [Int: Set<UUID>] = [:], ign = Set<Int>()
+            for (i, k) in faceKeys.enumerated() {
+                if let r = rejected[k] { rej[i] = r }
+                if ignoredKeys.contains(k) { ign.insert(i) }
+            }
+            let (matched, learned, review) = People.learn(faces, people: named, threshold: t, rejected: rej, owners: owners, ignored: ign)
             if Task.isCancelled { return }
+            // Faces to ask about in Review faces: most likely first, at most 100 per person.
+            var toReview: [UUID: [(photo: String, face: FaceRecord, chance: Float)]] = [:]
+            for (i, r) in review { toReview[r.id, default: []].append((owners[i], records[i], r.chance)) }
+            let reviewList = toReview.mapValues { list in
+                Array(list.sorted { $0.chance > $1.chance }.prefix(100)).map { (photo: $0.photo, face: $0.face) }
+            }
             var who: [String: Set<UUID>] = [:], done = Set<String>(), counts: [UUID: Int] = [:], owner: [String: UUID] = [:]
             // A face you said isn't someone is never counted as them.
             for (i, id) in matched where rejected[faceKeys[i]]?.contains(id) != true {
@@ -935,6 +959,7 @@ final class Library: ObservableObject {
                 self.learnedWho = result
                 self.learnedFaces = known
                 self.faceOwner = owners2
+                self.reviewFaces = reviewList
                 self.whoCache = [:]
                 self.learningPeople = false
                 self.rebuild(); self.save()
