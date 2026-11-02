@@ -166,7 +166,11 @@ struct WhoView: View {
                                 HStack {
                                     Text("Is this \(s.person.name)?").font(.headline)
                                     Spacer()
-                                    Button("No") { library.declinedChecks.insert(s.id); regroup() }.buttonStyle(.bordered)
+                                    Button("No") {
+                                        // Remembered for good: these faces aren't suggested as them again.
+                                        if let p = library.people.first(where: { $0.id == s.person.id }) { library.rejectFaces(s.faces, for: p) }
+                                        library.declinedChecks.insert(s.id); regroup()
+                                    }.buttonStyle(.bordered)
                                     Button("Yes") {
                                         // By id, in case they were renamed since.
                                         if let p = library.people.first(where: { $0.id == s.person.id }) {
@@ -574,7 +578,10 @@ struct ReviewFacesView: View {
                 HStack {
                     Button("Undo") { undo() }.disabled(history.isEmpty)
                     Spacer()
-                    Button("Skip") { history.append(nil); index += 1 }
+                    Button("Skip") {
+                        library.skipFace(queue[index].photo, queue[index].face)   // not asked about again
+                        history.append(nil); index += 1
+                    }
                 }
                 .font(.subheadline)
             } else {

@@ -181,12 +181,13 @@ enum People {
 
     /// Trains one recognizer per named person (with at least 4 of their faces and 4 that aren't them).
     /// `negatives`: extra faces that aren't a given person (the ones you rejected).
-    static func trainRecognizers(_ people: [Person], negatives: [UUID: [[Float]]] = [:]) -> [UUID: Recognizer] {
+    static func trainRecognizers(_ people: [Person], negatives: [UUID: [[Float]]] = [:],
+                                 positives: [UUID: [[Float]]] = [:]) -> [UUID: Recognizer] {
         var pos: [UUID: [[Float]]] = [:]
         for p in people {
             var v = (p.examples ?? []).filter { $0.count == dim }.map(floats)
             if p.centroid.count == dim { v.append(p.centroid) }
-            pos[p.id] = v
+            pos[p.id] = v + spread(positives[p.id] ?? [], to: 300)   // plus every face you've confirmed (a sample)
         }
         var out: [UUID: Recognizer] = [:]
         for p in people {
@@ -235,23 +236,28 @@ enum People {
     /// `rejected`: faces you said aren't someone (index → those people); they're never matched or learned as
     /// them, and so never become references that reach further.
     static func learn(_ faces: [[Float]], people: [Person], threshold: Float, rounds: Int = 3,
-                      rejected: [Int: Set<UUID>] = [:], owners: [String] = [], ignored: Set<Int> = [])
+                      rejected: [Int: Set<UUID>] = [:], owners: [String] = [], ignored: Set<Int> = [],
+                      confirmed: [Int: UUID] = [:])
         -> (matched: [Int: UUID], learned: [Int: UUID], review: [Int: (id: UUID, chance: Float)]) {
         let named = Matcher(people)
         var matcher = named
         var matched = [Int: UUID](), learned = [Int: UUID]()
         var sims = [Int: Float]()
-        for (i, v) in faces.enumerated() {
+        // Faces you confirmed yourself are always that person (they never come up for checking again).
+        for (i, id) in confirmed where rejected[i]?.contains(id) != true { matched[i] = id; sims[i] = 2 }
+        for (i, v) in faces.enumerated() where matched[i] == nil {
             if let b = named.best(v), b.sim >= threshold, rejected[i]?.contains(b.id) != true { matched[i] = b.id; sims[i] = b.sim }
         }
         // Each person's recognizer, trained on their named faces against everyone else's and your rejections.
         var negatives: [UUID: [[Float]]] = [:]
         for (i, ids) in rejected { for id in ids { negatives[id, default: []].append(faces[i]) } }
         // Faces far from everyone named teach each recognizer what "not them" looks like (strangers, other kids).
-        let far = faces.indices.filter { i in (named.best(faces[i])?.sim ?? -2) < threshold - 0.2 }
+        let far = faces.indices.filter { i in confirmed[i] == nil && (named.best(faces[i])?.sim ?? -2) < threshold - 0.2 }
         negatives[People.nobody] = spread(far, to: 300).map { faces[$0] }
         if Task.isCancelled { return ([:], [:], [:]) }
-        let recognizers = trainRecognizers(people, negatives: negatives)
+        var positives: [UUID: [[Float]]] = [:]
+        for i in confirmed.keys.sorted() where rejected[i]?.contains(confirmed[i]!) != true { positives[confirmed[i]!, default: []].append(faces[i]) }
+        let recognizers = trainRecognizers(people, negatives: negatives, positives: positives)
         func chances(_ v: [Float]) -> [(id: UUID, p: Float)] {
             recognizers.map { (id: $0.key, p: $0.value.chance(v)) }.sorted { $0.p > $1.p }
         }

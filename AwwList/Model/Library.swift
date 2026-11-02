@@ -148,6 +148,8 @@ final class Library: ObservableObject {
         var reactions: [String: Int]? = nil
         var notThem: [String: [String]]? = nil; var ignoredFaces: [String]? = nil
         var addedBack: [String]? = nil
+        var confirmedFaces: [String: String]? = nil
+        var skippedFaces: [String]? = nil
     }
 
     /// False until the saved library has been read (off the main thread, so a large library can't make iOS end
@@ -786,6 +788,13 @@ final class Library: ObservableObject {
 
     /// Which named person each face is (face key → person), from the last learning pass and your naming.
     @Published private(set) var faceOwner: [String: UUID] = [:]
+    /// Faces you skipped in Review faces (not asked about again; they can still be named in Who is this?).
+    private(set) var skippedFaces = Set<String>()
+    func skipFace(_ photo: String, _ face: FaceRecord) {
+        skippedFaces.insert(Library.faceKey(photo, face)); saveSoon()
+    }
+    /// Faces you named or confirmed yourself (face key → person): always that person, never asked about again.
+    private(set) var confirmedFaces: [String: UUID] = [:]
     /// Faces you said aren't someone (face key → people), so they're never counted as them again.
     private(set) var notThem: [String: Set<UUID>] = [:]
     /// Faces you removed from "Who is this?" (strangers and the like), so they aren't asked about again.
@@ -816,7 +825,8 @@ final class Library: ObservableObject {
         notThem[key, default: []].insert(person.id)
         if faceOwner[key] == person.id { faceOwner[key] = nil }
         if let i = people.firstIndex(where: { $0.id == person.id }) {
-            lastFaceRemoval = (key, people[i])   // so Undo puts everything back as it was
+            lastFaceRemoval = (key, people[i], confirmedFaces[key] == person.id)   // so Undo puts everything back as it was
+            if confirmedFaces[key] == person.id { confirmedFaces[key] = nil }
             if var ex = people[i].examples, let j = ex.firstIndex(of: face.vec) {
                 ex.remove(at: j)
                 if let n = people[i].namedExamples, j < n { people[i].namedExamples = n - 1 }
@@ -843,7 +853,11 @@ final class Library: ObservableObject {
     /// "These aren't them": faces taken out of a quick check, never counted (or suggested) as this person.
     func rejectFaces(_ faces: [(photo: String, face: FaceRecord)], for person: Person) {
         guard !faces.isEmpty else { return }
-        for f in faces { notThem[Library.faceKey(f.photo, f.face), default: []].insert(person.id) }
+        for f in faces {
+            let k = Library.faceKey(f.photo, f.face)
+            notThem[k, default: []].insert(person.id)
+            if confirmedFaces[k] == person.id { confirmedFaces[k] = nil }
+        }
         whoCache = [:]; saveSoon(); learnPeople()
     }
     /// Undoes "that's not them" for one face (it can be counted as them again).
@@ -857,6 +871,7 @@ final class Library: ObservableObject {
             people[i].examples = last.person.examples; people[i].namedExamples = last.person.namedExamples
             people[i].centroid = last.person.centroid; people[i].count = last.person.count
             people[i].samplePhoto = last.person.samplePhoto; people[i].sampleBox = last.person.sampleBox
+            if last.confirmed { confirmedFaces[key] = person.id }
             lastFaceRemoval = nil
         }
         faceOwner[key] = person.id
@@ -869,7 +884,7 @@ final class Library: ObservableObject {
         notThem[Library.faceKey(photo, face)]?.contains(id) == true
     }
 
-    private var lastFaceRemoval: (key: String, person: Person)?
+    private var lastFaceRemoval: (key: String, person: Person, confirmed: Bool)?
 
     /// Takes faces out of "Who is this?" for good (people you don't need to name).
     func ignoreFaces(_ faces: [(photo: String, face: FaceRecord)]) {
@@ -920,7 +935,8 @@ final class Library: ObservableObject {
         }
         let gen = peopleGeneration
         let snapshot = photos.values.filter { !notVisible.contains($0.id) }   // not photos that can't be seen now
-        let named = people, t = threshold, rejected = notThem, ignoredKeys = ignoredFaces
+        let named = people, t = threshold, rejected = notThem, ignoredKeys = ignoredFaces, confirmedKeys = confirmedFaces
+        let namedIDs = Set(people.map(\.id))
         learningPeople = true
         peopleTask = Task.detached(priority: .utility) {
             var faces: [[Float]] = [], owners: [String] = [], keys: [String] = [], faceKeys: [String] = []
@@ -931,12 +947,24 @@ final class Library: ObservableObject {
                     faceKeys.append(Library.faceKey(p.id, f)); records.append(f)
                 }
             }
-            var rej: [Int: Set<UUID>] = [:], ign = Set<Int>()
+            var rej: [Int: Set<UUID>] = [:], ign = Set<Int>(), conf: [Int: UUID] = [:]
             for (i, k) in faceKeys.enumerated() {
                 if let r = rejected[k] { rej[i] = r }
                 if ignoredKeys.contains(k) { ign.insert(i) }
+                if let id = confirmedKeys[k], namedIDs.contains(id) { conf[i] = id }
             }
-            let (matched, learned, review) = People.learn(faces, people: named, threshold: t, rejected: rej, owners: owners, ignored: ign)
+            // Faces named before confirmations were remembered: a face whose print is one you named counts too.
+            var namedPrint: [Data: UUID] = [:]
+            for p in named { for e in (p.examples ?? []).prefix(p.namedExamples ?? 0) { namedPrint[e] = p.id } }
+            var backfill: [String: UUID] = [:]
+            if !namedPrint.isEmpty {
+                for (i, f) in records.enumerated() where conf[i] == nil && rej[i] == nil {
+                    if let id = namedPrint[f.vec] { conf[i] = id; backfill[faceKeys[i]] = id }
+                }
+            }
+            let remembered = backfill
+            let (matched, learned, review) = People.learn(faces, people: named, threshold: t, rejected: rej, owners: owners,
+                                                          ignored: ign, confirmed: conf)
             if Task.isCancelled { return }
             // Faces to ask about in Review faces: most likely first, at most 100 per person.
             var toReview: [UUID: [(photo: String, face: FaceRecord, chance: Float)]] = [:]
@@ -960,6 +988,9 @@ final class Library: ObservableObject {
                 self.learnedFaces = known
                 self.faceOwner = owners2
                 self.reviewFaces = reviewList
+                    .mapValues { list in list.filter { !self.skippedFaces.contains(Library.faceKey($0.photo, $0.face)) } }
+                // Faces named before confirmations were saved are remembered for good from now on.
+                for (k, id) in remembered where self.confirmedFaces[k] == nil { self.confirmedFaces[k] = id }
                 self.whoCache = [:]
                 self.learningPeople = false
                 self.rebuild(); self.save()
@@ -992,9 +1023,9 @@ final class Library: ObservableObject {
         for f in faces { if let j = photos[f.photo]?.faceRecords?.firstIndex(of: f.face) { learnedFaces.insert(f.photo + "#\(j)") } }
         if let id = people.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame })?.id {
             for ph in names { learnedWho[ph, default: []].insert(id); whoCache[ph] = nil }
-            for f in faces {   // naming a face as someone overrides an earlier "not them"
+            for f in faces {   // naming a face as someone overrides an earlier "not them", and is remembered for good
                 let k = Library.faceKey(f.photo, f.face)
-                notThem[k]?.remove(id); faceOwner[k] = id
+                notThem[k]?.remove(id); faceOwner[k] = id; confirmedFaces[k] = id
             }
         }
         rebuild(); save()
@@ -1011,6 +1042,7 @@ final class Library: ObservableObject {
     func forget(_ person: Person) {
         people.removeAll { $0.id == person.id }
         for k in learnedWho.keys { learnedWho[k]?.remove(person.id) }
+        confirmedFaces = confirmedFaces.filter { $0.value != person.id }
         whoCache = [:]; rebuild(); save(); learnPeople()
     }
 
@@ -1022,8 +1054,10 @@ final class Library: ObservableObject {
         let centroids = People.Matcher(people.map { p -> Person in var p = p; p.examples = nil; return p })
         for m in everyMoment {
             for (j, f) in (m.best.faceRecords ?? []).enumerated() where f.vec.count == People.dim
-                && !learnedFaces.contains(m.best.id + "#\(j)") && !ignoredFaces.contains(Library.faceKey(m.best.id, f))
-                && centroids.match(People.floats(f.vec), threshold: t).map({ notThem[Library.faceKey(m.best.id, f)]?.contains($0) == true }) ?? true {
+                && !learnedFaces.contains(m.best.id + "#\(j)") {
+                let key = Library.faceKey(m.best.id, f)
+                guard !ignoredFaces.contains(key), confirmedFaces[key] == nil,
+                      centroids.match(People.floats(f.vec), threshold: t).map({ notThem[key]?.contains($0) == true }) ?? true else { continue }
                 out.append((m.best.id, f))
                 if out.count >= limit { return out }
             }
@@ -1327,7 +1361,8 @@ final class Library: ObservableObject {
                       claudeRemoved: claudeRemoved, claudeSent: claudeSent.mapValues { Array($0) },
                       claudeSentYear: claudeSentYear, reactions: reactions,
                       notThem: notThem.mapValues { $0.map(\.uuidString) }, ignoredFaces: Array(ignoredFaces),
-                      addedBack: Array(addedBack))
+                      addedBack: Array(addedBack), confirmedFaces: confirmedFaces.mapValues(\.uuidString),
+                      skippedFaces: Array(skippedFaces))
         let u = url, legacy = legacyURL
         // One save at a time, in order, so an older snapshot can never land after a newer one.
         Library.saveQueue.async {
@@ -1381,6 +1416,8 @@ final class Library: ObservableObject {
         notThem = (s.notThem ?? [:]).mapValues { Set($0.compactMap(UUID.init(uuidString:))) }
         ignoredFaces = Set(s.ignoredFaces ?? [])
         addedBack = Set(s.addedBack ?? [])
+        confirmedFaces = (s.confirmedFaces ?? [:]).compactMapValues(UUID.init(uuidString:))
+        skippedFaces = Set(s.skippedFaces ?? [])
         claudeSensitive = s.claudeSensitive ?? false
         ownFilter = s.learnedFilter.flatMap { $0.weights.count == Learner.featureCount ? $0 : nil }
         useBuiltInLearning = s.useBuiltInLearning ?? true
