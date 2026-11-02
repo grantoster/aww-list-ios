@@ -70,7 +70,9 @@ final class Library: ObservableObject {
         rebuild(); save()
     }
 
-    /// Your thumbs up (1) or down (-1) by photo id: a quarter point on Claude's or the learned score when ranking
+    /// What a thumbs moves a photo's score, in points: up a quarter, down a half (it's mostly for pushing photos down).
+    nonisolated static func thumbNudge(_ r: Int) -> Double { r > 0 ? 0.25 : r < 0 ? -0.5 : 0 }
+    /// Your thumbs up (1) or down (-1) by photo id: up a quarter point, down a half, on Claude's or the learned score when ranking
     /// (it settles ties in Apple's and Consolidated); for photos Claude scored, the learning learns from it; and
     /// Learn my Likes learns your taste from all of them.
     @Published private(set) var reactions: [String: Int] = [:]
@@ -97,7 +99,7 @@ final class Library: ObservableObject {
         guard r != 0 else { return m }
         var m = m
         m.reaction = r
-        // The quarter point itself goes into the score behind the list (see rebuild); here it only breaks ties.
+        // The nudge itself goes into the score behind the list (see rebuild); here it only breaks ties.
         return m
     }
 
@@ -697,12 +699,12 @@ final class Library: ObservableObject {
             for p in scored.sorted(by: { $0.id < $1.id }) {
                 guard let f = p.feat, let x = Learner.decode(f) else { continue }
                 guard let c = p.claude else { continue }
-                // Your thumbs nudge what it learns: a quarter point above (up) or below (down) Claude's score.
+                // Your thumbs nudge what it learns: a quarter point above Claude's score (up), half a point below (down).
                 if let r = reacts[p.id], c.exclude == nil {
                     let base = c.score2.map { (c.score + $0) / 2 } ?? c.score
-                    parts.append("\(p.id)|r\(r)v4|\(c.score)|\(c.score2 ?? -1)")
+                    parts.append("\(p.id)|r\(r)v5|\(c.score)|\(c.score2 ?? -1)")
                     verdicts.append((p.date, x, false))
-                    examples.append((p.date, x, min(10, max(1, base + 0.25 * Double(r)))))
+                    examples.append((p.date, x, min(10, max(1, base + Library.thumbNudge(r)))))
                     if c.score2 != nil { averaged += 1 }
                     continue
                 }
@@ -1270,7 +1272,7 @@ final class Library: ObservableObject {
                 } else if let l = m.learnedScore {
                     v = l
                 }
-                return v + 0.25 * Double(reaction(m)) + m.rankRaw * 0.001   // your thumbs: a quarter point
+                return v + Library.thumbNudge(reaction(m)) + m.rankRaw * 0.001   // your thumbs: +0.25 up, −0.5 down
             }
             let cal = Scorer.calibrate(vals.map { $0 / 10 }, years: ms.map(\.year))
             for i in ms.indices {
@@ -1377,10 +1379,10 @@ final class Library: ObservableObject {
     nonisolated static func ranked(_ a: Moment, _ b: Moment) -> Bool {
         if a.score != b.score { return a.score > b.score }
         if let fa = a.consolidated, let fb = b.consolidated, fa != fb { return fa > fb }
-        // Your thumbs count as a quarter point on Claude's and the learned score, and settle remaining ties.
-        let ca = a.claudeScore.map { $0 + 0.25 * Double(a.reaction) } ?? 0, cb = b.claudeScore.map { $0 + 0.25 * Double(b.reaction) } ?? 0
+        // Your thumbs count (+0.25 up, −0.5 down) on Claude's and the learned score, and settle remaining ties.
+        let ca = a.claudeScore.map { $0 + Library.thumbNudge(a.reaction) } ?? 0, cb = b.claudeScore.map { $0 + Library.thumbNudge(b.reaction) } ?? 0
         if ca != cb { return ca > cb }
-        let la = a.learnedScore.map { $0 + 0.25 * Double(a.reaction) } ?? 0, lb = b.learnedScore.map { $0 + 0.25 * Double(b.reaction) } ?? 0
+        let la = a.learnedScore.map { $0 + Library.thumbNudge(a.reaction) } ?? 0, lb = b.learnedScore.map { $0 + Library.thumbNudge(b.reaction) } ?? 0
         if la != lb { return la > lb }
         if a.apple != b.apple { return a.apple > b.apple }
         if a.reaction != b.reaction { return a.reaction > b.reaction }

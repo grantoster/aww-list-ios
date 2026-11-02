@@ -23,7 +23,7 @@ struct LikesSection: View {
 
     private var footer: Text {
         let n = library.votesCount
-        let base = Text("Shows you 100 random photos to vote up or down, then nudges every photo's learned score (by up to \(String(format: "%.1f", Learner.maxTasteNudge)) points) toward what you like. Every thumbs up or down you give counts, here or on any photo. ")
+        let base = Text("Shows you 100 random photos to vote up or down, then moves every photo's learned score toward what you like: down by up to half a point for photos like the ones you voted down, up by up to a quarter point for ones like your thumbs up. Every thumbs up or down you give counts, here or on any photo. ")
         if library.training { return base + Text("Learning from your votes now…") }
         guard let t = library.taste else {
             return base + Text("It starts once you've voted on at least \(Learner.minimumVotes) photos, with at least \(Learner.minimumEachWay) up and \(Learner.minimumEachWay) down (\(n.formatted()) votes so far).")

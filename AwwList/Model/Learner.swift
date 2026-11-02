@@ -393,9 +393,9 @@ enum Learner {
     // MARK: Learn my Likes
 
     static let minimumVotes = 30, minimumEachWay = 8
-    /// Most a photo's learned score moves for your taste, in points (each photo you vote on also gets its own quarter
-    /// point, as before).
-    static let maxTasteNudge = 0.5
+    /// Most a photo's learned score moves for your taste, in points: up to a quarter point up, half a point down
+    /// (it's mostly for pushing down what you don't like). Each photo you vote on also gets its own nudge, the same size.
+    static let maxTasteLift = 0.25, maxTasteNudge = 0.5
 
     /// How far toward up (+) or down (−) your votes say this photo is, from your average vote.
     static func tasteLean(_ t: TasteModel, _ x: [Double]) -> Double {
@@ -403,10 +403,11 @@ enum Learner {
         for j in 0..<min(x.count, t.weights.count) { s += t.weights[j] * z(x[j], t.mean[j], t.std[j]) }
         return s
     }
-    /// The nudge to a photo's learned score: up to ±0.5 points, and none until the check says it's useful.
+    /// The nudge to a photo's learned score: up to +0.25 or −0.5 points, and none until the check says it's useful.
     static func tasteNudge(_ t: TasteModel?, _ x: [Double]) -> Double {
         guard let t, t.useful else { return 0 }
-        return maxTasteNudge * max(-1, min(1, tasteLean(t, x)))
+        let lean = max(-1, min(1, tasteLean(t, x)))
+        return lean >= 0 ? maxTasteLift * lean : maxTasteNudge * lean
     }
 
     /// Learns your taste from (photo date, fingerprint, vote ±1). Nil until there are enough votes of each kind.

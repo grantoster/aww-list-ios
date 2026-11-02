@@ -141,9 +141,11 @@ struct ViewerView: View {
     private func react(_ m: Moment, _ value: Int) {
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         library.setReaction(m, value)
-        let learns = m.claudeScore != nil ? " The app learns from it too." : ""
-        favNote = value == 1 ? "Thumbs up: moves it a little higher among photos with similar scores." + learns
-            : value == -1 ? "Thumbs down: moves it a little lower among photos with similar scores." + learns : nil
+        // The points only go into the score when ranking by Claude or the learned score; otherwise it settles ties.
+        let scored = (library.rankBy == "claude" && (m.claudeScore ?? m.learnedScore) != nil) || (library.rankBy == "learned" && m.learnedScore != nil)
+        let learns = m.best.feat != nil ? " Learn my Likes learns from it too." : ""
+        favNote = value == 1 ? (scored ? "Thumbs up: a quarter point higher." : "Thumbs up: moves it higher among photos with the same score.") + learns
+            : value == -1 ? (scored ? "Thumbs down: half a point lower." : "Thumbs down: moves it lower among photos with the same score.") + learns : nil
     }
 
     private func share(_ m: Moment) {

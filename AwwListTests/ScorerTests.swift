@@ -415,7 +415,8 @@ final class LearnerTests: XCTestCase {
         XCTAssertTrue(t.useful)
         let liked = Learner.tasteNudge(t, photo(201)), disliked = Learner.tasteNudge(t, photo(200))
         XCTAssertGreaterThan(liked, 0); XCTAssertLessThan(disliked, 0)
-        XCTAssertLessThanOrEqual(abs(liked), Learner.maxTasteNudge); XCTAssertLessThanOrEqual(abs(disliked), Learner.maxTasteNudge)
+        XCTAssertLessThanOrEqual(liked, Learner.maxTasteLift); XCTAssertGreaterThanOrEqual(disliked, -Learner.maxTasteNudge)
+        XCTAssertEqual(Library.thumbNudge(1), 0.25); XCTAssertEqual(Library.thumbNudge(-1), -0.5); XCTAssertEqual(Library.thumbNudge(0), 0)
         XCTAssertEqual(Learner.tasteNudge(nil, photo(1)), 0)
     }
     func testFingerprintRoundTrip() {
