@@ -158,6 +158,7 @@ final class Library: ObservableObject {
         var skippedFaces: [String]? = nil
         var taste: TasteModel? = nil
         var tasteSignatureBits: Int64? = nil
+        var untaggedIgnored: [String]? = nil
     }
 
     /// False until the saved library has been read (off the main thread, so a large library can't make iOS end
@@ -1073,6 +1074,11 @@ final class Library: ObservableObject {
         }
     }
 
+    /// Photos you took off Who's Who's "no one tagged" list (they stay everywhere else).
+    @Published private(set) var untaggedIgnored = Set<String>()
+    func ignoreUntagged(_ ids: [String]) { untaggedIgnored.formUnion(ids); saveSoon() }
+    func unignoreUntagged(_ ids: [String]) { untaggedIgnored.subtract(ids); saveSoon() }
+
     /// Bumped when saved places or town names change, so Home's Place filter is worked out again.
     @Published private(set) var placesVersion = 0
     func placesChanged() { placesVersion += 1; rebuildSoon() }   // Home's lists (and Place menu) follow the new list
@@ -1619,7 +1625,8 @@ final class Library: ObservableObject {
                       notThem: notThem.mapValues { $0.map(\.uuidString) }, ignoredFaces: Array(ignoredFaces),
                       addedBack: Array(addedBack), confirmedFaces: confirmedFaces.mapValues(\.uuidString),
                       skippedFaces: Array(skippedFaces), taste: taste,
-                      tasteSignatureBits: tasteSignature.map { Int64(bitPattern: $0) })
+                      tasteSignatureBits: tasteSignature.map { Int64(bitPattern: $0) },
+                      untaggedIgnored: Array(untaggedIgnored))
         let u = url, legacy = legacyURL
         // One save at a time, in order, so an older snapshot can never land after a newer one.
         Library.saveQueue.async {
@@ -1700,6 +1707,7 @@ final class Library: ObservableObject {
         if let f = ownFilter, f.testRemovals == nil { trainedSignature = nil }
         taste = s.taste.flatMap { $0.weights.count == Learner.featureCount ? $0 : nil }
         tasteSignature = s.tasteSignatureBits.map { UInt64(bitPattern: $0) }
+        untaggedIgnored = Set(s.untaggedIgnored ?? [])
         ownModel = s.learned.flatMap { m -> LearnedModel? in
             guard m.weights.count == Learner.featureCount else { return nil }
             var m = m

@@ -158,7 +158,7 @@ struct WhoView: View {
                             }
                         }
                     } footer: {
-                        Text("Photos in your top \(UntaggedPhotosView.topCount) with faces where no one is tagged or recognized yet. Tap one to tag who's in it.")
+                        Text("Photos in your top \(UntaggedPhotosView.topCount) with faces where no one is tagged or recognized yet. Tap one to tag who's in it, or ignore ones you won't tag.")
                     }
                     Section("Named") {
                         ForEach(library.people) { p in
@@ -278,8 +278,9 @@ struct WhoView: View {
             .sheet(item: $editing, onDismiss: regroup) { p in PersonSheet(person: p) }
             .task { regroup() }
             .onReceive(Shared.scanner.$isScanning) { scanning in if !scanning { regroup() } }   // new face prints
-            .onReceive(library.$moments.debounce(for: .milliseconds(300), scheduler: DispatchQueue.main)) {
-                untaggedCount = UntaggedPhotosView.untagged($0, library: library).count
+            .onReceive(library.$moments.combineLatest(library.$untaggedIgnored)
+                .debounce(for: .milliseconds(300), scheduler: DispatchQueue.main)) { pair in
+                untaggedCount = UntaggedPhotosView.untagged(pair.0, library: library).count
             }
             .onChange(of: library.learningPeople) { _, busy in if !busy { regroup() } }
         }
@@ -856,19 +857,24 @@ struct TallyCell: View {
 
 /// The top photos (as ranked on Home, Overall) where no one is tagged or recognized, to tag them one by one.
 struct UntaggedPhotosView: View {
-    static let topCount = 300
+    static let topCount = 500
     @EnvironmentObject var library: Library
     @State private var tagging: TagTarget?
     @State private var list: [Moment]?
+    /// Choosing photos to take off this list (tap to pick, then Ignore).
+    @State private var choosing = false
+    @State private var chosen = Set<String>()
+    /// The photos just ignored, for Undo.
+    @State private var lastIgnored: [String] = []
 
     /// A face Tag people can name (the current recognizer's print, with a box), and not one you set aside.
     @MainActor static func taggable(_ f: FaceRecord, in photo: String, _ library: Library) -> Bool {
         f.vec.count == People.dim && f.box.count == 4 && !library.ignoredFaces.contains(Library.faceKey(photo, f))
     }
 
-    /// Moments in the top 300 as Home shows them on Overall (similar shots folded, kids balanced, if those are on)
-    /// that have faces but no named person.
-    @MainActor static func untagged(_ moments: [Moment], library: Library) -> [Moment] {
+    /// Moments in the top 500 as Home shows them on Overall (similar shots folded, kids balanced, if those are on)
+    /// that have faces but no named person, leaving out photos you ignored here.
+    @MainActor static func untagged(_ moments: [Moment], library: Library, includingIgnored: Bool = false) -> [Moment] {
         let people = library.people
         let d = UserDefaults.standard
         let fold = d.object(forKey: "groupSimilar") as? Bool ?? true, balance = d.bool(forKey: "balanceKids")
@@ -878,9 +884,23 @@ struct UntaggedPhotosView: View {
         } else {
             top = fold ? SimilarShots.fold(moments, limit: topCount) : moments
         }
+        let ignored = includingIgnored ? [] : library.untaggedIgnored
         return top.prefix(topCount).filter { m in
-            m.people.isEmpty && (m.best.faceRecords ?? []).contains { taggable($0, in: m.best.id, library) }
+            !ignored.contains(m.best.id) && m.people.isEmpty
+                && (m.best.faceRecords ?? []).contains { taggable($0, in: m.best.id, library) }
         }
+    }
+
+    private func refresh() { list = Self.untagged(library.moments, library: library); tidy() }
+    /// How many ignored photos would come back (still in the top 500 with no one tagged).
+    @State private var comeBack = 0
+
+    private func ignore(_ ids: [String]) {
+        guard !ids.isEmpty else { return }
+        library.ignoreUntagged(ids)
+        lastIgnored = ids
+        chosen = []; choosing = false
+        refresh()
     }
 
     var body: some View {
@@ -888,41 +908,98 @@ struct UntaggedPhotosView: View {
             if list == nil {
                 ProgressView().padding(.top, 40)
             } else if let list, list.isEmpty {
-                ContentUnavailableView(library.moments.isEmpty ? "No photos yet" : "Everyone's tagged", systemImage: "checkmark.circle",
+                ContentUnavailableView(library.moments.isEmpty ? "No photos yet" : comeBack > 0 ? "Nothing left to tag" : "Everyone's tagged", systemImage: "checkmark.circle",
                                        description: Text(library.moments.isEmpty ? "Photos show up here once your library has been scanned."
-                                                         : "Every photo with faces in your top \(Self.topCount) has someone tagged or recognized."))
+                                                         : "Every photo with faces in your top \(Self.topCount) has someone tagged or recognized, or you ignored it here."))
                     .padding(.top, 40)
             } else if let list {
+                Text(choosing ? "Tap the photos to take off this list, then tap Ignore."
+                     : "Tap a photo to tag who's in it. Hold one, or tap Select, to ignore photos you won't tag (they stay everywhere else).")
+                    .font(.footnote).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16).padding(.top, 8)
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 6)], spacing: 6) {
-                    ForEach(list) { m in
-                        let faces = (m.best.faceRecords ?? []).filter { Self.taggable($0, in: m.best.id, library) }.count
-                        Button { tagging = TagTarget(id: m.best.id) } label: {
-                            AssetImage(id: m.best.id, targetSide: 140)
-                                .aspectRatio(1, contentMode: .fit)
-                                .clipShape(RoundedRectangle(cornerRadius: 10))
-                                .overlay(alignment: .bottomLeading) {
-                                    Text("\(faces) face\(faces == 1 ? "" : "s")")
-                                        .font(.caption2.bold()).foregroundStyle(.white)
-                                        .padding(.horizontal, 6).padding(.vertical, 3)
-                                        .background(Color.black.opacity(0.55), in: Capsule())
-                                        .padding(5)
-                                }
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("\(m.caption), \(faces) face\(faces == 1 ? "" : "s"). Tag people")
-                    }
+                    ForEach(list) { m in tile(m) }
                 }
                 .padding(.horizontal, 16).padding(.vertical, 8)
+            }
+            if comeBack > 0 && !choosing {
+                Button("Show the \(comeBack) ignored photo\(comeBack == 1 ? "" : "s") again") {
+                    library.unignoreUntagged(Array(library.untaggedIgnored)); lastIgnored = []; refresh()
+                }
+                .font(.subheadline).padding(.vertical, 16)
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            if choosing {
+                Button { ignore(Array(chosen)) } label: {
+                    Text(chosen.isEmpty ? "Pick photos to ignore" : "Ignore \(chosen.count) photo\(chosen.count == 1 ? "" : "s")")
+                        .font(.headline).frame(maxWidth: .infinity, minHeight: 50)
+                }
+                .buttonStyle(.borderedProminent).disabled(chosen.isEmpty)
+                .padding(.horizontal, 16).padding(.bottom, 8)
+            } else if !lastIgnored.isEmpty {
+                HStack {
+                    Text("Ignored \(lastIgnored.count) photo\(lastIgnored.count == 1 ? "" : "s")").font(.subheadline)
+                    Spacer()
+                    Button("Undo") { library.unignoreUntagged(lastIgnored); lastIgnored = []; refresh() }.font(.subheadline.bold())
+                }
+                .padding(.horizontal, 16).padding(.vertical, 12)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                .padding(.horizontal, 16).padding(.bottom, 8)
             }
         }
         .background(Theme.background.ignoresSafeArea())
         .navigationTitle("Top \(Self.topCount), no one tagged")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button(choosing ? "Cancel" : "Select") { choosing.toggle(); chosen = [] }
+                    .disabled(!choosing && (list?.isEmpty ?? true))
+            }
+        }
         .sheet(item: $tagging) { t in TagPeopleSheet(photo: t.id) }
         // Worked out when the list changes (tagging someone takes their photo off this list).
         .onReceive(library.$moments.debounce(for: .milliseconds(300), scheduler: DispatchQueue.main)) {
-            list = Self.untagged($0, library: library)
+            list = Self.untagged($0, library: library); tidy()
         }
+    }
+
+    /// After the list changes: picks that left it are dropped, and Select ends if nothing's left.
+    private func tidy() {
+        let ids = Set((list ?? []).map(\.best.id))
+        chosen = chosen.filter(ids.contains)
+        if ids.isEmpty { choosing = false }
+        comeBack = Self.untagged(library.moments, library: library, includingIgnored: true).filter { library.untaggedIgnored.contains($0.best.id) }.count
+    }
+
+    private func tile(_ m: Moment) -> some View {
+        let faces = (m.best.faceRecords ?? []).filter { Self.taggable($0, in: m.best.id, library) }.count
+        let picked = chosen.contains(m.best.id)
+        return Button {
+            if choosing { if picked { chosen.remove(m.best.id) } else { chosen.insert(m.best.id) } }
+            else { tagging = TagTarget(id: m.best.id) }
+        } label: {
+            AssetImage(id: m.best.id, targetSide: 140)
+                .aspectRatio(1, contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay { if choosing { PickMark(picked: picked, cornerRadius: 10) } }
+                .overlay(alignment: .bottomLeading) {
+                    Text("\(faces) face\(faces == 1 ? "" : "s")")
+                        .font(.caption2.bold()).foregroundStyle(.white)
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(Color.black.opacity(0.55), in: Capsule())
+                        .padding(5)
+                }
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button { tagging = TagTarget(id: m.best.id) } label: { Label("Tag people", systemImage: "person.crop.square") }
+            Button { ignore([m.best.id]) } label: { Label("Ignore this photo", systemImage: "eye.slash") }
+        }
+        .accessibilityLabel("\(m.caption), \(faces) face\(faces == 1 ? "" : "s")" + (choosing ? (picked ? ", picked" : "") : ""))
+        .accessibilityHint(choosing ? "Picks or unpicks this photo" : "Tag people")
+        .accessibilityAction(named: "Ignore this photo") { ignore([m.best.id]) }
     }
 }
 
