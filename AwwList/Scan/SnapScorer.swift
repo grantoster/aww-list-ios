@@ -21,9 +21,10 @@ enum SnapScorer {
     static func score(_ s: Signals) -> (raw: Double?, excluded: String?) {
         if s.isScreenshot { return (nil, "Screenshot") }
         if let b = s.blockedLabel, b != "swimwear" { return (nil, b.capitalized) }   // documents, baths, undressed
-        guard let v = value(s) else { return (nil, "No grown-up") }
+        // Before the grown-up check, so a shirtless kid on their own still guards the photos around it.
         if s.blockedLabel == "swimwear" { return (nil, "Swimwear") }
         if Scorer.hasBareChest(s) { return (nil, "Shirtless") }
+        guard let v = value(s) else { return (nil, "No grown-up") }
         return (v, nil)
     }
     /// The score a Swimwear or Shirtless photo keeps (it stays on the list).

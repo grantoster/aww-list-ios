@@ -1165,8 +1165,10 @@ final class Library: ObservableObject {
             learnedWho = [:]; learnedFaces = []   // before the rebuild, so no one stays tagged
             deleteFacePrints()
             // The other app's face prints go too (Who's Who is shared).
-            let other = Shared.library(mode.other)
-            if mode == .snap || Shared.snapOpened, other.ready { other.dropFacePrints() }
+            if mode == .snap || Shared.snapOpened {
+                let other = Shared.library(mode.other)
+                if other.ready { other.dropFacePrints() }
+            }
         }
         whoCache = [:]; rebuild(); save(); learnPeople()
     }
