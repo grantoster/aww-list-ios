@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 /// A round crop of one face from a photo.
@@ -47,6 +48,8 @@ struct WhoView: View {
     @State private var naming: NamingGroup?
     @State private var editing: Person?
     @State private var generation = 0
+    /// How many of the top 300 have no one tagged (worked out when the list changes).
+    @State private var untaggedCount = 0
     /// Groups that look like someone already named: "Is this Maya?"
     @State private var suggestions: [Suggestion] = []
     /// A quick check opened to see all its faces.
@@ -143,6 +146,20 @@ struct WhoView: View {
                     }
                 }
                 if !library.people.isEmpty {
+                    // The best photos with no one tagged yet: open one and tag who's in it.
+                    Section {
+                        NavigationLink {
+                            UntaggedPhotosView()
+                        } label: {
+                            HStack {
+                                Text("Top \(UntaggedPhotosView.topCount) with no one tagged")
+                                Spacer()
+                                Text("\(untaggedCount) photo\(untaggedCount == 1 ? "" : "s")").foregroundStyle(.secondary)
+                            }
+                        }
+                    } footer: {
+                        Text("Photos in your top \(UntaggedPhotosView.topCount) with faces where no one is tagged or recognized yet. Tap one to tag who's in it.")
+                    }
                     Section("Named") {
                         ForEach(library.people) { p in
                             Button { editing = p } label: {
@@ -261,6 +278,9 @@ struct WhoView: View {
             .sheet(item: $editing, onDismiss: regroup) { p in PersonSheet(person: p) }
             .task { regroup() }
             .onReceive(Shared.scanner.$isScanning) { scanning in if !scanning { regroup() } }   // new face prints
+            .onReceive(library.$moments.debounce(for: .milliseconds(300), scheduler: DispatchQueue.main)) {
+                untaggedCount = UntaggedPhotosView.untagged($0, library: library).count
+            }
             .onChange(of: library.learningPeople) { _, busy in if !busy { regroup() } }
         }
     }
@@ -423,6 +443,15 @@ struct PersonSheet: View {
                     }
                 }
                 Section("Name") { TextField("Name", text: $person.name).textInputAutocapitalization(.words) }
+                if !theirs.isEmpty {
+                    Section {
+                        NavigationLink { DoubleCheckView(person: person) } label: {
+                            Label("Double-check \(person.name)'s photos", systemImage: "questionmark.circle")
+                        }
+                    } footer: {
+                        Text("Shows the faces the app counted as \(person.name) on its own but is least sure about, one at a time, so you can say yes or no.")
+                    }
+                }
                 if !theirs.isEmpty || lastRemoved != nil {
                     Section {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 64), spacing: 8)], spacing: 8) {
@@ -581,7 +610,7 @@ struct ReviewFacesView: View {
     @State private var yes: [(photo: String, face: FaceRecord)] = []
     @State private var no: [(photo: String, face: FaceRecord)] = []
     /// Per answered face, for Undo: yes, no, skipped, or tagged as someone else (their name).
-    private enum Answer { case yes, no, skip, other(String, created: Bool) }
+    private enum Answer { case yes, no, skip, stranger, other(String, created: Bool) }
     @State private var history: [Answer] = []
     @State private var started = false
     @State private var naming = false
@@ -619,6 +648,15 @@ struct ReviewFacesView: View {
                         .frame(maxWidth: .infinity, minHeight: 44)
                 }
                 .buttonStyle(.bordered)
+                // Someone you'll never name (a stranger in the background): never asked about again, for anyone.
+                Button {
+                    library.ignoreFaces([f]); no.append(f); history.append(.stranger); index += 1
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    if yes.count + no.count >= 15 { apply(); history = [] }
+                } label: {
+                    Label("Never ask me about this face", systemImage: "nosign").frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .buttonStyle(.bordered).tint(.secondary)
                 HStack {
                     Button("Undo") { undo() }.disabled(history.isEmpty)
                     Spacer()
@@ -688,7 +726,10 @@ struct ReviewFacesView: View {
         switch last {
         case .yes: yes.removeAll(where: same)
         case .no: no.removeAll(where: same)
-        case .skip: break
+        case .skip: library.unskipFace(f.photo, f.face)
+        case .stranger:
+            no.removeAll(where: same)
+            library.unignoreFace(f.photo, f.face)
         case .other(let name, let created):
             no.removeAll(where: same)
             if let p = library.people.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
@@ -810,5 +851,166 @@ struct TallyCell: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 4)
+    }
+}
+
+/// The top photos (as ranked on Home, Overall) where no one is tagged or recognized, to tag them one by one.
+struct UntaggedPhotosView: View {
+    static let topCount = 300
+    @EnvironmentObject var library: Library
+    @State private var tagging: TagTarget?
+    @State private var list: [Moment]?
+
+    /// A face Tag people can name (the current recognizer's print, with a box), and not one you set aside.
+    @MainActor static func taggable(_ f: FaceRecord, in photo: String, _ library: Library) -> Bool {
+        f.vec.count == People.dim && f.box.count == 4 && !library.ignoredFaces.contains(Library.faceKey(photo, f))
+    }
+
+    /// Moments in the top 300 as Home shows them on Overall (similar shots folded, kids balanced, if those are on)
+    /// that have faces but no named person.
+    @MainActor static func untagged(_ moments: [Moment], library: Library) -> [Moment] {
+        let people = library.people
+        let d = UserDefaults.standard
+        let fold = d.object(forKey: "groupSimilar") as? Bool ?? true, balance = d.bool(forKey: "balanceKids")
+        var top: [Moment]
+        if balance {   // balancing needs the whole list
+            top = KidBalance.order(fold ? SimilarShots.fold(moments) : moments, kids: KidBalance.kids(people))
+        } else {
+            top = fold ? SimilarShots.fold(moments, limit: topCount) : moments
+        }
+        return top.prefix(topCount).filter { m in
+            m.people.isEmpty && (m.best.faceRecords ?? []).contains { taggable($0, in: m.best.id, library) }
+        }
+    }
+
+    var body: some View {
+        ScrollView {
+            if list == nil {
+                ProgressView().padding(.top, 40)
+            } else if let list, list.isEmpty {
+                ContentUnavailableView(library.moments.isEmpty ? "No photos yet" : "Everyone's tagged", systemImage: "checkmark.circle",
+                                       description: Text(library.moments.isEmpty ? "Photos show up here once your library has been scanned."
+                                                         : "Every photo with faces in your top \(Self.topCount) has someone tagged or recognized."))
+                    .padding(.top, 40)
+            } else if let list {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 6)], spacing: 6) {
+                    ForEach(list) { m in
+                        let faces = (m.best.faceRecords ?? []).filter { Self.taggable($0, in: m.best.id, library) }.count
+                        Button { tagging = TagTarget(id: m.best.id) } label: {
+                            AssetImage(id: m.best.id, targetSide: 140)
+                                .aspectRatio(1, contentMode: .fit)
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                                .overlay(alignment: .bottomLeading) {
+                                    Text("\(faces) face\(faces == 1 ? "" : "s")")
+                                        .font(.caption2.bold()).foregroundStyle(.white)
+                                        .padding(.horizontal, 6).padding(.vertical, 3)
+                                        .background(Color.black.opacity(0.55), in: Capsule())
+                                        .padding(5)
+                                }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("\(m.caption), \(faces) face\(faces == 1 ? "" : "s"). Tag people")
+                    }
+                }
+                .padding(.horizontal, 16).padding(.vertical, 8)
+            }
+        }
+        .background(Theme.background.ignoresSafeArea())
+        .navigationTitle("Top \(Self.topCount), no one tagged")
+        .navigationBarTitleDisplayMode(.inline)
+        .sheet(item: $tagging) { t in TagPeopleSheet(photo: t.id) }
+        // Worked out when the list changes (tagging someone takes their photo off this list).
+        .onReceive(library.$moments.debounce(for: .milliseconds(300), scheduler: DispatchQueue.main)) {
+            list = Self.untagged($0, library: library)
+        }
+    }
+}
+
+/// Double-check: the faces counted as someone that the app is least sure about, one at a time — yes, no or skip.
+struct DoubleCheckView: View {
+    let person: Person
+    @EnvironmentObject var library: Library
+    @State private var queue: [(photo: String, face: FaceRecord)]?
+    @State private var total = 0
+    @State private var index = 0
+    private enum Answer { case yes(Person?), no, skip }
+    @State private var history: [Answer] = []
+    /// The person as saved (not edits still open in their sheet).
+    private var stored: Person? { library.people.first { $0.id == person.id } }
+
+    var body: some View {
+        VStack(spacing: 18) {
+            if let queue {
+                if index < queue.count {
+                    let f = queue[index]
+                    Text("\(index + 1) of \(queue.count) to double-check, out of \(total) counted as \(person.name)")
+                        .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    FaceThumb(photo: f.photo, box: f.face.box, size: 220)
+                    AssetImage(id: f.photo, contentMode: .fit, targetSide: 300, cached: false)
+                        .frame(height: 160).clipShape(RoundedRectangle(cornerRadius: 10))
+                        .accessibilityHidden(true)
+                    Text("Is this \(person.name)?").font(Theme.label(22, relativeTo: .title2))
+                        .accessibilityLabel("Is this face \(person.name)? From a photo taken \(library.photos[f.photo]?.date.formatted(date: .abbreviated, time: .omitted) ?? "")")
+                    HStack(spacing: 12) {
+                        Button { answer(.no) } label: { Text("No").frame(maxWidth: .infinity, minHeight: 44) }
+                            .buttonStyle(.bordered)
+                        Button { answer(.yes(nil)) } label: { Text("Yes").frame(maxWidth: .infinity, minHeight: 44) }
+                            .buttonStyle(.borderedProminent)
+                    }
+                    HStack {
+                        Button("Undo") { undo() }.disabled(history.isEmpty)
+                        Spacer()
+                        Button("Skip") { answer(.skip) }
+                    }
+                    .font(.subheadline)
+                } else {
+                    ContentUnavailableView {
+                        Label(queue.isEmpty ? "Nothing to double-check" : "All done", systemImage: "checkmark.circle")
+                    } description: {
+                        Text(queue.isEmpty ? "Every face counted as \(person.name) is one you tagged or checked, or one the app is sure about."
+                             : "Thanks! Your answers teach the app, so it gets \(person.name) right more often.")
+                    }
+                }
+            } else {
+                ProgressView("Checking \(person.name)'s photos…").padding(.top, 40)
+            }
+        }
+        .padding(16)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(Theme.background.ignoresSafeArea())
+        .navigationTitle("Double-check").navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            guard queue == nil else { return }
+            total = library.faces(of: person).count
+            library.uncertainFaces(of: person) { queue = $0 }
+        }
+    }
+
+    private func answer(_ a: Answer) {
+        guard let queue, index < queue.count else { return }
+        let f = queue[index]
+        switch a {
+        case .yes:
+            guard let p = stored else { return }
+            library.name([f], as: p.name, birthday: nil)                // now tagged by you: never asked again
+            history.append(.yes(p)); index += 1
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            return
+        case .no: library.removeFace(f.photo, f.face, from: person)    // never counted as them again
+        case .skip: library.skipFace(f.photo, f.face)                  // not asked again
+        }
+        history.append(a); index += 1
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    private func undo() {
+        guard let queue, let last = history.popLast(), index > 0 else { return }
+        index -= 1
+        let f = queue[index]
+        switch last {
+        case .yes(let before): library.unconfirmFace(f.photo, f.face, from: person, restoring: before)
+        case .no: library.restoreFace(f.photo, f.face, to: person)
+        case .skip: library.unskipFace(f.photo, f.face)
+        }
     }
 }

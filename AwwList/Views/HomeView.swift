@@ -877,11 +877,13 @@ enum SimilarShots {
     }
 
     /// Keeps the list's order; each moment is folded under the first (best-ranked) kept one it matches.
-    static func fold(_ list: [Moment]) -> [Moment] {
+    /// `limit`: stop once that many are kept (the ones kept so far are exactly the same).
+    static func fold(_ list: [Moment], limit: Int = .max) -> [Moment] {
         var kept: [Moment] = []
         var scenes: [[Float]?] = []
         var byBucket: [Int: [Int]] = [:]
         for m in list {
+            if kept.count >= limit { break }
             let t = m.best.date.timeIntervalSince1970
             let b = Int((t / window).rounded(.down))
             let sc = scene(m.best)

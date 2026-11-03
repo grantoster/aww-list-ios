@@ -874,10 +874,31 @@ final class Library: ObservableObject {
 
     /// Which named person each face is (face key → person), from the last learning pass and your naming.
     @Published private(set) var faceOwner: [String: UUID] = [:]
-    /// Faces you skipped in Review faces (not asked about again; they can still be named in Who is this?).
+    /// Faces you skipped in Review faces or Double-check (not asked about again in either, for anyone; they can
+    /// still be tagged in Tag people or named in Who is this?).
     private(set) var skippedFaces = Set<String>()
     func skipFace(_ photo: String, _ face: FaceRecord) {
         skippedFaces.insert(Library.faceKey(photo, face)); saveSoon()
+    }
+    func unskipFace(_ photo: String, _ face: FaceRecord) {
+        skippedFaces.remove(Library.faceKey(photo, face)); saveSoon()
+    }
+    /// Undoes a "yes, that's them" from Double-check: still counted as them (as before), just not tagged by you.
+    /// `restoring`: the person as they were before the yes (their average face and examples go back exactly).
+    func unconfirmFace(_ photo: String, _ face: FaceRecord, from person: Person, restoring before: Person? = nil) {
+        let k = Library.faceKey(photo, face)
+        guard confirmedFaces[k] == person.id else { return }
+        confirmedFaces[k] = nil
+        if let before, let i = people.firstIndex(where: { $0.id == person.id }) {
+            people[i].centroid = before.centroid; people[i].count = before.count
+            people[i].examples = before.examples; people[i].namedExamples = before.namedExamples
+            people[i].samplePhoto = before.samplePhoto; people[i].sampleBox = before.sampleBox
+        } else if let i = people.firstIndex(where: { $0.id == person.id }), var ex = people[i].examples, let j = ex.firstIndex(of: face.vec) {
+            ex.remove(at: j)
+            if let n = people[i].namedExamples, j < n { people[i].namedExamples = n - 1 }
+            people[i].examples = ex
+        }
+        saveSoon(); learnPeople()
     }
     /// Faces you named or confirmed yourself (face key → person): always that person, never asked about again.
     private(set) var confirmedFaces: [String: UUID] = [:]
@@ -991,6 +1012,72 @@ final class Library: ObservableObject {
             whoCache[f.photo] = nil
         }
         rebuildSoon(); saveSoon()
+    }
+
+    /// The faces the app counted as this person on its own (not ones you tagged or already checked) that it's least
+    /// sure about, least sure first: close to the Grouping bar, or nearly as close to someone else. Worked out off
+    /// the main thread; at most 100.
+    func uncertainFaces(of person: Person, done: @escaping ([(photo: String, face: FaceRecord)]) -> Void) {
+        guard let me = people.firstIndex(where: { $0.id == person.id }) else { done([]); return }
+        let mine = faces(of: person).filter {
+            let k = Library.faceKey($0.photo, $0.face)
+            return confirmedFaces[k] == nil && !skippedFaces.contains(k) && $0.face.vec.count == People.dim
+        }
+        guard !mine.isEmpty else { done([]); return }
+        // References: everyone's tagged faces and the faces named first (never faces the app learned on its own,
+        // so a face can't vouch for itself).
+        var refs: [People.Ref] = []
+        let index = Dictionary(people.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { a, _ in a })
+        for (k, p) in people.enumerated() {
+            for e in (p.examples ?? []).prefix(p.namedExamples ?? 0) where e.count == People.dim { refs.append(People.Ref(p: k, v: People.floats(e), t: nil)) }
+        }
+        for (key, id) in confirmedFaces.sorted(by: { $0.key < $1.key }) {
+            guard let k = index[id], let photo = key.split(separator: "|").first.map(String.init), let ph = photos[photo],
+                  let f = ph.faceRecords?.first(where: { $0.vec.count == People.dim && Library.faceKey(photo, $0) == key }) else { continue }
+            refs.append(People.Ref(p: k, v: People.floats(f.vec), t: ph.date.timeIntervalSinceReferenceDate))
+        }
+        let vecs = mine.map { People.floats($0.face.vec) }
+        let when: [Double?] = mine.map { photos[$0.photo]?.date.timeIntervalSinceReferenceDate }
+        // People who can't be this face anyway (as when learning): ones you said it isn't, ones born after the
+        // photo, and ones counted on another face in the same photo. They aren't counted as close rivals.
+        let minePhotos = Set(mine.map(\.photo))
+        var ownersIn: [String: [(key: String, id: UUID)]] = [:]
+        for (key, id) in faceOwner {
+            guard let photo = key.split(separator: "|").first.map(String.init), minePhotos.contains(photo) else { continue }
+            ownersIn[photo, default: []].append((key, id))
+        }
+        let ruledOut: [Set<Int>] = mine.map { f in
+            let key = Library.faceKey(f.photo, f.face)
+            var out = Set((notThem[key] ?? []).compactMap { index[$0] })
+            if let d = photos[f.photo]?.date {
+                for (k, p) in people.enumerated() where p.birthday.map({ d < $0.addingTimeInterval(-86_400) }) ?? false { out.insert(k) }
+            }
+            for o in ownersIn[f.photo] ?? [] where o.key != key { if let k = index[o.id] { out.insert(k) } }
+            return out
+        }
+        let t = threshold, P = people.count
+        Task.detached(priority: .userInitiated) {
+            let table = People.closeness(vecs, Array(vecs.indices), when: when, refs: refs, people: P)
+            var scored: [(i: Int, sure: Float)] = []
+            for i in vecs.indices {
+                let row = table[(i * P)..<(i * P + P)]
+                let own = row[row.startIndex + me]
+                let rival = (0..<P).filter { $0 != me && !ruledOut[i].contains($0) }.map { row[row.startIndex + $0] }.max() ?? -2
+                let sure = min(own - t, own - rival)
+                if sure < 0.1 { scored.append((i, sure)) }
+            }
+            let out = scored.sorted { $0.sure < $1.sure }.prefix(100).map { mine[$0.i] }
+            await MainActor.run { done(Array(out)) }
+        }
+    }
+
+    /// Undoes setting a face aside (it can be asked about again).
+    func unignoreFace(_ photo: String, _ face: FaceRecord) {
+        let k = Library.faceKey(photo, face)
+        guard ignoredFaces.remove(k) != nil else { return }
+        if faceOwner[k] == nil, faceTally.setAside > 0 { faceTally.setAside -= 1 }
+        whoCache[photo] = nil
+        rebuildSoon(); saveSoon(); learnPeople()
     }
 
     /// "Is this X?" checks answered No this session (person id : group key), so they aren't asked again.
