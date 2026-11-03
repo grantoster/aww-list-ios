@@ -54,6 +54,8 @@ struct HomeView: View {
     @AppStorage("balanceKids") private var balanceKids = false
     private var top: [Moment] { Array(pool.prefix(shown)) }
     private var balancing: Bool { balanceKids && person == nil }
+    /// The Home list settings, watched together (one change handler keeps the body quick to type-check).
+    private var listSettings: String { "\(groupSimilar)|\(balanceKids)" }
 
     private func refreshLists(_ moments: [Moment]? = nil) {
         let filtered = (moments ?? library.moments).filter { m in
@@ -174,8 +176,7 @@ struct HomeView: View {
             .onChange(of: age) { shown = 30; if !preparing { endSelecting() } }
             .onChange(of: shot) { shown = 30; if !preparing { endSelecting() } }
             .onChange(of: person) { shown = 30; if !preparing { endSelecting() } }
-            .onChange(of: groupSimilar) { refreshLists() }
-            .onChange(of: balanceKids) { refreshLists() }
+            .onChange(of: listSettings) { refreshLists() }
             .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged).receive(on: RunLoop.main)) { _ in refreshLists() }
             .onChange(of: scope) { refreshLists() }
             .onChange(of: age) { refreshLists() }
