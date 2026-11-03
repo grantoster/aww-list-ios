@@ -115,3 +115,60 @@ final class SettingAndPlaceTests: XCTestCase {
 private extension PhotoScore {
     func withDate(_ d: Date) -> PhotoScore { var p = self; p.date = d; return p }
 }
+
+final class PairwiseTests: XCTestCase {
+    private let day = 86_400.0
+    private func cand(_ id: String, _ v: Double, _ d: Double, people: Set<UUID> = []) -> Pairwise.Candidate {
+        Pairwise.Candidate(id: id, value: v, date: Date(timeIntervalSince1970: 1_600_000_000 + d), people: people)
+    }
+
+    func testRatingMath() {
+        // A beats B twice, B beats C twice: A > B > C, B in the middle near 0.
+        let t = Date()
+        let votes = [PairVote(a: "A", b: "B", winner: "A", date: t), PairVote(a: "B", b: "A", winner: "A", date: t),
+                     PairVote(a: "B", b: "C", winner: "B", date: t), PairVote(a: "C", b: "B", winner: "B", date: t),
+                     PairVote(a: "A", b: "C", winner: nil, date: t)]                    // a skip changes nothing
+        let s = Pairwise.strengths(votes)
+        XCTAssertGreaterThan(s["A"]!, s["B"]!); XCTAssertGreaterThan(s["B"]!, s["C"]!)
+        XCTAssertEqual(s["B"]!, 0, accuracy: 0.05)
+        XCTAssertEqual(s["A"]!, -s["C"]!, accuracy: 0.05)                            // symmetric
+        // No votes: nothing. A thumbs up alone is only a weak start, and a real vote outweighs it.
+        XCTAssertTrue(Pairwise.strengths([]).isEmpty)
+        let up = Pairwise.strengths([], starts: ["X": 1])["X"]!
+        XCTAssertGreaterThan(up, 0); XCTAssertLessThan(up, 0.5)
+        let overruled = Pairwise.strengths([PairVote(a: "X", b: "Y", winner: "Y", date: t),
+                                            PairVote(a: "Y", b: "X", winner: "Y", date: t)], starts: ["X": 1])
+        XCTAssertLessThan(overruled["X"]!, overruled["Y"]!)
+        // Votes outweigh Claude where they disagree: A (Claude 6.5) picked over B (Claude 7) twice ends up above it.
+        let ab = Pairwise.strengths(Array(votes.prefix(2)))
+        XCTAssertGreaterThan(Pairwise.target(anchor: 6.5, strength: ab["A"]!), Pairwise.target(anchor: 7, strength: ab["B"]!))
+        XCTAssertEqual(Pairwise.target(anchor: 9.5, strength: 10), 10)                // capped at 10
+        XCTAssertEqual(Pairwise.chance(0, 0), 0.5, accuracy: 1e-9)
+    }
+
+    func testPairPicker() {
+        let kid = UUID()
+        // Close calls: 1 and 2 are a point apart; 4 is far off in score; 1b is a near-duplicate of 1 (2 minutes later).
+        let pool = [cand("1", 7.0, 0, people: [kid]), cand("1b", 7.0, 120, people: [kid]), cand("2", 6.6, 5 * day, people: [kid]),
+                    cand("3", 6.4, 9 * day), cand("4", 2.0, 20 * day)]
+        var votes: [PairVote] = []
+        var seen = Set<String>()
+        var appearances: [String: Int] = [:]
+        while let pair = Pairwise.next(pool, votes: votes, strengths: Pairwise.strengths(votes)) {
+            let (a, b) = pair
+            XCTAssertNotEqual(a.id, b.id)
+            XCTAssertTrue(seen.insert(Pairwise.key(a.id, b.id)).inserted, "same pair asked twice")
+            XCTAssertLessThanOrEqual(abs(a.value - b.value), 2)
+            XCTAssertFalse(Set([a.id, b.id]) == ["1", "1b"], "near-duplicates paired")
+            XCTAssertFalse(a.id == "4" || b.id == "4", "a photo far off in score was paired")
+            appearances[a.id, default: 0] += 1; appearances[b.id, default: 0] += 1
+            votes.append(PairVote(a: a.id, b: b.id, winner: a.id, date: Date()))
+            XCTAssertLessThan(votes.count, 20)
+        }
+        // The first pair is the closest call with the same child.
+        let first = Pairwise.next(pool, votes: [], strengths: [:])!
+        XCTAssertEqual(Set([first.0.id, first.1.id]), ["1", "2"])
+        // Every photo that can be paired was paired before any was in many pairs.
+        XCTAssertEqual(Set(appearances.keys), ["1", "1b", "2", "3"])
+    }
+}

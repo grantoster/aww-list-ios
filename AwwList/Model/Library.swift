@@ -85,7 +85,7 @@ final class Library: ObservableObject {
     /// Your thumbs up (1) or down (-1) by photo id: up a quarter point, down a half, on Claude's or the learned score when ranking
     /// (it settles ties in Apple's and Consolidated); for photos Claude scored, the learning learns from it; and
     /// Learn my Likes learns your taste from all of them.
-    @Published private(set) var reactions: [String: Int] = [:]
+    @Published private(set) var reactions: [String: Int] = [:] { didSet { strengthsCache = nil } }
     func setReaction(_ m: Moment, _ value: Int, learnSoon: Bool = true) {
         for id in m.memberIDs { reactions[id] = nil }
         if value != 0 { reactions[m.best.id] = value }
@@ -174,6 +174,7 @@ final class Library: ObservableObject {
         var taste: TasteModel? = nil
         var tasteSignatureBits: Int64? = nil
         var untaggedIgnored: [String]? = nil
+        var pairVotes: [PairVote]? = nil
     }
 
     /// False until the saved library has been read (off the main thread, so a large library can't make iOS end
@@ -627,7 +628,7 @@ final class Library: ObservableObject {
         return c.exclude != "bath" && c.exclude != "undressed"
     }
     /// How many Claude results this phone could share as learning data.
-    var shareableLearningCount: Int { photos.values.filter(Library.shareable).count }
+    var shareableLearningCount: Int { photos.values.filter(Library.shareable).count + (pairVotes.contains { $0.winner != nil } ? 1 : 0) }
 
     /// Writes this phone's learning data to a file to send to the app's owner, so the learning built into the app
     /// can be trained on many families' results. For each photo Claude judged: the phone's numeric fingerprint of it
@@ -636,7 +637,10 @@ final class Library: ObservableObject {
     /// read back). No photos, photo ids, captions, names, face prints, places or dates. Bath and undressed photos
     /// are left out. Built off the main thread; nil if there's nothing to share or the file can't be written.
     func writeLearningData() async -> URL? {
-        let scored = photos.values.filter(Library.shareable)
+        // Claude-scored photos, plus the photos in your Learn my Likes votes (so the shared model can learn from them).
+        let votes = pairVotes.filter { $0.winner != nil }
+        let inVotes = Set(votes.flatMap { [$0.a, $0.b] })
+        let scored = photos.values.filter { Library.shareable($0) || (inVotes.contains($0.id) && $0.feat != nil) }
         guard !scored.isEmpty else { return nil }
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
         return await Task.detached(priority: .userInitiated) { () -> URL? in
@@ -655,19 +659,30 @@ final class Library: ObservableObject {
             let faceStart = Learner.signalCount + Learner.sceneDims
             let blank = Array(15..<21) + Array(faceStart..<(faceStart + Learner.faceDims))   // face shape, face picture
             var rows: [[String: Any]] = []
+            var row: [String: Int] = [:]                       // photo → its row (only for the votes below)
             for p in scored.shuffled() {                      // shuffled: the order says nothing about the library
-                guard let c = p.claude, var f = p.feat else { continue }
+                guard var f = p.feat else { continue }
                 for i in blank { f[f.startIndex + i] = 0 }    // zero = "no face", the same as a photo without one
-                var r: [String: Any] = ["f": f.base64EncodedString(), "g": token(p.date), "m": c.model, "rubric": c.rubric, "r": c.exclude != nil]
-                if c.exclude == nil {
-                    r["s"] = c.score2.map { (c.score + $0) / 2 } ?? c.score
-                    if c.score2 != nil { r["two"] = true }
+                var r: [String: Any] = ["f": f.base64EncodedString(), "g": token(p.date)]
+                if let c = p.claude {
+                    r["m"] = c.model; r["rubric"] = c.rubric; r["r"] = c.exclude != nil
+                    if c.exclude == nil {
+                        r["s"] = c.score2.map { (c.score + $0) / 2 } ?? c.score
+                        if c.score2 != nil { r["two"] = true }
+                    }
                 }
+                row[p.id] = rows.count
                 rows.append(r)
             }
             guard !rows.isEmpty else { return nil }
-            let obj: [String: Any] = ["kind": "awwbum-learning-data", "version": 1, "featureCount": Learner.featureCount,
-                                      "faceBlanked": true, "build": build, "count": rows.count, "examples": rows]
+            // Your "Which is cuter?" votes, as [picked row, other row] (no photos, ids or dates; skips left out).
+            let pairs: [[Int]] = votes.compactMap { v in
+                guard let w = v.winner, let wi = row[w], let li = row[w == v.a ? v.b : v.a] else { return nil }
+                return [wi, li]
+            }.shuffled()
+            let obj: [String: Any] = ["kind": "awwbum-learning-data", "version": 2, "featureCount": Learner.featureCount,
+                                      "faceBlanked": true, "build": build, "count": rows.count, "examples": rows,
+                                      "votes": pairs]
             guard let data = try? JSONSerialization.data(withJSONObject: obj) else { return nil }
             let url = FileManager.default.temporaryDirectory.appendingPathComponent("Awwbum learning data.json")
             do { try data.write(to: url, options: [.atomic, .completeFileProtection]); return url } catch { return nil }
@@ -751,9 +766,14 @@ final class Library: ObservableObject {
         retrainBusy = true
         let gen = generation
         let known = trainedSignature, knownLikes = tasteSignature, hadTaste = taste != nil
-        let reacts = reactions
+        // Learn my Likes: your "Which is cuter?" votes (earlier thumbs count only as a weak start) give each photo
+        // a preference; it moves the target the learning aims for, and outweighs Claude where they disagree.
+        let strengths = voteStrengths
+        let anchorModel = learned
         let scored = photos.values.filter { $0.claude != nil && $0.feat != nil }   // only these are needed
-        let voted = photos.values.filter { reacts[$0.id] != nil && $0.feat != nil }   // for Learn my Likes
+        let votedOnly = photos.values.filter { $0.claude == nil && $0.feat != nil && strengths[$0.id] != nil }
+        let voted: [PhotoScore] = []   // thumbs no longer train their own taste model
+        let reactions0: [String: Int] = [:]
         // Gathering the examples (decoding thousands of fingerprints) happens off the main thread too.
         Task.detached(priority: .utility) {
             var parts: [String] = []
@@ -763,12 +783,12 @@ final class Library: ObservableObject {
             for p in scored.sorted(by: { $0.id < $1.id }) {
                 guard let f = p.feat, let x = Learner.decode(f) else { continue }
                 guard let c = p.claude else { continue }
-                // Your thumbs nudge what it learns: a quarter point above Claude's score (up), half a point below (down).
-                if let r = reacts[p.id], c.exclude == nil {
+                // Your votes move what it learns from Claude's score.
+                if let st = strengths[p.id], c.exclude == nil {
                     let base = c.score2.map { (c.score + $0) / 2 } ?? c.score
-                    parts.append("\(p.id)|r\(r)v5|\(c.score)|\(c.score2 ?? -1)")
+                    parts.append("\(p.id)|b\(Int((st * 1000).rounded()))|\(c.score)|\(c.score2 ?? -1)")
                     verdicts.append((p.date, x, false))
-                    examples.append((p.date, x, min(10, max(1, base + Library.thumbNudge(r)))))
+                    examples.append((p.date, x, Pairwise.target(anchor: base, strength: st)))
                     if c.score2 != nil { averaged += 1 }
                     continue
                 }
@@ -778,10 +798,17 @@ final class Library: ObservableObject {
                 if c.exclude == nil { examples.append((p.date, x, c.score2.map { (c.score + $0) / 2 } ?? c.score)) }
                 if c.exclude == nil && c.score2 != nil { averaged += 1 }
             }
-            // Learn my Likes: every photo you voted on, Claude-scored or not.
+            // Photos you voted on that Claude hasn't scored: where the learning puts them now, moved by your votes.
+            if let m = anchorModel {
+                for p in votedOnly.sorted(by: { $0.id < $1.id }) {
+                    guard let f = p.feat, let x = Learner.decode(f), let st = strengths[p.id] else { continue }
+                    parts.append("u|\(p.id)|b\(Int((st * 1000).rounded()))")
+                    examples.append((p.date, x, Pairwise.target(anchor: Learner.predict(m, x), strength: st)))
+                }
+            }
             var votes: [(date: Date, x: [Double], vote: Int)] = [], likeParts: [String] = []
             for p in voted.sorted(by: { $0.id < $1.id }) {
-                guard let f = p.feat, let x = Learner.decode(f), let r = reacts[p.id], r != 0 else { continue }
+                guard let f = p.feat, let x = Learner.decode(f), let r = reactions0[p.id], r != 0 else { continue }
                 likeParts.append("\(p.id)|\(r)")
                 votes.append((p.date, x, r > 0 ? 1 : -1))
             }
@@ -1117,6 +1144,34 @@ final class Library: ObservableObject {
             let out = scored.sorted { $0.sure < $1.sure }.prefix(100).map { mine[$0.i] }
             await MainActor.run { done(Array(out)) }
         }
+    }
+
+    /// Learn my Likes' "Which is cuter?" answers, oldest first (they never leave the phone, except in the learning
+    /// data you choose to send).
+    @Published private(set) var pairVotes: [PairVote] = [] { didSet { strengthsCache = nil } }
+    private var strengthsCache: [String: Double]?
+    /// Each photo's preference from your votes (Bradley-Terry strength; earlier thumbs are a weak start).
+    var voteStrengths: [String: Double] {
+        if let c = strengthsCache { return c }
+        let s = Pairwise.strengths(pairVotes, starts: reactions)
+        strengthsCache = s
+        return s
+    }
+    func recordVote(_ a: String, _ b: String, winner: String?) {
+        pairVotes.append(PairVote(a: a, b: b, winner: winner, date: Date())); saveSoon()
+    }
+    func undoVote() { if !pairVotes.isEmpty { pairVotes.removeLast(); saveSoon() } }
+    /// The next pair to ask about, from the photos on the list (best-ranked 400, kept and ranked as on Home).
+    func nextPair() -> (Moment, Moment)? {
+        let ms = Array(moments.prefix(400))
+        let byID = Dictionary(ms.map { ($0.best.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let pool = ms.map { m in
+            Pairwise.Candidate(id: m.best.id, value: m.learnedScore ?? m.claudeScore ?? Double(m.score), date: m.best.date,
+                               people: m.people, ages: m.ages, similar: Set(m.similar))
+        }
+        guard let pair = Pairwise.next(pool, votes: pairVotes, strengths: voteStrengths),
+              let ma = byID[pair.0.id], let mb = byID[pair.1.id] else { return nil }
+        return Bool.random() ? (ma, mb) : (mb, ma)   // which side each is on says nothing
     }
 
     /// Photos you took off Who's Who's "no one tagged" list (they stay everywhere else).
@@ -1687,7 +1742,7 @@ final class Library: ObservableObject {
                       addedBack: Array(addedBack), confirmedFaces: ownsWho ? confirmedFaces.mapValues(\.uuidString) : nil,
                       skippedFaces: ownsWho ? Array(skippedFaces) : nil, taste: taste,
                       tasteSignatureBits: tasteSignature.map { Int64(bitPattern: $0) },
-                      untaggedIgnored: Array(untaggedIgnored))
+                      untaggedIgnored: Array(untaggedIgnored), pairVotes: pairVotes)
         let u = url, legacy = legacyURL, mode = self.mode
         // One save at a time, in order, so an older snapshot can never land after a newer one.
         Library.saveQueue.async {
@@ -1775,6 +1830,7 @@ final class Library: ObservableObject {
         taste = s.taste.flatMap { $0.weights.count == Learner.featureCount ? $0 : nil }
         tasteSignature = s.tasteSignatureBits.map { UInt64(bitPattern: $0) }
         untaggedIgnored = Set(s.untaggedIgnored ?? [])
+        pairVotes = s.pairVotes ?? []
         ownModel = s.learned.flatMap { m -> LearnedModel? in
             guard m.weights.count == Learner.featureCount else { return nil }
             var m = m

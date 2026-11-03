@@ -428,7 +428,7 @@ struct LearnedSection: View {
     var body: some View {
         Section {
             if let m = library.learned {
-                LabeledContent("Learned from", value: "\(m.trainedOn.formatted()) Claude scores")
+                LabeledContent("Learned from", value: "\(m.trainedOn.formatted()) " + (library.pairVotes.isEmpty ? "Claude scores" : "photos (Claude scores and your votes)"))
                 let pct = { (v: Double) in "\(Int((v * 100 + 1e-9).rounded(.toNearestOrAwayFromZero)))%" }
                 let pts = { (v: Double) in String(format: "%.1f", (v * 10).rounded(.toNearestOrAwayFromZero) / 10) + " points" }
                 LabeledContent("Within 1 point of Claude", value: pct(m.within1))

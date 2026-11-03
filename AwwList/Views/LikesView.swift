@@ -1,119 +1,131 @@
 import SwiftUI
 
-/// Settings: Learn my Likes — what it has learned from your votes, and the button to vote on more.
+/// Settings: Learn my Likes — "Which is cuter?" votes, what they've done, and the button to vote on more.
 struct LikesSection: View {
     @EnvironmentObject var library: Library
     @State private var voting = false
     var body: some View {
         Section {
-            Button { voting = true } label: { Label("Learn my Likes", systemImage: "hand.thumbsup") }
+            Button { voting = true } label: { Label("Learn my Likes", systemImage: "rectangle.split.2x1") }
                 .fullScreenCover(isPresented: $voting) { LikesView() }
-            let pct = { (v: Double) in "\(Int((v * 100 + 1e-9).rounded(.toNearestOrAwayFromZero)))%" }
-            if let t = library.taste {
-                LabeledContent("Learned from", value: "\(t.votes.formatted()) votes (\(t.ups.formatted()) up)")
-                LabeledContent("Agrees with your votes", value: pct(t.agreement))
-                LabeledContent("Always guessing your usual vote", value: pct(t.baseline))
+            let picked = library.pairVotes.filter { $0.winner != nil }
+            if !picked.isEmpty {
+                LabeledContent("Votes so far", value: picked.count.formatted())
+                LabeledContent("Photos you've compared", value: library.voteStrengths.count.formatted())
             }
         } header: {
             Text("Learn my Likes")
         } footer: {
-            footer
+            Text("Shows two photos from your list at a time; tap the \(AppMode.current == .snap ? "better one" : "cuter one"). Pairs are close calls the ranking is least sure about, so every vote counts. Your votes give each photo a preference, and the learning aims for it, ahead of Claude's score where the two disagree. \(library.training ? "Learning from your votes now…" : "It learns when you tap Done.") Earlier thumbs up and down count as a light starting hint. Votes stay on this iPhone; they're only in the learning data if you choose to send it.")
         }
-    }
-
-    private var footer: Text {
-        let n = library.votesCount
-        let base = Text("Shows you 100 random photos to vote up or down, then moves every photo's learned score toward what you like: down by up to half a point for photos like the ones you voted down, up by up to a quarter point for ones like your thumbs up. Every thumbs up or down you give counts, here or on any photo. ")
-        if library.training { return base + Text("Learning from your votes now…") }
-        guard let t = library.taste else {
-            return base + Text("It starts once you've voted on at least \(Learner.minimumVotes) photos, with at least \(Learner.minimumEachWay) up and \(Learner.minimumEachWay) down (\(n.formatted()) votes so far).")
-        }
-        if !t.useful {
-            return base + Text("Checked on each quarter of your voting days, learning from the rest: it doesn't yet clearly beat always guessing your usual vote, so it isn't changing scores. More votes, with a mix of up and down, help.")
-        }
-        return base + Text("Checked on each quarter of your voting days, learning from the rest. It's nudging scores now.")
     }
 }
 
-/// One photo at a time, chosen at random from your list: thumbs up, thumbs down, or skip.
+/// "Which is cuter?": two photos at a time, side by side (stacked on a narrow screen). Tap one, or Skip.
 struct LikesView: View {
     @EnvironmentObject var library: Library
     @Environment(\.dismiss) private var dismiss
-    @State private var queue: [Moment] = []
-    @State private var index = 0
-    /// Your answers, newest last, for Undo (skips are 0).
-    @State private var answers: [Int] = []
-    static let sessionSize = 100
+    @State private var pair: (Moment, Moment)?
+    @State private var started = false
+    /// Votes (and skips) this session, for the counter and Undo.
+    @State private var session = 0
+    @State private var picks = 0
+    /// Preferences when the session began, to show how far the ranking has moved.
+    @State private var startStrengths: [String: Double] = [:]
+    @State private var moved = 0
+
+    private var question: String { AppMode.current == .snap ? "Which is the better photo?" : "Which is cuter?" }
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 16) {
-                if queue.isEmpty {
-                    Spacer()
-                    Text("There are no photos left that you haven't voted on.").foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                    Spacer()
-                } else if index < queue.count {
-                    let m = queue[index]
-                    Text("\(index + 1) of \(queue.count)").font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
-                    AssetImage(id: m.best.id, contentMode: .fit, targetSide: 900, cached: false)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .clipShape(RoundedRectangle(cornerRadius: 16))
-                        .id(m.best.id)
-                        .accessibilityLabel(m.caption)
-                    HStack(spacing: 12) {
-                        voteButton("Not for me", "hand.thumbsdown.fill", -1)
-                        voteButton("Love it", "hand.thumbsup.fill", 1)
+            VStack(spacing: 14) {
+                if let p = pair {
+                    let a = p.0, b = p.1
+                    Text(question).font(Theme.display(26, relativeTo: .title2))
+                    GeometryReader { geo in
+                        let wide = geo.size.width > geo.size.height
+                        let layout = wide ? AnyLayout(HStackLayout(spacing: 12)) : AnyLayout(VStackLayout(spacing: 12))
+                        layout {
+                            choice(a, other: b)
+                            choice(b, other: a)
+                        }
                     }
                     HStack {
-                        Button("Undo") { undo() }.disabled(answers.isEmpty).frame(minWidth: 44, minHeight: 44)
+                        Button("Undo") { undo() }.disabled(session == 0).frame(minWidth: 44, minHeight: 44)
                         Spacer()
-                        Button("Skip") { answer(0) }.frame(minWidth: 44, minHeight: 44)
+                        Button("Skip") { vote(a, b, winner: nil) }.frame(minWidth: 44, minHeight: 44)
+                            .accessibilityHint("Too close to call, or one of them shouldn't be on the list")
                     }
-                } else {
+                    progress
+                } else if started {
                     Spacer()
                     Image(systemName: "checkmark.circle.fill").font(.system(size: 56)).foregroundStyle(Theme.grapeInk)
-                    let n = answers.filter { $0 != 0 }.count
-                    Text("Thanks! \(n.formatted()) vote\(n == 1 ? "" : "s").").font(Theme.label(22, relativeTo: .title2))
-                    Text("\(AppMode.current.title) learns from them when you tap Done. Settings shows how well it predicts your votes.")
+                    Text(picks == 0 ? "No close calls left to ask about." : "Thanks! \(picks.formatted()) vote\(picks == 1 ? "" : "s").")
+                        .font(Theme.label(22, relativeTo: .title2)).multilineTextAlignment(.center)
+                    Text("New pairs show up as more photos are scored. \(AppMode.current.title) learns from your votes when you tap Done.")
                         .multilineTextAlignment(.center).foregroundStyle(.secondary)
-                    HStack(spacing: 24) {
-                        Button("Undo last") { undo() }.disabled(answers.isEmpty).frame(minHeight: 44)
-                        Button("Do another 100") { start() }.frame(minHeight: 44)
-                    }
                     Spacer()
+                } else {
+                    ProgressView()
                 }
             }
             .padding(16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Theme.background.ignoresSafeArea())
             .navigationTitle("Learn my Likes")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-            .onAppear { if queue.isEmpty && answers.isEmpty { start() } }
+            .onAppear {
+                guard !started else { return }
+                startStrengths = library.voteStrengths
+                pair = library.nextPair(); started = true
+            }
             // Learns once, when you leave (not after every tap).
             .onDisappear { library.retrain() }
         }
     }
 
-    private func voteButton(_ title: String, _ icon: String, _ value: Int) -> some View {
-        Button { answer(value) } label: {
-            Label(title, systemImage: icon).font(.headline).frame(maxWidth: .infinity, minHeight: 52)
+    private func choice(_ m: Moment, other: Moment) -> some View {
+        Button { vote(m, other, winner: m) } label: {
+            AssetImage(id: m.best.id, contentMode: .fit, targetSide: 700, cached: false)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .contentShape(Rectangle())
         }
-        .buttonStyle(.borderedProminent)
-        .tint(value > 0 ? Theme.grapeInk : Color.secondary)
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(m.caption), \(m.best.date.formatted(date: .abbreviated, time: .omitted))")
+        .accessibilityHint("Picks this one")
     }
 
-    private func start() {
-        queue = Array(library.everyMoment.filter { library.reaction($0) == 0 }.shuffled().prefix(Self.sessionSize))
-        index = 0; answers = []
+    private var progress: some View {
+        VStack(spacing: 2) {
+            Text(session == 0 ? "Tap the one you like more." : "\(picks.formatted()) vote\(picks == 1 ? "" : "s") this session")
+                .font(.subheadline.bold())
+            if moved > 0 {
+                Text("Your votes have moved \(moved.formatted()) photo\(moved == 1 ? "" : "s") so far")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity)
     }
-    private func answer(_ v: Int) {
-        guard index < queue.count else { return }
-        if v != 0 { library.setReaction(queue[index], v, learnSoon: false) }
-        answers.append(v); index += 1
+
+    private func vote(_ a: Moment, _ b: Moment, winner: Moment?) {
+        library.recordVote(a.best.id, b.best.id, winner: winner?.best.id)
+        session += 1
+        if winner != nil { picks += 1 }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        moved = Pairwise.moved(from: startStrengths, to: library.voteStrengths)
+        pair = library.nextPair()
     }
+
     private func undo() {
-        guard let last = answers.popLast(), index > 0 else { return }
-        index -= 1
-        if last != 0 { library.setReaction(queue[index], 0, learnSoon: false) }
+        guard session > 0, let last = library.pairVotes.last else { return }
+        library.undoVote()
+        session -= 1
+        if last.winner != nil { picks -= 1 }
+        moved = Pairwise.moved(from: startStrengths, to: library.voteStrengths)
+        // Show that pair again.
+        let byID = Dictionary(library.moments.map { ($0.best.id, $0) }, uniquingKeysWith: { a, _ in a })
+        if let a = byID[last.a], let b = byID[last.b] { pair = (a, b) } else { pair = library.nextPair() }
     }
 }

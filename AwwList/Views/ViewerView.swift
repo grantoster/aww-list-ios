@@ -143,7 +143,7 @@ struct ViewerView: View {
         library.setReaction(m, value)
         // The points only go into the score when ranking by Claude or the learned score; otherwise it settles ties.
         let scored = (library.rankBy == "claude" && (m.claudeScore ?? m.learnedScore) != nil) || (library.rankBy == "learned" && m.learnedScore != nil)
-        let learns = m.best.feat != nil ? " Learn my Likes learns from it too." : ""
+        let learns = m.best.feat != nil ? " (To teach the app your taste, use Learn my Likes in Settings.)" : ""
         favNote = value == 1 ? (scored ? "Thumbs up: a quarter point higher." : "Thumbs up: moves it higher among photos with the same score.") + learns
             : value == -1 ? (scored ? "Thumbs down: half a point lower." : "Thumbs down: moves it lower among photos with the same score.") + learns : nil
     }

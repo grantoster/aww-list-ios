@@ -131,36 +131,67 @@ struct HomeView: View {
         AssetImage.prefetch(ids, side: 180 * displayScale)
     }
 
+    @ToolbarContentBuilder private var homeToolbar: some ToolbarContent {
+        if selecting {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Cancel") { sendTask?.cancel(); endSelecting() }
+            }
+        } else {
+            // Small logo and the name, top left (an empty center keeps the title from showing twice).
+            ToolbarItem(placement: .principal) { Color.clear.frame(width: 1, height: 1).accessibilityHidden(true) }
+            ToolbarItem(placement: .topBarLeading) { BrandSwitch() }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            Button { showSearch = true } label: { Image(systemName: "magnifyingglass") }
+                .accessibilityLabel("Search")
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            Button { showWho = true } label: { Image(systemName: "person.2.crop.square.stack") }
+                .accessibilityLabel("Who's Who")
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            Button { showSettings = true } label: { Image(systemName: "gearshape") }
+                .accessibilityLabel("Settings")
+        }
+    }
+
+    /// The scope, age, kind of shot and person picked, as one value to watch.
+    private var filterKey: String { "\(scope)|\(String(describing: age))|\(String(describing: shot))|\(person?.uuidString ?? "")" }
+
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ScanBannerSlot()
+            LimitedAccessBanner()
+            ClaudeKeyNote()
+            scopeBar
+            filterBar
+            if age == .toddler && library.birthdays.isEmpty && !library.people.contains(where: { $0.birthday != nil }) {
+                ContentUnavailableView {
+                    Label("Add your kids' birthdays", systemImage: "birthday.cake")
+                } description: {
+                    Text("Photos can tell a baby from an older child, but not a toddler from a kid. With birthdays, each photo is sorted by how old your kids were that day.")
+                } actions: {
+                    Button("Add birthdays") { showSettings = true }.buttonStyle(.borderedProminent)
+                }
+                .padding(.top, 24)
+            } else if rankChoice == "claude" && library.claudeScored == 0 {
+                rankMenu
+                ClaudeNotRunView(openSettings: { showSettings = true }).padding(.top, 24)
+            } else if pool.isEmpty {
+                rankMenu
+                EmptyListView(filtersOn: filtersOn,
+                              clear: { age = nil; shot = nil; person = nil; scene = nil; place = nil }).padding(.top, 40)
+            } else {
+                if scope == .all && !onThisDay.isEmpty { onThisDaySection }
+                topSection
+            }
+        }
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    ScanBannerSlot()
-                    LimitedAccessBanner()
-                    ClaudeKeyNote()
-                    scopeBar
-                    filterBar
-                    if age == .toddler && library.birthdays.isEmpty && !library.people.contains(where: { $0.birthday != nil }) {
-                        ContentUnavailableView {
-                            Label("Add your kids' birthdays", systemImage: "birthday.cake")
-                        } description: {
-                            Text("Photos can tell a baby from an older child, but not a toddler from a kid. With birthdays, each photo is sorted by how old your kids were that day.")
-                        } actions: {
-                            Button("Add birthdays") { showSettings = true }.buttonStyle(.borderedProminent)
-                        }
-                        .padding(.top, 24)
-                    } else if rankChoice == "claude" && library.claudeScored == 0 {
-                        rankMenu
-                        ClaudeNotRunView(openSettings: { showSettings = true }).padding(.top, 24)
-                    } else if pool.isEmpty {
-                        rankMenu
-                        EmptyListView(filtersOn: filtersOn,
-                                      clear: { age = nil; shot = nil; person = nil; scene = nil; place = nil }).padding(.top, 40)
-                    } else {
-                        if scope == .all && !onThisDay.isEmpty { onThisDaySection }
-                        topSection
-                    }
-                }
+                content
                 .padding(.horizontal, 16)
                 .padding(.bottom, 32)
             }
@@ -180,44 +211,15 @@ struct HomeView: View {
                 }
             }
             .sheet(item: $sharing) { p in ShareSheet(items: p.files).presentationDetents([.medium, .large]) }
-            .toolbar {
-                if selecting {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button("Cancel") { sendTask?.cancel(); endSelecting() }
-                    }
-                } else {
-                    // Small logo and the name, top left (an empty center keeps the title from showing twice).
-                    ToolbarItem(placement: .principal) { Color.clear.frame(width: 1, height: 1).accessibilityHidden(true) }
-                    ToolbarItem(placement: .topBarLeading) { BrandSwitch() }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { showSearch = true } label: { Image(systemName: "magnifyingglass") }
-                        .accessibilityLabel("Search")
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { showWho = true } label: { Image(systemName: "person.2.crop.square.stack") }
-                        .accessibilityLabel("Who's Who")
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { showSettings = true } label: { Image(systemName: "gearshape") }
-                        .accessibilityLabel("Settings")
-                }
-            }
+            .toolbar { homeToolbar }
             .sheet(isPresented: $showSettings) { SettingsView() }
             .sheet(isPresented: $showWho) { WhoView() }
             .sheet(isPresented: $showSearch) { SearchView() }
             .fullScreenCover(item: $viewer) { v in ViewerView(moments: v.list, index: v.index) }
             .sheet(item: $collage) { c in ShareSheet(image: c.image).presentationDetents([.medium, .large]) }
-            .onChange(of: scope) { shown = 30; if !preparing { endSelecting() } }
-            .onChange(of: age) { shown = 30; if !preparing { endSelecting() } }
-            .onChange(of: shot) { shown = 30; if !preparing { endSelecting() } }
-            .onChange(of: person) { shown = 30; if !preparing { endSelecting() } }
+            .onChange(of: filterKey) { shown = 30; if !preparing { endSelecting() }; refreshLists() }
             .onChange(of: listSettings) { shown = 30; if !preparing { endSelecting() }; refreshLists() }
             .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged).receive(on: RunLoop.main)) { _ in refreshLists() }
-            .onChange(of: scope) { refreshLists() }
-            .onChange(of: age) { refreshLists() }
-            .onChange(of: shot) { refreshLists() }
-            .onChange(of: person) { refreshLists() }
             // Coalesced: a burst of changes re-filters once.
             .onReceive(library.$moments.debounce(for: .milliseconds(80), scheduler: DispatchQueue.main)) { refreshLists($0) }
             .onAppear { refreshLists(); places.nameTowns(library) }
