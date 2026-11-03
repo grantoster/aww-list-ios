@@ -493,10 +493,13 @@ enum Learner {
     /// 2. picks the regularization by 4-fold cross-validation on the rest (also grouped by day);
     /// 3. reports how close that model gets on the held-back days, next to just guessing the average;
     /// 4. refits on everything. Nil until there are enough scores.
-    static func train(_ examples: [(date: Date, x: [Double], y: Double)], averaged: Int = 0,
-                      useNet: Bool = true) -> LearnedModel? {
-        let test = examples.filter { heldBack($0.date) }, train = examples.filter { !heldBack($0.date) }
-        guard train.count >= minimumExamples, test.count >= 10 else { return nil }
+    /// `extra` rows (targets your Learn my Likes votes moved) are learned from but never part of the check, so
+    /// the reported accuracy and `trainedOn` are about Claude's own scores only.
+    static func train(_ claudeRows: [(date: Date, x: [Double], y: Double)], extra: [(date: Date, x: [Double], y: Double)] = [],
+                      averaged: Int = 0, useNet: Bool = true) -> LearnedModel? {
+        let test = claudeRows.filter { heldBack($0.date) }, claudeTrain = claudeRows.filter { !heldBack($0.date) }
+        guard claudeTrain.count + extra.count >= minimumExamples, test.count >= 10 else { return nil }
+        let train = claudeTrain + extra, examples = claudeRows + extra
         func fold(_ d: Date) -> UInt64 { (group(d) / 5) % 4 }
         var bestLambda = 100.0, bestGap = Double.infinity
         for lambda in [1.0, 10, 100, 1000, 10000] {
@@ -554,7 +557,7 @@ enum Learner {
         let preds = test.map { testPredict($0.x) }
         let gaps = zip(preds, test).map { abs($0 - $1.y) }
         let linearGaps = test.map { abs(predict(f, $0.x) - $0.y) }
-        let avg = train.map(\.y).reduce(0, +) / Double(train.count)
+        let avg = claudeTrain.isEmpty ? 5.5 : claudeTrain.map(\.y).reduce(0, +) / Double(claudeTrain.count)
         let baseGaps = test.map { abs(avg - $0.y) }
         func within(_ g: [Double]) -> Double { Double(g.filter { $0 <= 1 }.count) / Double(g.count) }
         func mean(_ g: [Double]) -> Double { g.reduce(0, +) / Double(g.count) }
@@ -568,7 +571,7 @@ enum Learner {
         var finalNet: MLP? = nil
         if blend > 0 { finalNet = trainMLP(netRows(examples, all), examples.map(\.y), epochs: epochs)?.net }
         return LearnedModel(mean: all.mean, std: all.std, weights: all.w, bias: all.bias, lambda: bestLambda,
-                            trainedOn: examples.count, tested: test.count, within1: within(gaps), meanGap: mean(gaps),
+                            trainedOn: claudeRows.count, tested: test.count, within1: within(gaps), meanGap: mean(gaps),
                             date: Date(), baselineWithin1: within(baseGaps), baselineGap: mean(baseGaps),
                             mlp: finalNet, blend: finalNet == nil ? 0 : blend, linearGap: mean(linearGaps),
                             topOverlap: overlap, averaged: averaged)

@@ -85,21 +85,14 @@ final class Library: ObservableObject {
     /// Your thumbs up (1) or down (-1) by photo id: up a quarter point, down a half, on Claude's or the learned score when ranking
     /// (it settles ties in Apple's and Consolidated); for photos Claude scored, the learning learns from it; and
     /// Learn my Likes learns your taste from all of them.
-    @Published private(set) var reactions: [String: Int] = [:] { didSet { strengthsCache = nil } }
+    @Published private(set) var reactions: [String: Int] = [:]
     func setReaction(_ m: Moment, _ value: Int, learnSoon: Bool = true) {
         for id in m.memberIDs { reactions[id] = nil }
         if value != 0 { reactions[m.best.id] = value }
         rebuildSoon(); saveSoon()
-        guard learnSoon else { return }   // Learn my Likes learns once, when you finish
-        // Learning waits until you've stopped tapping for a few seconds (it re-learns from everything).
-        reactionRetrain?.cancel()
-        reactionRetrain = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(8))
-            guard !Task.isCancelled else { return }
-            self.retrain()
-        }
+        // Thumbs no longer teach the learning (Learn my Likes' votes do); only the thumbs from before votes
+        // arrived count, as a weak start (`legacyThumbs`).
     }
-    private var reactionRetrain: Task<Void, Never>?
     func reaction(_ m: Moment) -> Int {
         reactions[m.best.id] ?? m.memberIDs.lazy.compactMap { self.reactions[$0] }.first ?? 0
     }
@@ -175,6 +168,7 @@ final class Library: ObservableObject {
         var tasteSignatureBits: Int64? = nil
         var untaggedIgnored: [String]? = nil
         var pairVotes: [PairVote]? = nil
+        var legacyThumbs: [String: Int]? = nil
     }
 
     /// False until the saved library has been read (off the main thread, so a large library can't make iOS end
@@ -627,8 +621,22 @@ final class Library: ObservableObject {
         guard let c = p.claude, let f = p.feat, f.count == Learner.featureCount else { return false }
         return c.exclude != "bath" && c.exclude != "undressed"
     }
+    /// A photo in your votes that may go in the learning data: a current fingerprint, never anything held back as a
+    /// possible bath or undressed photo (by the phone or by Claude), kept from Claude, or near one of those.
+    private func shareableVoted(_ p: PhotoScore) -> Bool {
+        guard let f = p.feat, f.count == Learner.featureCount, p.privacyHold != true, !neverSend.contains(p.id),
+              !Scorer.heldBack.contains(p.excluded ?? "") else { return false }
+        if let c = p.claude { return c.exclude != "bath" && c.exclude != "undressed" }
+        return true
+    }
     /// How many Claude results this phone could share as learning data.
-    var shareableLearningCount: Int { photos.values.filter(Library.shareable).count + (pairVotes.contains { $0.winner != nil } ? 1 : 0) }
+    var shareableLearningCount: Int { photos.values.filter(Library.shareable).count }
+    /// How many "Which is cuter?" votes would go with them (both photos must be shareable).
+    var shareableVoteCount: Int {
+        pairVotes.filter { v in
+            v.winner != nil && [v.a, v.b].allSatisfy { photos[$0].map(shareableVoted) ?? false }
+        }.count
+    }
 
     /// Writes this phone's learning data to a file to send to the app's owner, so the learning built into the app
     /// can be trained on many families' results. For each photo Claude judged: the phone's numeric fingerprint of it
@@ -640,7 +648,9 @@ final class Library: ObservableObject {
         // Claude-scored photos, plus the photos in your Learn my Likes votes (so the shared model can learn from them).
         let votes = pairVotes.filter { $0.winner != nil }
         let inVotes = Set(votes.flatMap { [$0.a, $0.b] })
-        let scored = photos.values.filter { Library.shareable($0) || (inVotes.contains($0.id) && $0.feat != nil) }
+        let scored = photos.values.filter {
+            inVotes.contains($0.id) ? (shareableVoted($0) && (Library.shareable($0) || $0.claude == nil)) : Library.shareable($0)
+        }
         guard !scored.isEmpty else { return nil }
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
         return await Task.detached(priority: .userInitiated) { () -> URL? in
@@ -769,15 +779,20 @@ final class Library: ObservableObject {
         // Learn my Likes: your "Which is cuter?" votes (earlier thumbs count only as a weak start) give each photo
         // a preference; it moves the target the learning aims for, and outweighs Claude where they disagree.
         let strengths = voteStrengths
-        let anchorModel = learned
+        // Photos Claude hasn't scored are anchored on something your votes never moved: the built-in learning,
+        // or else the on-device score (so retraining can't keep pushing them further).
+        let anchorModel = builtIn.model
         let scored = photos.values.filter { $0.claude != nil && $0.feat != nil }   // only these are needed
         let votedOnly = photos.values.filter { $0.claude == nil && $0.feat != nil && strengths[$0.id] != nil }
+        let onDevice = Dictionary(moments.filter { strengths[$0.best.id] != nil }.map { ($0.best.id, Double($0.apple)) },
+                                  uniquingKeysWith: { a, _ in a })
         let voted: [PhotoScore] = []   // thumbs no longer train their own taste model
         let reactions0: [String: Int] = [:]
         // Gathering the examples (decoding thousands of fingerprints) happens off the main thread too.
         Task.detached(priority: .utility) {
             var parts: [String] = []
             var examples: [(date: Date, x: [Double], y: Double)] = []
+            var moved: [(date: Date, x: [Double], y: Double)] = []   // targets your votes moved
             var verdicts: [(date: Date, x: [Double], removed: Bool)] = []
             var averaged = 0
             for p in scored.sorted(by: { $0.id < $1.id }) {
@@ -788,7 +803,7 @@ final class Library: ObservableObject {
                     let base = c.score2.map { (c.score + $0) / 2 } ?? c.score
                     parts.append("\(p.id)|b\(Int((st * 1000).rounded()))|\(c.score)|\(c.score2 ?? -1)")
                     verdicts.append((p.date, x, false))
-                    examples.append((p.date, x, Pairwise.target(anchor: base, strength: st)))
+                    moved.append((p.date, x, Pairwise.target(anchor: base, strength: st)))
                     if c.score2 != nil { averaged += 1 }
                     continue
                 }
@@ -799,12 +814,11 @@ final class Library: ObservableObject {
                 if c.exclude == nil && c.score2 != nil { averaged += 1 }
             }
             // Photos you voted on that Claude hasn't scored: where the learning puts them now, moved by your votes.
-            if let m = anchorModel {
-                for p in votedOnly.sorted(by: { $0.id < $1.id }) {
-                    guard let f = p.feat, let x = Learner.decode(f), let st = strengths[p.id] else { continue }
-                    parts.append("u|\(p.id)|b\(Int((st * 1000).rounded()))")
-                    examples.append((p.date, x, Pairwise.target(anchor: Learner.predict(m, x), strength: st)))
-                }
+            for p in votedOnly.sorted(by: { $0.id < $1.id }) {
+                guard let f = p.feat, let x = Learner.decode(f), let st = strengths[p.id],
+                      let anchor = anchorModel.map({ Learner.predict($0, x) }) ?? onDevice[p.id] else { continue }
+                parts.append("u|\(p.id)|b\(Int((st * 1000).rounded()))|\(Int((anchor * 100).rounded()))")
+                moved.append((p.date, x, Pairwise.target(anchor: anchor, strength: st)))
             }
             var votes: [(date: Date, x: [Double], vote: Int)] = [], likeParts: [String] = []
             for p in voted.sorted(by: { $0.id < $1.id }) {
@@ -827,7 +841,7 @@ final class Library: ObservableObject {
             }
             await MainActor.run { self.training = true }      // shown in Settings only while really learning
             // Only what changed is learned again (votes alone don't re-learn Claude's scoring).
-            let model = claudeChanged ? Learner.train(examples, averaged: averaged) : nil
+            let model = claudeChanged ? Learner.train(examples, extra: moved, averaged: averaged) : nil
             let filter = claudeChanged ? Learner.trainFilter(verdicts) : nil
             let likes = likesChanged ? Learner.trainTaste(votes) : nil
             await MainActor.run {
@@ -1149,11 +1163,14 @@ final class Library: ObservableObject {
     /// Learn my Likes' "Which is cuter?" answers, oldest first (they never leave the phone, except in the learning
     /// data you choose to send).
     @Published private(set) var pairVotes: [PairVote] = [] { didSet { strengthsCache = nil } }
+    /// The thumbs given before Learn my Likes switched to votes, kept as they were then: a weak starting hint.
+    /// Thumbs given since don't feed the learning.
+    private var legacyThumbs: [String: Int] = [:] { didSet { strengthsCache = nil } }
     private var strengthsCache: [String: Double]?
     /// Each photo's preference from your votes (Bradley-Terry strength; earlier thumbs are a weak start).
     var voteStrengths: [String: Double] {
         if let c = strengthsCache { return c }
-        let s = Pairwise.strengths(pairVotes, starts: reactions)
+        let s = Pairwise.strengths(pairVotes, starts: legacyThumbs)
         strengthsCache = s
         return s
     }
@@ -1742,7 +1759,8 @@ final class Library: ObservableObject {
                       addedBack: Array(addedBack), confirmedFaces: ownsWho ? confirmedFaces.mapValues(\.uuidString) : nil,
                       skippedFaces: ownsWho ? Array(skippedFaces) : nil, taste: taste,
                       tasteSignatureBits: tasteSignature.map { Int64(bitPattern: $0) },
-                      untaggedIgnored: Array(untaggedIgnored), pairVotes: pairVotes)
+                      untaggedIgnored: Array(untaggedIgnored), pairVotes: pairVotes,
+                      legacyThumbs: legacyThumbs)
         let u = url, legacy = legacyURL, mode = self.mode
         // One save at a time, in order, so an older snapshot can never land after a newer one.
         Library.saveQueue.async {
@@ -1831,6 +1849,8 @@ final class Library: ObservableObject {
         tasteSignature = s.tasteSignatureBits.map { UInt64(bitPattern: $0) }
         untaggedIgnored = Set(s.untaggedIgnored ?? [])
         pairVotes = s.pairVotes ?? []
+        // Saved before votes: the thumbs so far become the weak start (later thumbs don't feed the learning).
+        legacyThumbs = s.legacyThumbs ?? (s.reactions ?? [:])
         ownModel = s.learned.flatMap { m -> LearnedModel? in
             guard m.weights.count == Learner.featureCount else { return nil }
             var m = m

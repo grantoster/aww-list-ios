@@ -498,8 +498,8 @@ struct LearnedSection: View {
                 Text("Copy learning appears once this phone has learned from its own Claude scores (about 80–100 of them, spread over enough days).")
                     .font(.footnote).foregroundStyle(.secondary)
             }
-            let shareable = library.shareableLearningCount
-            if shareable > 0 {
+            let shareable = library.shareableLearningCount, votesShared = library.shareableVoteCount
+            if shareable + votesShared > 0 {
                 Button(preparingShare ? "Getting it ready…" : "Send my learning data to Grant") { askShare = true }
                     .disabled(preparingShare)
                     .confirmationDialog("Send your learning data?", isPresented: $askShare, titleVisibility: .visible) {
@@ -514,19 +514,19 @@ struct LearnedSection: View {
                         }
                         Button("Cancel", role: .cancel) {}
                     } message: {
-                        Text("For each photo Claude judged, this sends numbers the phone measured (like smiles, sharpness and the kind of scene), Claude's score, and whether Claude removed it. It leaves out the photos themselves, photo names, captions, names, face prints and face-shape measurements, locations and dates, and never includes bath or undressed photos. The numbers can't practically be turned back into pictures, though someone who already had one of your photos could tell it matches. Grant uses this only to improve the learning built into Awwbum.")
+                        Text("For each photo Claude judged, this sends numbers the phone measured (like smiles, sharpness and the kind of scene), Claude's score, and whether Claude removed it. It also sends your Learn my Likes votes, as which photo you picked over which, with the same measured numbers for the photos in them. It leaves out the photos themselves, photo names, captions, names, face prints and face-shape measurements, locations and dates, and never includes bath or undressed photos. The numbers can't practically be turned back into pictures, though someone who already had one of your photos could tell it matches. Grant uses this only to improve the learning built into Awwbum.")
                     }
                     .sheet(item: $shareFile, onDismiss: {
                         try? FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appendingPathComponent("Awwbum learning data.json"))
                     }) { f in ShareSheet(items: [f.url]) }
-                Text("Optional. Sends the numbers behind your \(shareable.formatted()) Claude results so the learning built into the app can learn from more families. No photos, names, faces, captions, places or dates. You choose how to send it (Messages, Mail, AirDrop).")
+                Text("Optional. Sends the numbers behind your \(shareable.formatted()) Claude result\(shareable == 1 ? "" : "s")\(votesShared > 0 ? " and \(votesShared.formatted()) vote\(votesShared == 1 ? "" : "s")" : "") so the learning built into the app can learn from more families. No photos, names, faces, captions, places or dates. You choose how to send it (Messages, Mail, AirDrop).")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             if library.training { HStack { ProgressView(); Text("Learning…").foregroundStyle(.secondary) } }
         } header: {
             Text("Learned score")
         } footer: {
-            Text("The app studies Claude's scores alongside what it measures on the phone (smiles, closeness, face size, sharpness and the scene), then predicts a Claude-style score for every photo, privately and for free. It also learns which photos Claude takes off the list, so removals follow Claude's judgment instead of Apple's. Both are checked on a fifth of Claude's verdicts it didn't learn from. Claude's own score and removals always win where they exist; with Rank by Claude, photos Claude hasn't seen use the learned score.")
+            Text("The app studies Claude's scores alongside what it measures on the phone (smiles, closeness, face size, sharpness and the scene), then predicts a Claude-style score for every photo, privately and for free. It also learns which photos Claude takes off the list, so removals follow Claude's judgment instead of Apple's. Both are checked on a fifth of Claude's verdicts it didn't learn from. Your Learn my Likes votes move the score it aims for, ahead of Claude's where the two disagree (votes stay on this iPhone). Claude's own score and removals always win where they exist; with Rank by Claude, photos Claude hasn't seen use the learned score.")
         }
     }
 }

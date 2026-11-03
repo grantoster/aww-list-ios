@@ -11,12 +11,12 @@ struct LikesSection: View {
             let picked = library.pairVotes.filter { $0.winner != nil }
             if !picked.isEmpty {
                 LabeledContent("Votes so far", value: picked.count.formatted())
-                LabeledContent("Photos you've compared", value: library.voteStrengths.count.formatted())
+                LabeledContent("Photos you've compared", value: Set(picked.flatMap { [$0.a, $0.b] }).count.formatted())
             }
         } header: {
             Text("Learn my Likes")
         } footer: {
-            Text("Shows two photos from your list at a time; tap the \(AppMode.current == .snap ? "better one" : "cuter one"). Pairs are close calls the ranking is least sure about, so every vote counts. Your votes give each photo a preference, and the learning aims for it, ahead of Claude's score where the two disagree. \(library.training ? "Learning from your votes now…" : "It learns when you tap Done.") Earlier thumbs up and down count as a light starting hint. Votes stay on this iPhone; they're only in the learning data if you choose to send it.")
+            Text("Shows two photos from your list at a time; tap the \(AppMode.current == .snap ? "better one" : "cuter one"). Pairs are close calls the ranking is least sure about, so every vote counts. Your votes give each photo a preference, and the learning aims for it, ahead of Claude's score where the two disagree. \(library.training ? "Learning from your votes now…" : "It learns when you tap Done.") Thumbs up and down given before this count as a light starting hint; thumbs no longer teach the learning. Votes stay on this iPhone; they're only in the learning data if you choose to send it.")
         }
     }
 }
@@ -43,7 +43,7 @@ struct LikesView: View {
                     let a = p.0, b = p.1
                     Text(question).font(Theme.display(26, relativeTo: .title2))
                     GeometryReader { geo in
-                        let wide = geo.size.width > geo.size.height
+                        let wide = geo.size.width >= geo.size.height * 0.7   // side by side on iPad and Mac, stacked on a phone held upright
                         let layout = wide ? AnyLayout(HStackLayout(spacing: 12)) : AnyLayout(VStackLayout(spacing: 12))
                         layout {
                             choice(a, other: b)
