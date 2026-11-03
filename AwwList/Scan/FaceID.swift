@@ -12,6 +12,10 @@ import Vision
 enum FaceID {
     static let side = 112
     static let dims = 512
+    /// Bumped when faces are found differently, so listed photos are read again: 2 = up to 8 faces, down to about
+    /// 1/300 of the photo (was 4 faces of at least 1/170).
+    static let version = 2
+    static let maxFaces = 8, minArea = 0.003
 
     /// The standard ArcFace layout (pixels, top-left origin): left eye, right eye, left and right mouth corners
     /// ("left" as seen in the image).
@@ -131,7 +135,7 @@ enum FaceID {
     static func records(_ image: CGImage, orientation: CGImagePropertyOrientation, faces: [FaceSignal],
                         context: CIContext) -> [FaceRecord]? {
         guard available else { return nil }
-        let chosen = Array(faces.filter { $0.box.count == 4 && $0.area >= 0.006 }.sorted { $0.area > $1.area }.prefix(4))
+        let chosen = Array(faces.filter { $0.box.count == 4 && $0.area >= minArea }.sorted { $0.area > $1.area }.prefix(maxFaces))
         guard !chosen.isEmpty else { return [] }
         let ci = CIImage(cgImage: image).oriented(orientation)
         // Landmarks for each face, found where the face already is.

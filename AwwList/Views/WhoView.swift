@@ -580,8 +580,18 @@ struct ReviewFacesView: View {
     @State private var index = 0
     @State private var yes: [(photo: String, face: FaceRecord)] = []
     @State private var no: [(photo: String, face: FaceRecord)] = []
-    @State private var history: [Bool?] = []   // per answered face: yes, no, or skipped (nil), for Undo
+    /// Per answered face, for Undo: yes, no, skipped, or tagged as someone else (their name).
+    private enum Answer { case yes, no, skip, other(String, created: Bool) }
+    @State private var history: [Answer] = []
     @State private var started = false
+    @State private var naming = false
+    @State private var newName = ""
+    @State private var tagging: TagTarget?
+
+    private var others: [Person] {
+        library.people.filter { $0.id != person.id }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
 
     var body: some View {
         VStack(spacing: 18) {
@@ -600,12 +610,23 @@ struct ReviewFacesView: View {
                     Button { answer(true) } label: { Text("Yes").frame(maxWidth: .infinity, minHeight: 44) }
                         .buttonStyle(.borderedProminent)
                 }
+                // Not them, but you know who it is: tag it as that person instead.
+                Menu {
+                    ForEach(others) { p in Button(p.name) { tagOther(p.name) } }
+                    Button { newName = ""; naming = true } label: { Label("New person…", systemImage: "plus") }
+                } label: {
+                    Label("It's someone else", systemImage: "person.crop.circle.badge.questionmark")
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .buttonStyle(.bordered)
                 HStack {
                     Button("Undo") { undo() }.disabled(history.isEmpty)
                     Spacer()
+                    Button("Tag everyone in this photo") { tagging = TagTarget(id: f.photo) }
+                    Spacer()
                     Button("Skip") {
                         library.skipFace(queue[index].photo, queue[index].face)   // not asked about again
-                        history.append(nil); index += 1
+                        history.append(.skip); index += 1
                     }
                 }
                 .font(.subheadline)
@@ -621,6 +642,12 @@ struct ReviewFacesView: View {
         .frame(maxHeight: .infinity, alignment: .top)
         .background(Theme.background.ignoresSafeArea())
         .navigationTitle(person.name).navigationBarTitleDisplayMode(.inline)
+        .alert("Who is this?", isPresented: $naming) {
+            TextField("Name", text: $newName).textInputAutocapitalization(.words)
+            Button("Cancel", role: .cancel) { newName = "" }
+            Button("Tag") { tagOther(newName); newName = "" }
+        }
+        .sheet(item: $tagging) { t in TagPeopleSheet(photo: t.id) }
         .onAppear {
             guard !started else { return }
             started = true
@@ -632,10 +659,25 @@ struct ReviewFacesView: View {
     private func answer(_ isThem: Bool) {
         let f = queue[index]
         if isThem { yes.append(f) } else { no.append(f) }
-        history.append(isThem)
+        history.append(isThem ? .yes : .no)
         index += 1
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         if yes.count + no.count >= 15 { apply(); history = [] }   // Undo only goes back to the last batch handed over
+    }
+
+    /// Tags this face as someone else (named now, so it counts as theirs), and it isn't this person.
+    private func tagOther(_ raw: String) {
+        let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, index < queue.count else { return }
+        if name.caseInsensitiveCompare(person.name) == .orderedSame { answer(true); return }   // that's a yes
+        let f = queue[index]
+        let created = !library.people.contains { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+        library.name([f], as: name, birthday: nil)
+        no.append(f)
+        history.append(.other(name, created: created))
+        index += 1
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        if yes.count + no.count >= 15 { apply(); history = [] }
     }
 
     private func undo() {
@@ -643,8 +685,17 @@ struct ReviewFacesView: View {
         index -= 1
         let f = queue[index]
         let same = { (g: (photo: String, face: FaceRecord)) in g.photo == f.photo && g.face.vec == f.face.vec }
-        if last == true { yes.removeAll(where: same) }
-        else if last == false { no.removeAll(where: same) }
+        switch last {
+        case .yes: yes.removeAll(where: same)
+        case .no: no.removeAll(where: same)
+        case .skip: break
+        case .other(let name, let created):
+            no.removeAll(where: same)
+            if let p = library.people.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
+                // Someone added just now by this tag goes away again; otherwise the face is just untagged.
+                if created { library.forget(p) } else { library.untagFace(f.photo, f.face, from: p) }
+            }
+        }
     }
 
     /// Hands the answers so far to the app (it re-learns in the background).

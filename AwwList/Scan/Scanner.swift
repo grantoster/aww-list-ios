@@ -65,6 +65,8 @@ final class PhotoScanner: ObservableObject {
             $0.version == Scorer.version && !(retryUnavailable && $0.excluded == Scorer.unavailable)
                 && ($0.raw == nil || !faceModel || ($0.faceRecords.map { $0.allSatisfy { $0.vec.count == People.dim } } ?? false)
                     || (!facesAllowed && $0.facePrintsOff == true))   // Who's Who off: no face prints needed
+                // listed photos whose faces were found under older rules (fewer and only bigger faces)
+                && !(facesAllowed && faceModel && $0.raw != nil && ($0.faces ?? 0) > 0 && $0.faceVersion != FaceID.version)
                 // any photo still holding prints from the old face recognizer is read again (flagged ones too)
                 && !(facesAllowed && faceModel && ($0.faceRecords?.contains { $0.vec.count != People.dim } ?? false))
                 // set-aside photos from before Claude could overrule Apple get one more look
@@ -94,6 +96,7 @@ final class PhotoScanner: ObservableObject {
                 || (p.excluded == "No child" && p.soft == nil && (p.faces ?? 0) > 0 && (p.flagVersion ?? 0) < 3)
                 || Scorer.needsShirtlessRecheck(p) || Scorer.needsLabelRecheck(p)
                 || ((p.raw != nil || p.soft != nil) && (p.faces ?? 0) >= 2 && (p.flagVersion ?? 0) < 7)
+                || (facesAllowed && faceModel && p.raw != nil && (p.faces ?? 0) > 0 && p.faceVersion != FaceID.version)
         }
         let flag = cancelFlag
         let changes = self.changes
@@ -346,6 +349,7 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
         old.adults = old.adults ?? 0
         old.version = Scorer.version   // its held-back or flagged reason stands; just don't keep re-reading it
         if old.faceRecords == nil { old.facePrintsOff = true }   // can't be read now: no face prints, don't retry every scan
+        if UserDefaults.standard.bool(forKey: "faceConsent") { old.faceVersion = FaceID.version }   // likewise: not re-read every scan for more faces
         return .done(old)
     }
     return autoreleasepool {
@@ -396,6 +400,7 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
                 signals.faceShape = ex.shape; signals.facePrint = ex.facePrint; signals.poseAndFocus = ex.poseAndFocus
             }
             // Who's Who's face prints are made only after you turn Who's Who on.
+            // Who's Who's face prints are made only after you turn Who's Who on, for photos on the list.
             if Scorer.score(measured).raw != nil && UserDefaults.standard.bool(forKey: "faceConsent") {
                 records = analyzer.facePrints(cg, orientation: CGImagePropertyOrientation(img.imageOrientation),
                                               faces: measured.faces)
@@ -420,6 +425,7 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
                            version: Scorer.version, faces: signals.faces.count,
                            faceRecords: (raw != nil || flaggedScore != nil) && UserDefaults.standard.bool(forKey: "faceConsent") ? records : nil)
         if (raw != nil || flaggedScore != nil) && !UserDefaults.standard.bool(forKey: "faceConsent") { p.facePrintsOff = true }
+        if raw != nil && UserDefaults.standard.bool(forKey: "faceConsent") && records != nil { p.faceVersion = FaceID.version }
         if raw == nil, let e = excluded, Scorer.softReasons.contains(e) || Scorer.heldBack.contains(e) || Scorer.poolOnly.contains(e) {
             p.soft = flaggedScore ?? poolSoft ?? Scorer.softScore(signals)
             p.age = signals.babyConfidence > 0.5 ? .baby : .kid

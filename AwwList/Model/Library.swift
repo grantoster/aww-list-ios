@@ -946,6 +946,15 @@ final class Library: ObservableObject {
         }
         whoCache = [:]; saveSoon(); learnPeople()
     }
+    /// Undoes a tag: the face is no longer counted as them, and it isn't marked "not them" either (just untagged).
+    func untagFace(_ photo: String, _ face: FaceRecord, from person: Person) {
+        removeFace(photo, face, from: person)
+        let key = Library.faceKey(photo, face)
+        notThem[key]?.remove(person.id)
+        if notThem[key]?.isEmpty == true { notThem[key] = nil }
+        lastFaceRemoval = nil
+        learnPeople()   // again, now without the "not them"
+    }
     /// Undoes "that's not them" for one face (it can be counted as them again).
     func restoreFace(_ photo: String, _ face: FaceRecord, to person: Person) {
         let key = Library.faceKey(photo, face)

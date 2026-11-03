@@ -61,6 +61,8 @@ struct PhotoScore: Codable, Hashable, Identifiable {
     var faceRecords: [FaceRecord]? = nil
     /// True when Who's Who's face prints weren't made (or were deleted) because Who's Who is off.
     var facePrintsOff: Bool? = nil
+    /// Which way of finding faces made `faceRecords` (FaceID.version); older ones are read again.
+    var faceVersion: Int? = nil
     /// Claude's score, description and checks, when this photo was sent to Claude.
     var claude: ClaudeVerdict? = nil
     /// For photos Apple set aside for a soft reason (Scorer.softReasons): the score they'd have had,
