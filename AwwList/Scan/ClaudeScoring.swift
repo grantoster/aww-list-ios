@@ -58,6 +58,24 @@ enum Claude {
     "exclude": null or one of the reasons above}
     """
 
+    /// AwwSnap's instructions: how great the grown-ups look in the photo (the photo, not the person).
+    static let snapSystem = """
+    You rate photos for "AwwSnap", which ranks the best photos of the grown-ups in a family's photo library: the \
+    shots they'd pick for a profile picture or to frame. Score 1 to 10 (one decimal allowed) how great the adults \
+    look in this photo: a genuine, glowing smile counts most, then flattering light and a great moment, then being \
+    put together for the occasion; sharpness and framing only break ties. Closed eyes, mid-blink or mid-word faces, \
+    unflattering angles, harsh shadows and blur lose points. Kids can be in the shot, but rate only how the \
+    grown-ups come across. Judge the photo, not the person: never rate anyone's body, weight, skin or features. Use \
+    the whole scale: 5 is an ordinary nice photo, 8 is a favorite, 9 and 10 are rare, truly exceptional shots.
+    Leave the photo out (set "exclude") if: no adult is a main subject ("no_adult"); anyone is in a bath or \
+    undressed ("undressed"; swimwear at the beach or pool is fine); it is a screenshot, meme, document, collage, \
+    or a photo of a screen or print ("screenshot"); or it looks AI-generated or heavily edited or face-retouched \
+    ("ai_or_edited").
+    Reply with JSON only: {"score": number, "caption": "specific description of the moment, at most 8 words, no names", \
+    "exclude": null or one of the reasons above}
+    """
+    static func system(_ mode: AppMode) -> String { mode == .snap ? snapSystem : system }
+
     /// Rough cost of one photo: a 768 px photo (~600–784 image tokens) plus the instructions (~400) in, and up to
     /// ~300 tokens out (the reply plus any brief thinking at low effort). Shown in Settings as an estimate.
     static func estimatedCost(photos: Int, model: String) -> Double {
@@ -82,17 +100,26 @@ enum Claude {
 
     // MARK: Key (Keychain)
 
-    private static let account = "anthropic-api-key"
+    private static func account(_ mode: AppMode) -> String { mode == .snap ? "anthropic-api-key-awwsnap" : "anthropic-api-key" }
+    /// The key for the app showing now (each app has its own).
     static var apiKey: String? {
-        get {
-            let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrAccount as String: account,
+        get { apiKey(for: .current) }
+        set { setApiKey(newValue, for: .current) }
+    }
+    static func apiKey(for mode: AppMode) -> String? {
+        let acct = account(mode)
+        do {
+            let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrAccount as String: acct,
                                     kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
             var out: CFTypeRef?
             guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let d = out as? Data else { return nil }
             return String(data: d, encoding: .utf8)
         }
-        set {
-            let base: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrAccount as String: account]
+    }
+    static func setApiKey(_ newValue: String?, for mode: AppMode) {
+        let acct = account(mode)
+        do {
+            let base: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrAccount as String: acct]
             SecItemDelete(base as CFDictionary)
             guard let v = newValue?.trimmingCharacters(in: .whitespacesAndNewlines), !v.isEmpty else { return }
             var add = base
@@ -110,7 +137,7 @@ enum Claude {
               let obj = try? JSONSerialization.jsonObject(with: Data(text[a...b].utf8)) as? [String: Any],
               let score = (obj["score"] as? NSNumber)?.doubleValue else { return nil }
         let caption = (obj["caption"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let allowed: Set<String> = ["bath", "undressed", "no_child", "screenshot", "ai_or_edited"]
+        let allowed: Set<String> = ["bath", "undressed", "no_child", "no_adult", "screenshot", "ai_or_edited"]
         let ex = (obj["exclude"] as? String).flatMap { allowed.contains($0) ? $0 : nil }
         let oneDecimal = (max(1, min(10, score)) * 10).rounded(.toNearestOrAwayFromZero) / 10   // halves round up
         return ClaudeVerdict(score: oneDecimal, caption: caption, exclude: ex, model: model, rubric: rubric)
@@ -147,13 +174,14 @@ enum Claude {
 
     /// Fast (on, the default): each photo is its own request, so scores come back in seconds, at full price.
     /// Off: the Message Batches API, half price, scores usually within an hour.
-    static var fast: Bool { UserDefaults.standard.object(forKey: "claudeFast") as? Bool ?? true }
+    static var fast: Bool { fast(.current) }
+    static func fast(_ mode: AppMode) -> Bool { UserDefaults.standard.object(forKey: mode.key("claudeFast")) as? Bool ?? true }
     /// Estimated cost at the price of the chosen speed (fast is full price, twice the batch price).
     static func costMicros(photos: Int, model: String, fast: Bool) -> Int { costMicros(photos: photos, model: model) * (fast ? 2 : 1) }
 
     /// One photo's request.
-    static func params(model: String, jpeg: Data) -> [String: Any] {
-        ["model": model, "max_tokens": 2000, "system": system,
+    static func params(model: String, jpeg: Data, mode: AppMode = .aww) -> [String: Any] {
+        ["model": model, "max_tokens": 2000, "system": system(mode),
          "output_config": ["effort": "low"],
          "messages": [["role": "user", "content": [
              ["type": "image", "source": ["type": "base64", "media_type": "image/jpeg", "data": jpeg.base64EncodedString()]],
@@ -168,6 +196,10 @@ enum Claude {
 /// Sends photos to Claude and collects the results.
 @MainActor
 final class ClaudeService: ObservableObject {
+    /// Which app this is for (each has its own key, instructions and settings).
+    let mode: AppMode
+    init(mode: AppMode = .aww) { self.mode = mode }
+    private var scanner: PhotoScanner { Shared.scanner(mode) }
     @Published private(set) var status = ""
     @Published private(set) var busy = false
     @Published private(set) var sent = 0
@@ -188,26 +220,28 @@ final class ClaudeService: ObservableObject {
     @Published private(set) var scoring = false
     /// Scoring goes through Awwbum's server (Awwbum Plus) instead of your own API key.
     static var viaPlus: Bool { PlusStore.available && Shared.plus.isActive }
+    /// Plus is only for Awwbum.
+    var viaPlus: Bool { mode == .aww && ClaudeService.viaPlus }
     /// Set by Stop: the run ends after the photos already out come back.
     private var stopRequested = false
     /// One scoring pass, then whether to keep going by itself (the "autoClaude" setting): off after a pass that
     /// finished or was stopped, or when the key is rejected; after 6 tries in a row that sent nothing, it gives up.
     static func runAndTrack(_ library: Library) async {
-        let c = Shared.claude
+        let c = library.claude, mode = library.mode
         await c.send(library)
-        if viaPlus { await Shared.plus.refreshQuota() }
+        if c.viaPlus { await Shared.plus.refreshQuota() }
         // Finished while you were away: say so (only if you allowed notifications).
         if UIApplication.shared.applicationState != .active && c.scoredNow > 0 {
-            ClaudeService.notify("Claude scored \(c.scoredNow.formatted()) photos", body: "Open Awwbum to see your updated top photos.")
+            ClaudeService.notify("Claude scored \(c.scoredNow.formatted()) photos", body: "Open \(mode == .snap ? "AwwSnap (tap the logo in Awwbum)" : "Awwbum") to see your updated top photos.")
         }
         let d = UserDefaults.standard
         switch c.lastOutcome {
         case .notStarted: break                                   // waiting for the photo check, or already sending
-        case .done, .keyRejected: d.set(false, forKey: "autoClaude"); d.set(0, forKey: "autoClaudeTries")
+        case .done, .keyRejected: d.set(false, forKey: mode.key("autoClaude")); d.set(0, forKey: mode.key("autoClaudeTries"))
         case .paused, .retryLater:
-            let tries = c.madeProgress ? 0 : d.integer(forKey: "autoClaudeTries") + 1
-            d.set(tries, forKey: "autoClaudeTries")
-            if tries >= 6 { d.set(false, forKey: "autoClaude") }
+            let tries = c.madeProgress ? 0 : d.integer(forKey: mode.key("autoClaudeTries")) + 1
+            d.set(tries, forKey: mode.key("autoClaudeTries"))
+            if tries >= 6 { d.set(false, forKey: mode.key("autoClaude")) }
         }
     }
     func stop() { stopRequested = true; if busy { status = "Stopping after the photos already sent come back…" } }
@@ -296,7 +330,7 @@ final class ClaudeService: ObservableObject {
     }
 
     private func request(_ url: URL, method: String = "GET", body: Data? = nil) throws -> URLRequest {
-        guard let key = Claude.apiKey else { throw ClaudeError.noKey }
+        guard let key = Claude.apiKey(for: mode) else { throw ClaudeError.noKey }
         var r = URLRequest(url: url)
         r.httpMethod = method
         r.setValue(key, forHTTPHeaderField: "x-api-key")
@@ -437,9 +471,9 @@ final class ClaudeService: ObservableObject {
         lastOutcome = .notStarted   // stays so on the early returns below (a send already running sets its own when done)
         guard !busy else { return }
         // Only once the scan is finished: until then a bath photo near a candidate may not be checked yet.
-        guard !Shared.scanner.isScanning else { status = "Checking your photos first; Claude scoring starts by itself when that finishes."; return }
-        if Shared.scanner.needsScan {
-            Shared.scanner.startIfNeeded(library: library)
+        guard !scanner.isScanning else { status = "Checking your photos first; Claude scoring starts by itself when that finishes."; return }
+        if scanner.needsScan {
+            scanner.startIfNeeded(library: library)
             status = "Checking new photos first; Claude scoring starts by itself when that finishes."
             return
         }
@@ -449,8 +483,8 @@ final class ClaudeService: ObservableObject {
         // With Awwbum Plus, photos go one at a time through Awwbum's server (no batches there). The subscription is
         // checked first, so a run right after launch doesn't miss it.
         if PlusStore.available { await Shared.plus.refresh() }
-        let viaPlus = ClaudeService.viaPlus
-        let fast = Claude.fast || viaPlus
+        let viaPlus = self.viaPlus
+        let fast = Claude.fast(mode) || viaPlus
         var sinceRefresh = 0
         var lastPhotoError = ""
         let model = library.claudeModel
@@ -508,7 +542,7 @@ final class ClaudeService: ObservableObject {
             for chunk in stride(from: 0, to: queue.count, by: size).map({ Array(queue[$0..<min($0 + size, queue.count)]) }) {
                 if stopRequested { break }
                 // A scan that started meanwhile (new photos) may find a bath photo next to these: stop, send later.
-                if Shared.scanner.isScanning || Shared.scanner.needsScan { paused = true; break }
+                if scanner.isScanning || scanner.needsScan { paused = true; break }
                 let blocked = library.neverSend
                 let unblocked = chunk.filter { !$0.memberIDs.contains(where: blocked.contains) }
                 // Checked before any photo is even loaded, and again right before upload.
@@ -529,7 +563,7 @@ final class ClaudeService: ObservableObject {
                 }
                 // The last check before anything leaves the phone: every photo taken within 10 minutes must be
                 // checked, and none may be (or be near) a possible bath photo.
-                if Shared.scanner.isScanning || Shared.scanner.needsScan { paused = true; break }
+                if scanner.isScanning || scanner.needsScan { paused = true; break }
                 let cleared = Set(chunk.filter { Self.sendable($0, library) }.map(\.best.id))
                 held.formUnion(chunk.map(\.best.id).filter { !cleared.contains($0) })
                 if stopRequested { break }
@@ -542,7 +576,7 @@ final class ClaudeService: ObservableObject {
                             guard let r = Shared.plus.scoreRequest(jpeg: jpeg, model: model) else { throw ClaudeError.notSubscribed }
                             jobs.append((m, r))
                         } else {
-                            let body = try JSONSerialization.data(withJSONObject: Claude.params(model: model, jpeg: jpeg),
+                            let body = try JSONSerialization.data(withJSONObject: Claude.params(model: model, jpeg: jpeg, mode: mode),
                                                                   options: [.withoutEscapingSlashes])
                             jobs.append((m, try request(messagesURL, method: "POST", body: body)))
                         }
@@ -563,7 +597,7 @@ final class ClaudeService: ObservableObject {
                     guard let jpeg = jpegs[i] else { unloadedIDs.insert(m.best.id); held.insert(m.best.id); continue }
                     let cid = "p\(sent + i)_\(Int(Date().timeIntervalSince1970))"
                     map[cid] = m.best.id
-                    reqs.append(["custom_id": cid, "params": Claude.params(model: model, jpeg: jpeg)])
+                    reqs.append(["custom_id": cid, "params": Claude.params(model: model, jpeg: jpeg, mode: mode)])
                 }
                 if reqs.isEmpty { continue }
                 status = "Sending \(reqs.count) photos to Claude…"
@@ -581,7 +615,7 @@ final class ClaudeService: ObservableObject {
                 var aborted = false
                 for attempt in 1...3 where id == nil {
                     // Before a retry (which can come minutes later), check again: new photos may have arrived.
-                    if attempt > 1 && (stopRequested || Shared.scanner.isScanning || Shared.scanner.needsScan
+                    if attempt > 1 && (stopRequested || scanner.isScanning || scanner.needsScan
                                        || chunk.contains(where: { cleared.contains($0.best.id) && !Self.sendable($0, library) })) {
                         aborted = true; break
                     }
@@ -613,7 +647,7 @@ final class ClaudeService: ObservableObject {
             refresh()
             let before = status
             await collect(library)
-            if paused && !Shared.scanner.isScanning { Shared.scanner.startIfNeeded(library: library) }   // check the changes now
+            if paused && !scanner.isScanning { scanner.startIfNeeded(library: library) }   // check the changes now
             if stopRequested {
                 status = fast ? "Stopped. Claude scored \(scoredNow.formatted()) photos." : "Stopped after sending \(sent.formatted()) photos."
             } else if paused {
@@ -663,7 +697,7 @@ final class ClaudeService: ObservableObject {
         }
         defer { if ended.claim() { UIApplication.shared.endBackgroundTask(bg) } }
         var queue: [Job] = jobs.map { Job(moment: $0.moment, req: $0.req, attempt: 1) }
-        let viaPlus = ClaudeService.viaPlus
+        let viaPlus = self.viaPlus
         let session = self.session
         var busyNow = false, networkError: Error?, accountError: (Int, String)?
         var rejectedCount = 0   // 4xx answers about the request, not the photo's content
@@ -673,7 +707,7 @@ final class ClaudeService: ObservableObject {
             // The same last check as a batch upload, right before this request leaves the phone.
             @MainActor func launch(_ j: Job) {
                 let id = j.moment.best.id
-                if Shared.scanner.isScanning || Shared.scanner.needsScan { out.paused = true }
+                if scanner.isScanning || scanner.needsScan { out.paused = true }
                 guard !isHalted(), Self.sendable(j.moment, library) else { out.held.insert(id); return }
                 active += 1
                 group.addTask { .done(j, await ClaudeService.post(j.req, session)) }
@@ -830,7 +864,7 @@ final class ClaudeService: ObservableObject {
                 }
                 library.removeClaudeBatch(b.id)
                 if UIApplication.shared.applicationState != .active && !verdicts.isEmpty && b.recheck != true {
-                    ClaudeService.notify("Claude scored \(verdicts.count.formatted()) photos", body: "Open Awwbum to see your updated top photos.")
+                    ClaudeService.notify("Claude scored \(verdicts.count.formatted()) photos", body: "Open \(mode == .snap ? "AwwSnap (tap the logo in Awwbum)" : "Awwbum") to see your updated top photos.")
                 }
                 status = "Claude scored \(verdicts.count.formatted()) photos." +
                     (failed.isEmpty ? "" : " \(failed.count.formatted()) couldn't be scored" + (firstError.isEmpty ? "." : ": \(firstError)"))

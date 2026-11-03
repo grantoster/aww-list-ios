@@ -107,7 +107,10 @@ enum ShotKind: String, CaseIterable, Identifiable {
     case solo, kids, family
     var id: String { rawValue }
     var label: String {
-        switch self { case .solo: "Solo"; case .kids: "Kids together"; case .family: "Family & groups" }
+        if AppMode.current == .snap {   // AwwSnap: one person, two people, or more
+            switch self { case .solo: return "Solo"; case .kids: return "Two together"; case .family: return "Groups" }
+        }
+        switch self { case .solo: return "Solo"; case .kids: return "Kids together"; case .family: return "Family & groups" }
     }
     /// Solo: one child on their own. Kids together: two kids, no grown-ups. Family & groups: 3 or more, or any grown-up.
     static func of(faces: Int?, adults: Int?) -> ShotKind {
@@ -152,5 +155,11 @@ struct Moment: Identifiable, Hashable {
     var year: Int { Calendar.current.component(.year, from: best.date) }
     /// Grown-ups recognized in the shot by Who's Who (named people who were 13 or older then; see Library.rebuild).
     var namedAdults = 0
-    var shot: ShotKind { ShotKind.of(faces: best.mainFaces ?? best.faces, adults: max(best.adults ?? 0, namedAdults)) }
+    var shot: ShotKind {
+        if AppMode.current == .snap {   // AwwSnap: by how many people are in the shot
+            let f = best.mainFaces ?? best.faces ?? 1
+            return f <= 1 ? .solo : f == 2 ? .kids : .family
+        }
+        return ShotKind.of(faces: best.mainFaces ?? best.faces, adults: max(best.adults ?? 0, namedAdults))
+    }
 }

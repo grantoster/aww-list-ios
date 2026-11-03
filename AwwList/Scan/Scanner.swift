@@ -7,6 +7,9 @@ import CoreLocation
 /// Walks the photo library on a background queue, analyzes photos it hasn't seen yet, and reports progress.
 @MainActor
 final class PhotoScanner: ObservableObject {
+    /// Which app's photos this scans (Awwbum's or AwwSnap's; each keeps its own list).
+    let mode: AppMode
+    init(mode: AppMode = .aww) { self.mode = mode }
     @Published private(set) var isScanning = false
     @Published private(set) var done = 0
     @Published private(set) var total = 0
@@ -29,7 +32,7 @@ final class PhotoScanner: ObservableObject {
         if isScanning { finishHandlers.append(handler) } else { handler() }
     }
 
-    private static let retryKey = "lastUnavailableRetry"
+    private var retryKey: String { mode.key("lastUnavailableRetry") }
 
     /// Scans on first launch and afterwards only when photos were added or deleted, so opening and closing
     /// photos, or switching back to the app, doesn't start the scan over. Photos that couldn't be loaded
@@ -37,7 +40,7 @@ final class PhotoScanner: ObservableObject {
     func startIfNeeded(library: Library) {
         if isScanning { return }
         guard library.ready else { library.whenReady { [weak self] in self?.startIfNeeded(library: library) }; return }                       // don't consume a change while a scan is running
-        let last = UserDefaults.standard.object(forKey: Self.retryKey) as? Date ?? .distantPast
+        let last = UserDefaults.standard.object(forKey: retryKey) as? Date ?? .distantPast
         let retry = Date().timeIntervalSince(last) > 86_400
         if hasScanned && !retry && !stoppedEarly && !changes.takeChanged() { return }
         start(library: library, retryUnavailable: retry)
@@ -54,7 +57,7 @@ final class PhotoScanner: ObservableObject {
         hasScanned = true
         changes.register()
         _ = changes.takeChanged()
-        if retryUnavailable { UserDefaults.standard.set(Date(), forKey: Self.retryKey) }
+        if retryUnavailable { UserDefaults.standard.set(Date(), forKey: retryKey) }
         cancelFlag.reset()
         let all = Set(library.photos.keys)
         // Photos scored by an older version of the scorer are analyzed again.
@@ -105,6 +108,7 @@ final class PhotoScanner: ObservableObject {
         let flag = cancelFlag
         let changes = self.changes
         let me = self
+        let mode = self.mode
         let needPlace = Set(library.photos.values.filter { $0.locChecked != true && ($0.raw != nil || $0.soft != nil) }.map(\.id))
         queue.async {
             let opts = PHFetchOptions()
@@ -163,7 +167,7 @@ final class PhotoScanner: ObservableObject {
                         let manager = PHImageManager()
                         for k in stride(from: lane, to: list.count, by: lanes) {
                             if flag.isCancelled { return }
-                            switch analyzePhoto(list[k], analyzer: analyzer, manager: manager, network: network, ranked: ranked, restamp: restamp) {
+                            switch analyzePhoto(list[k], analyzer: analyzer, manager: manager, network: network, ranked: ranked, restamp: restamp, mode: mode) {
                             case .done(let r): post(r)
                             case .inCloud: deferred.add(list[k])
                             }
@@ -346,7 +350,14 @@ enum PhotoOutcome { case done(PhotoScore?), inCloud }
 
 /// Analyzes one photo. With `network` off, a photo kept only in iCloud comes back as `.inCloud` for a later pass.
 func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager, network: Bool,
-                  ranked: Set<String>, restamp: [String: PhotoScore] = [:]) -> PhotoOutcome {
+                  ranked: Set<String>, restamp: [String: PhotoScore] = [:], mode: AppMode = .aww) -> PhotoOutcome {
+    /// Awwbum scores the kids; AwwSnap scores the grown-ups.
+    func score(_ s: Signals) -> (raw: Double?, excluded: String?) { mode == .snap ? SnapScorer.score(s) : Scorer.score(s) }
+    /// AwwSnap: on its list, scored or kept with a soft score (swimwear, bare chest).
+    func snapListed(_ s: Signals) -> Bool {
+        let r = SnapScorer.score(s)
+        return r.raw != nil || r.excluded.map { SnapScorer.softScore(s, reason: $0) != nil } == true
+    }
     func keepOld() -> PhotoOutcome? {
         guard var old = restamp[asset.localIdentifier] else { return nil }
         // A photo that needs the shirtless re-check and can't be read: treat it as unreadable (never listed, guards
@@ -406,7 +417,7 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
                                         excluded: Scorer.unavailable, age: nil, caption: "", version: Scorer.version))
             }
             signals = measured
-            if Scorer.score(measured).raw != nil || Scorer.softScore(measured) != nil || Scorer.poolScore(measured) != nil {
+            if mode == .snap ? snapListed(measured) : (Scorer.score(measured).raw != nil || Scorer.softScore(measured) != nil || Scorer.poolScore(measured) != nil) {
                 signals.scenePrint = analyzer.scenePrint(cg, orientation: CGImagePropertyOrientation(img.imageOrientation))
                 let ex = analyzer.learningExtras(cg, orientation: CGImagePropertyOrientation(img.imageOrientation), subject: measured.subject)
                 signals.aesthetic = ex.aesthetic; signals.isUtility = ex.utility
@@ -414,7 +425,7 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
             }
             // Who's Who's face prints are made only after you turn Who's Who on.
             // Who's Who's face prints are made only after you turn Who's Who on, for photos on the list.
-            if Scorer.score(measured).raw != nil && UserDefaults.standard.bool(forKey: "faceConsent") {
+            if (mode == .snap ? snapListed(measured) : Scorer.score(measured).raw != nil) && UserDefaults.standard.bool(forKey: "faceConsent") {
                 records = analyzer.facePrints(cg, orientation: CGImagePropertyOrientation(img.imageOrientation),
                                               faces: measured.faces)
             }
@@ -425,23 +436,24 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
             return .done(PhotoScore(id: asset.localIdentifier, date: .distantPast, raw: nil, excluded: "No date",
                                     age: nil, caption: "", version: Scorer.version))
         }
-        var (raw, excluded) = Scorer.score(signals)
+        var (raw, excluded) = score(signals)
         var flaggedScore: Double? = nil
         if let verdict, raw != nil { flaggedScore = raw; raw = nil; excluded = verdict }
         var poolSoft: Double? = nil
-        if raw == nil, excluded == "No child", Scorer.softScore(signals) == nil, let ps = Scorer.poolScore(signals) {
+        if mode == .aww, raw == nil, excluded == "No child", Scorer.softScore(signals) == nil, let ps = Scorer.poolScore(signals) {
             excluded = "No child seen"; poolSoft = ps
         }
-        let age: AgeGroup? = raw == nil ? nil : (signals.babyConfidence > 0.5 ? .baby : .kid)
+        let age: AgeGroup? = raw == nil || mode == .snap ? nil : (signals.babyConfidence > 0.5 ? .baby : .kid)
         var p = PhotoScore(id: asset.localIdentifier, date: date,
                            raw: raw, excluded: excluded, age: age, caption: Scorer.caption(signals, date: date),
                            version: Scorer.version, faces: signals.faces.count,
-                           faceRecords: (raw != nil || flaggedScore != nil) && UserDefaults.standard.bool(forKey: "faceConsent") ? records : nil)
+                           faceRecords: (raw != nil || flaggedScore != nil || (mode == .snap && snapListed(signals))) && UserDefaults.standard.bool(forKey: "faceConsent") ? records : nil)
         if (raw != nil || flaggedScore != nil) && !UserDefaults.standard.bool(forKey: "faceConsent") { p.facePrintsOff = true }
-        if raw != nil && UserDefaults.standard.bool(forKey: "faceConsent") && records != nil { p.faceVersion = FaceID.version }
+        if (raw != nil || (mode == .snap && snapListed(signals))) && UserDefaults.standard.bool(forKey: "faceConsent") && records != nil { p.faceVersion = FaceID.version }
         if raw == nil, let e = excluded, Scorer.softReasons.contains(e) || Scorer.heldBack.contains(e) || Scorer.poolOnly.contains(e) {
-            p.soft = flaggedScore ?? poolSoft ?? Scorer.softScore(signals)
-            p.age = signals.babyConfidence > 0.5 ? .baby : .kid
+            // AwwSnap: only an AI/edited flag (Claude decides) keeps its score; Awwbum's kid checks don't apply.
+            p.soft = mode == .snap ? (flaggedScore ?? SnapScorer.softScore(signals, reason: e)) : (flaggedScore ?? poolSoft ?? Scorer.softScore(signals))
+            if mode == .aww { p.age = signals.babyConfidence > 0.5 ? .baby : .kid }
         }
         p.softChecked = true
         p.flagVersion = 7

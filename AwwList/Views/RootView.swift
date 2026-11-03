@@ -10,11 +10,11 @@ struct RootView: View {
     @State private var status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
     @Environment(\.scenePhase) private var phase
     /// First open: ask for a Claude API key before anything else (once; skipped when a key is already saved).
-    @AppStorage("askedForKey") private var askedForKey = false
+    @AppStorage(AppMode.current.key("askedForKey")) private var askedForKey = false
     @State private var hadKey = Claude.apiKey != nil
     /// Set when you choose "score every photo" on that screen: Claude runs by itself once the first scan is done.
-    @AppStorage("autoClaude") private var autoClaude = false
-    @AppStorage("autoClaudeTries") private var autoTries = 0
+    @AppStorage(AppMode.current.key("autoClaude")) private var autoClaude = false
+    @AppStorage(AppMode.current.key("autoClaudeTries")) private var autoTries = 0
 
     var body: some View {
         Group {
@@ -38,7 +38,7 @@ struct RootView: View {
             KeySetupView(hadKey: hadKey) { askedForKey = true }
         }
         .onChange(of: scanner.isScanning) { autoScore() }
-        .onReceive(Shared.plus.$signedTransaction) { _ in autoScore() }   // Plus confirmed: a waiting run can start
+        .onReceive(Shared.plus.$signedTransaction) { _ in if library.mode == .aww { autoScore() } }   // Plus confirmed: a waiting run can start
         // While the app is open and photos are with Claude, check for their scores every couple of minutes.
         .task(id: phase == .active) {
             guard phase == .active else { return }
@@ -58,12 +58,17 @@ struct RootView: View {
                 status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
                 if status == .authorized && !library.notVisible.isEmpty { scanner.start(library: library) }   // Limited → Full
                 if status == .authorized || status == .limited { scanner.startIfNeeded(library: library) }
-                if !library.claudeBatches.isEmpty { Task { await Shared.claude.collect(library) } }
+                if !library.claudeBatches.isEmpty { Task { await library.claude.collect(library) } }
                 autoScore()
             } else if phase == .background {
                 // Photos may be hidden or deleted in Photos while Awwbum is away: no cached copy outlives that.
                 AssetImage.clearCache()
-                library.save()
+                if library.mode == .snap {
+                    // AwwSnap doesn't scan in the background: stop, and save it (and Who's Who, with Awwbum's) now.
+                    scanner.stop(); library.flush(); Shared.library.flush()
+                } else {
+                    library.save()
+                }
                 BackgroundScan.wrapUpAfterClosing()
                 BackgroundScan.scheduleOvernight()
             }
@@ -77,7 +82,7 @@ struct RootView: View {
     private func autoScore() {
         guard autoClaude, phase == .active, status == .authorized || status == .limited,
               !scanner.isScanning, !scanner.needsScan, !claude.busy, !library.photos.isEmpty,
-              Claude.apiKey != nil || ClaudeService.viaPlus else { return }
+              Claude.apiKey(for: library.mode) != nil || claude.viaPlus else { return }
         Task { await ClaudeService.runAndTrack(library) }
     }
 
@@ -93,8 +98,8 @@ struct WelcomeView: View {
         ScrollView {
         VStack(spacing: 20) {
             Spacer(minLength: 0)
-            Image("BrandMark").resizable().scaledToFit().frame(width: 150, height: 150).accessibilityHidden(true)
-            Text("awwbum").font(Theme.display(44, relativeTo: .largeTitle)).foregroundStyle(Theme.accent)
+            Theme.logoImage.resizable().scaledToFit().frame(width: 150, height: 150).accessibilityHidden(true)
+            Text(AppMode.current.name).font(Theme.display(44, relativeTo: .largeTitle)).foregroundStyle(Theme.accent)
             Text("Finds the photos of your kids that make everyone go aww, and ranks them year by year.")
                 .font(Theme.label(19, relativeTo: .title3)).multilineTextAlignment(.center).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 10) {
@@ -137,17 +142,17 @@ struct SettingsView: View {
     @EnvironmentObject var library: Library
     @EnvironmentObject var scanner: PhotoScanner
     @State private var keepTick = 0
-    @AppStorage("groupSimilar") private var groupSimilar = true
-    @AppStorage("balanceKids") private var balanceKids = false
+    @AppStorage(AppMode.current.key("groupSimilar")) private var groupSimilar = true
+    @AppStorage(AppMode.current.key("balanceKids")) private var balanceKids = false
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         NavigationStack {
             List {
-                if PlusStore.available { PlusSection() }
+                if PlusStore.available && library.mode == .aww { PlusSection() }
                 ClaudeSection()
                 LikesSection()
                 LearnedSection()
-                BirthdaysSection()
+                if library.mode == .aww { BirthdaysSection() }
                 PlacesSection()
                 Section {
                     NavigationLink("Send feedback") { FeedbackView() }
@@ -163,7 +168,7 @@ struct SettingsView: View {
                     }
                     Button(scanner.isScanning ? "Scanning…" : "Rescan, including photos that couldn't load") { scanner.start(library: library, retryUnavailable: true) }
                         .disabled(scanner.isScanning)
-                    if BackgroundScan.canContinueInBackground {
+                    if BackgroundScan.canContinueInBackground && library.mode == .aww {   // background scans are Awwbum's
                         Toggle("Keep scanning when I leave the app", isOn: Binding(
                             get: { UserDefaults.standard.bool(forKey: BackgroundScan.autoKey) },
                             set: { UserDefaults.standard.set($0, forKey: BackgroundScan.autoKey); keepTick += 1 }))
@@ -172,7 +177,7 @@ struct SettingsView: View {
                 }
                 Section {
                     Toggle("Fold similar shots together", isOn: $groupSimilar)
-                    Toggle("Balance kids", isOn: $balanceKids)
+                    if library.mode == .aww { Toggle("Balance kids", isOn: $balanceKids) }
                 } header: {
                     Text("Home list")
                 } footer: {
@@ -298,10 +303,10 @@ struct ClaudeSection: View {
     /// Photos can be scored: with Awwbum Plus, or your own API key.
     private var canScore: Bool { hasKey || onPlus }
     /// Scoring goes through Awwbum Plus (no charges to an Anthropic account, no batches).
-    private var onPlus: Bool { PlusStore.available && plus.isActive }
-    @AppStorage("autoClaude") private var autoClaude = false
-    @AppStorage("autoClaudeTries") private var autoTries = 0
-    @AppStorage("claudeFast") private var fast = true
+    private var onPlus: Bool { library.mode == .aww && PlusStore.available && plus.isActive }
+    @AppStorage(AppMode.current.key("autoClaude")) private var autoClaude = false
+    @AppStorage(AppMode.current.key("autoClaudeTries")) private var autoTries = 0
+    @AppStorage(AppMode.current.key("claudeFast")) private var fast = true
 
     @ViewBuilder private var keyRows: some View {
         if hasKey {
@@ -681,7 +686,7 @@ struct PhotoGroupView: View {
 struct KeySetupView: View {
     let hadKey: Bool
     @EnvironmentObject var library: Library
-    @AppStorage("autoClaude") private var autoClaude = false
+    @AppStorage(AppMode.current.key("autoClaude")) private var autoClaude = false
     @State private var key = ""
     @State private var scoreAll = true
     @State private var failed = false
@@ -690,8 +695,8 @@ struct KeySetupView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 18) {
-                Image("BrandMark").resizable().scaledToFit().frame(width: 96, height: 96).accessibilityHidden(true)
-                Text("awwbum").font(Theme.display(40, relativeTo: .largeTitle)).foregroundStyle(Theme.accent)
+                Theme.logoImage.resizable().scaledToFit().frame(width: 96, height: 96).accessibilityHidden(true)
+                Text(AppMode.current.name).font(Theme.display(40, relativeTo: .largeTitle)).foregroundStyle(Theme.accent)
                 Text(hadKey ? "Score with Claude" : "Add your Claude API key").font(Theme.label(22, relativeTo: .title2))
                 Text("Claude gives each photo its final score and a description, and your phone learns from it. The key is from console.anthropic.com and is saved only in this iPhone's keychain; charges go to your Anthropic account.")
                     .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
@@ -739,7 +744,7 @@ struct KeySetupView: View {
 struct LoadingView: View {
     var body: some View {
         VStack(spacing: 16) {
-            Image("BrandMark").resizable().scaledToFit().frame(width: 96, height: 96).accessibilityHidden(true)
+            Theme.logoImage.resizable().scaledToFit().frame(width: 96, height: 96).accessibilityHidden(true)
             ProgressView("Opening your awws…")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -56,9 +56,9 @@ struct HomeView: View {
     /// The best moments from today's date in earlier years (shown at the top of the Overall list).
     @State private var onThisDay: [Moment] = []
     /// Fold lower-ranked look-alike shots from the same few minutes under the best one (Settings → Home list).
-    @AppStorage("groupSimilar") private var groupSimilar = true
+    @AppStorage(AppMode.current.key("groupSimilar")) private var groupSimilar = true
     /// Give each named child a fair share of the top spots (Settings → Home list).
-    @AppStorage("balanceKids") private var balanceKids = false
+    @AppStorage(AppMode.current.key("balanceKids")) private var balanceKids = false
     private var top: [Moment] { Array(pool.prefix(shown)) }
     private var balancing: Bool { balanceKids && person == nil }
     private func inPlace(_ p: PhotoScore, _ choice: String) -> Bool {
@@ -165,7 +165,7 @@ struct HomeView: View {
                 .padding(.bottom, 32)
             }
             .background(Theme.background.ignoresSafeArea())
-            .navigationTitle(selecting ? "\(picked.count) picked" : "Awwbum")
+            .navigationTitle(selecting ? "\(picked.count) picked" : AppMode.current.title)
             .navigationBarTitleDisplayMode(.inline)
             .safeAreaInset(edge: .bottom) { if selecting { selectionBar } }
             .overlay(alignment: .bottom) { UndoRemoveBar().padding(.bottom, selecting ? 90 : 24) }
@@ -188,16 +188,7 @@ struct HomeView: View {
                 } else {
                     // Small logo and the name, top left (an empty center keeps the title from showing twice).
                     ToolbarItem(placement: .principal) { Color.clear.frame(width: 1, height: 1).accessibilityHidden(true) }
-                    ToolbarItem(placement: .topBarLeading) {
-                        HStack(spacing: 8) {
-                            Image("BrandMark").resizable().scaledToFit().frame(width: 30, height: 30)
-                                .clipShape(RoundedRectangle(cornerRadius: 7))
-                            Text("awwbum").font(Theme.display(26, relativeTo: .title2)).foregroundStyle(Theme.accent)
-                        }
-                        .fixedSize()
-                        .dynamicTypeSize(...DynamicTypeSize.xLarge)   // stays inside the bar at large text sizes
-                        .accessibilityElement(children: .ignore).accessibilityLabel("Awwbum").accessibilityAddTraits(.isHeader)
-                    }
+                    ToolbarItem(placement: .topBarLeading) { BrandSwitch() }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showSearch = true } label: { Image(systemName: "magnifyingglass") }
@@ -252,12 +243,14 @@ struct HomeView: View {
     private var filterBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                Menu {
-                    Picker("Age", selection: $age) {
-                        Text("All ages").tag(AgeGroup?.none)
-                        ForEach(AgeGroup.allCases) { g in Text(g.label).tag(AgeGroup?.some(g)) }
-                    }
-                } label: { DropChip(title: age?.label ?? "All ages", on: age != nil) }
+                if AppMode.current == .aww {   // Baby, Toddler, Kid: Awwbum only
+                    Menu {
+                        Picker("Age", selection: $age) {
+                            Text("All ages").tag(AgeGroup?.none)
+                            ForEach(AgeGroup.allCases) { g in Text(g.label).tag(AgeGroup?.some(g)) }
+                        }
+                    } label: { DropChip(title: age?.label ?? "All ages", on: age != nil) }
+                }
                 // Solo, kids together, or family and groups (grown-ups in the shot, or three or more faces).
                 Menu {
                     Picker("Shots", selection: $shot) {
@@ -739,9 +732,11 @@ struct ScanBanner: View {
             .accessibilityHint(expanded ? "Hides the details" : "Shows the details")
             ProgressView(value: Double(scanner.done), total: Double(max(1, scanner.total))).controlSize(.mini)
             if expanded {
-            Text("If you leave, it keeps going in the background (iOS shows its progress), and otherwise picks up overnight while your phone charges, or when you come back.")
+            Text(AppMode.current == .aww
+                 ? "If you leave, it keeps going in the background (iOS shows its progress), and otherwise picks up overnight while your phone charges, or when you come back."
+                 : "AwwSnap checks photos while it's open; it picks up where it left off when you come back.")
                 .font(.caption).foregroundStyle(.secondary)
-            if BackgroundScan.canContinueInBackground {
+            if BackgroundScan.canContinueInBackground && AppMode.current == .aww {
                 Button(asked ? "It'll keep going after you leave" : "Keep scanning in the background") {
                     asked = BackgroundScan.continueInBackground(userTapped: true)
                     if !asked { failed = BackgroundScan.lastError }
@@ -788,7 +783,7 @@ struct ClaudeBanner: View {
                 Text(claude.status).font(.footnote.bold()).lineLimit(2)
                 Spacer(minLength: 4)
                 Button("Stop") {
-                    UserDefaults.standard.set(false, forKey: "autoClaude")
+                    UserDefaults.standard.set(false, forKey: AppMode.current.key("autoClaude"))
                     claude.stop()
                 }
                 .font(.footnote).buttonStyle(.bordered).controlSize(.mini)
@@ -897,7 +892,7 @@ struct LimitedAccessBanner: View {
             if PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited {
                 HStack(spacing: 10) {
                     Image(systemName: "photo.on.rectangle.angled").foregroundStyle(Theme.grapeInk)
-                    Text("Awwbum can only see the photos you picked.").font(.footnote)
+                    Text("\(AppMode.current.title) can only see the photos you picked.").font(.footnote)
                     Spacer(minLength: 4)
                     Button("Add photos") { Self.showPicker() }.font(.footnote.bold()).tint(Theme.grapeInk)
                         .frame(minHeight: 44).contentShape(Rectangle())
@@ -913,7 +908,7 @@ struct LimitedAccessBanner: View {
         var top = root
         while let next = top.presentedViewController { top = next }
         PHPhotoLibrary.shared().presentLimitedLibraryPicker(from: top) { _ in
-            Task { @MainActor in Shared.scanner.start(library: Shared.library) }   // check the newly added photos
+            Task { @MainActor in let lib = Shared.library(.current); lib.scanner.start(library: lib) }   // check the newly added photos
         }
     }
 }
@@ -993,12 +988,12 @@ enum Collage {
         return UIGraphicsImageRenderer(size: CGSize(width: width, height: height), format: fmt).image { ctx in
             UIColor(red: 0.99, green: 0.97, blue: 0.94, alpha: 1).setFill()
             ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
-            let grape = UIColor(red: 0x7B / 255, green: 0x5C / 255, blue: 0xF0 / 255, alpha: 1)
+            let grape = UIColor(Theme.grape)
             let brand = { (size: CGFloat) in UIFont(name: Theme.displayFont, size: size) ?? UIFont.systemFont(ofSize: size, weight: .heavy) }
             // The app's logo and name, top right, as in the app's header.
-            let logo = UIImage(named: "BrandMark")
+            let logo = Theme.logo
             let mark: CGFloat = 76
-            let word = "awwbum" as NSString
+            let word = AppMode.current.name as NSString
             let wordAttrs: [NSAttributedString.Key: Any] = [.font: brand(54), .foregroundColor: grape]
             let ws = word.size(withAttributes: wordAttrs)
             // On a narrow collage (one photo), just the logo up top, so the title has room.
@@ -1061,6 +1056,34 @@ enum Collage {
             }
             fx += small + 8
             word.draw(at: CGPoint(x: fx, y: fy + (small - fw.height) / 2), withAttributes: footWord)
+        }
+    }
+}
+
+/// The logo and name, top left. Tapping it offers the other app (the hidden AwwSnap, or back to Awwbum).
+struct BrandSwitch: View {
+    @State private var asking = false
+    private let mode = AppMode.current
+    var body: some View {
+        Button { asking = true } label: {
+            HStack(spacing: 8) {
+                Theme.logoImage.resizable().scaledToFit().frame(width: 30, height: 30)
+                    .clipShape(RoundedRectangle(cornerRadius: 7))
+                Text(mode.name).font(Theme.display(26, relativeTo: .title2)).foregroundStyle(Theme.accent)
+            }
+            .fixedSize()
+            .dynamicTypeSize(...DynamicTypeSize.xLarge)   // stays inside the bar at large text sizes
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(mode.title).accessibilityAddTraits(.isHeader)
+        .accessibilityHint("Offers to switch to \(mode.other.title)")
+        .confirmationDialog("Would you like to switch to \(mode.other.title)?", isPresented: $asking, titleVisibility: .visible) {
+            Button("Switch to \(mode.other.title)") { ModeSwitch.shared.switchTo(mode.other) }
+            Button("Stay in \(mode.title)", role: .cancel) {}
+        } message: {
+            Text(mode == .aww
+                 ? "AwwSnap ranks the best photos of the grown-ups. It has its own list, scores, learning and settings; only Who's Who is shared."
+                 : "Back to Awwbum's photos of the kids.")
         }
     }
 }

@@ -229,7 +229,7 @@ struct WhoView: View {
                     if loading {
                         HStack { ProgressView(); Text("Finding faces…").foregroundStyle(.secondary) }
                     } else if groups.isEmpty {
-                        Text(Shared.scanner.isScanning ? "Reading faces in your photos… they show up here as they're found."
+                        Text(library.scanner.isScanning ? "Reading faces in your photos… they show up here as they're found."
                              : library.moments.isEmpty ? "Faces show up here once your photos are scanned."
                              : "Everyone who shows up often has a name.")
                             .foregroundStyle(.secondary)
@@ -277,7 +277,7 @@ struct WhoView: View {
             .sheet(item: $checking, onDismiss: regroup) { s in QuickCheckSheet(suggestion: s) }
             .sheet(item: $editing, onDismiss: regroup) { p in PersonSheet(person: p) }
             .task { regroup() }
-            .onReceive(Shared.scanner.$isScanning) { scanning in if !scanning { regroup() } }   // new face prints
+            .onReceive(library.scanner.$isScanning) { scanning in if !scanning { regroup() } }   // new face prints
             .onReceive(library.$moments.combineLatest(library.$untaggedIgnored)
                 .debounce(for: .milliseconds(300), scheduler: DispatchQueue.main)) { pair in
                 untaggedCount = UntaggedPhotosView.untagged(pair.0, library: library).count
@@ -877,7 +877,7 @@ struct UntaggedPhotosView: View {
     @MainActor static func untagged(_ moments: [Moment], library: Library, includingIgnored: Bool = false) -> [Moment] {
         let people = library.people
         let d = UserDefaults.standard
-        let fold = d.object(forKey: "groupSimilar") as? Bool ?? true, balance = d.bool(forKey: "balanceKids")
+        let fold = d.object(forKey: AppMode.current.key("groupSimilar")) as? Bool ?? true, balance = d.bool(forKey: AppMode.current.key("balanceKids"))
         var top: [Moment]
         if balance {   // balancing needs the whole list
             top = KidBalance.order(fold ? SimilarShots.fold(moments) : moments, kids: KidBalance.kids(people))

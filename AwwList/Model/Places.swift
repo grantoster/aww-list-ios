@@ -20,7 +20,7 @@ final class PlaceBook: ObservableObject {
     @Published private(set) var towns: [String: String] = [:]
     /// Name towns with Apple's location service (it gets the photos' rough locations, never the photos).
     @Published var lookUpTowns: Bool {
-        didSet { UserDefaults.standard.set(lookUpTowns, forKey: Self.lookUpKey); if lookUpTowns { nameTowns(Shared.library) } }
+        didSet { UserDefaults.standard.set(lookUpTowns, forKey: Self.lookUpKey); if lookUpTowns { nameTowns(Shared.library(.current)) } }
     }
     @Published private(set) var naming = false
 
@@ -72,16 +72,16 @@ final class PlaceBook: ObservableObject {
             }
             saved.append(Saved(name: n, address: a, lat: loc.coordinate.latitude, lon: loc.coordinate.longitude))
             store()
-            Shared.library.placesChanged()
+            Shared.placesChanged()
             return nil
         } catch {
             return "That address couldn't be found (or there's no connection). Try again, adding the city and state."
         }
     }
-    func remove(_ id: UUID) { saved.removeAll { $0.id == id }; store(); Shared.library.placesChanged() }
+    func remove(_ id: UUID) { saved.removeAll { $0.id == id }; store(); Shared.placesChanged() }
     func setRadius(_ id: UUID, _ r: Double) {
         guard let i = saved.firstIndex(where: { $0.id == id }) else { return }
-        saved[i].radius = r; store(); Shared.library.placesChanged()
+        saved[i].radius = r; store(); Shared.placesChanged()
     }
     private func store() {
         if let data = try? JSONEncoder().encode(saved) { UserDefaults.standard.set(data, forKey: Self.savedKey) }
@@ -122,12 +122,12 @@ final class PlaceBook: ObservableObject {
                 }
                 UserDefaults.standard.set(self.towns, forKey: Self.townsKey)
                 done += 1
-                if done % 20 == 0 { Shared.library.placesChanged() }   // towns show up in the Place menu as they're named
+                if done % 20 == 0 { Shared.placesChanged() }   // towns show up in the Place menu as they're named
                 try? await Task.sleep(for: .seconds(2))
             }
             self?.townTask = nil
             self?.naming = false
-            Shared.library.placesChanged()
+            Shared.placesChanged()
         }
     }
 

@@ -11,6 +11,23 @@ enum Shared {
     static let claude = ClaudeService()
     static let plus = PlusStore()
     static let places = PlaceBook()
+    /// Who's Who (people, tags, face learning): the one thing Awwbum and AwwSnap share.
+    static let who = WhoStore()
+    /// AwwSnap's own library, scanner and Claude (made the first time AwwSnap is opened).
+    static let snapLibrary = Library(mode: .snap)
+    static let snapScanner = PhotoScanner(mode: .snap)
+    static let snapClaude = ClaudeService(mode: .snap)
+
+    static func library(_ m: AppMode) -> Library { m == .snap ? snapLibrary : library }
+    static func scanner(_ m: AppMode) -> PhotoScanner { m == .snap ? snapScanner : scanner }
+    static func claude(_ m: AppMode) -> ClaudeService { m == .snap ? snapClaude : claude }
+    /// True once AwwSnap has been opened (so its library is in memory and should follow shared changes too).
+    static var snapOpened = false
+    /// Saved places or town names changed: both apps' lists follow.
+    static func placesChanged() {
+        library.placesChanged()
+        if snapOpened { snapLibrary.placesChanged() }
+    }
 }
 
 /// Keeps the scan going when the app isn't open:

@@ -15,9 +15,18 @@ final class Library: ObservableObject {
     /// The children's birthdays, which sort photos into Baby / Toddler / Kid.
     @Published private(set) var birthdays: [Date] = []
     /// People named in Who's Who.
-    @Published private(set) var people: [Person] = []
+    /// Who's Who (shared with the other app: see WhoStore). Changing it here redraws this app's screens.
+    private(set) var people: [Person] {
+        get { Shared.who.people }
+        _modify { objectWillChange.send(); Shared.who.dirty = true; yield &Shared.who.people }
+        set { objectWillChange.send(); Shared.who.dirty = true; Shared.who.people = newValue }
+    }
     /// Who's Who grouping: 0 stricter, 1 normal, 2 looser.
-    @Published private(set) var strictness = 1
+    private(set) var strictness: Int {
+        get { Shared.who.strictness }
+        _modify { objectWillChange.send(); Shared.who.dirty = true; yield &Shared.who.strictness }
+        set { objectWillChange.send(); Shared.who.dirty = true; Shared.who.strictness = newValue }
+    }
     /// Claude scoring settings and batches waiting for results.
     @Published private(set) var claudeModel = "claude-haiku-5-5"
     @Published private(set) var claudeScope = 300
@@ -135,12 +144,18 @@ final class Library: ObservableObject {
     /// The library is saved as a compact binary file (much smaller and lighter on memory than the JSON it
     /// replaces, which a large library could push past iOS's memory limit while saving). The old JSON file is
     /// read once if that's all there is, and removed after the first binary save.
-    private let url: URL = {
+    private let url: URL
+    /// Each app's own file (Awwbum's keeps its original name).
+    private static func fileURL(_ mode: AppMode) -> URL {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("scores.plist")
-    }()
-    private var legacyURL: URL { url.deletingLastPathComponent().appendingPathComponent("scores.json") }
+        return dir.appendingPathComponent(mode == .snap ? "awwsnap-scores.plist" : "scores.plist")
+    }
+    private var legacyURL: URL { url.deletingLastPathComponent().appendingPathComponent(mode == .snap ? "awwsnap-scores.json" : "scores.json") }
+    /// Which app this library is (Awwbum's or AwwSnap's); everything but Who's Who is its own.
+    let mode: AppMode
+    var claude: ClaudeService { Shared.claude(mode) }
+    var scanner: PhotoScanner { Shared.scanner(mode) }
     private struct Saved: Codable {
         var photos: [PhotoScore]; var hidden: [String]; var birthdays: [Date]?
         var people: [Person]?; var strictness: Int?
@@ -169,15 +184,23 @@ final class Library: ObservableObject {
     private var readyHandlers: [() -> Void] = []
     func whenReady(_ handler: @escaping () -> Void) { if ready { handler() } else { readyHandlers.append(handler) } }
 
-    init() {
+    init(mode: AppMode = .aww) {
+        self.mode = mode
+        url = Library.fileURL(mode)
+        if mode == .snap { useBuiltInLearning = false }   // Awwbum's built-in learning is about kids: not used here
         let u = url, legacy = legacyURL
-        Task.detached(priority: .userInitiated) { [weak self] in
-            let t0 = Date()
-            let saved = Library.readNewest([(u, true), (legacy, false),
-                                            (legacy.appendingPathExtension("bak"), false)])
-            let readTime = Date().timeIntervalSince(t0)
-            await MainActor.run { self?.note("Read saved library", seconds: readTime); self?.finishLoading(saved) }
+        let read = { [weak self] in
+            Task.detached(priority: .userInitiated) { [weak self] in
+                let t0 = Date()
+                let saved = Library.readNewest([(u, true), (legacy, false),
+                                                (legacy.appendingPathExtension("bak"), false)])
+                let readTime = Date().timeIntervalSince(t0)
+                await MainActor.run { self?.note("Read saved library", seconds: readTime); self?.finishLoading(saved) }
+            }
+            _ = self
         }
+        // AwwSnap reads Who's Who from Awwbum's library, so it opens after that has.
+        if mode == .snap { Shared.library.whenReady { read() } } else { read() }
     }
 
     private enum ReadResult { case none, loaded(Saved, from: URL), failed(blockSaves: Bool) }
@@ -234,12 +257,12 @@ final class Library: ObservableObject {
         }
         note("Apply saved library", seconds: Date().timeIntervalSince(t0))
         // The ranking chosen last time (remembered on its own); Learned by default.
-        if let r = UserDefaults.standard.string(forKey: "rankBy") { rankBy = r }
+        if let r = UserDefaults.standard.string(forKey: mode.key("rankBy")) { rankBy = r }
         // Learned is the main ranking: switched to once on this update (you can still pick another in the menu).
-        if !UserDefaults.standard.bool(forKey: "learnedPrimary") {
-            UserDefaults.standard.set(true, forKey: "learnedPrimary")
+        if !UserDefaults.standard.bool(forKey: mode.key("learnedPrimary")) {
+            UserDefaults.standard.set(true, forKey: mode.key("learnedPrimary"))
             rankBy = "learned"
-            UserDefaults.standard.set("learned", forKey: "rankBy")
+            UserDefaults.standard.set("learned", forKey: mode.key("rankBy"))
         }
         // Work out every photo's scores off the main thread first, so the first ranking is quick.
         prewarmDerived { [weak self] in self?.finishLoadingRanked(hadSaved: hadSaved, failedBlock: failedBlock) }
@@ -254,7 +277,7 @@ final class Library: ObservableObject {
         // Before Who's Who asked for consent: anyone who already named people keeps it on; otherwise no face
         // prints are kept until it's turned on.
         var deletePending = false
-        if UserDefaults.standard.object(forKey: "faceConsent") == nil {
+        if mode == .aww && UserDefaults.standard.object(forKey: "faceConsent") == nil {
             if !people.isEmpty {
                 // People were named before consent was asked: Who's Who stays on.
                 UserDefaults.standard.set(true, forKey: "faceConsent")
@@ -269,6 +292,9 @@ final class Library: ObservableObject {
         if deletePending {
             save { if UserDefaults.standard.object(forKey: "faceConsent") == nil { UserDefaults.standard.set(false, forKey: "faceConsent") } }
         }
+        // Who's Who was turned off (in either app) while this library still had face prints: they go now.
+        if UserDefaults.standard.object(forKey: "faceConsent") as? Bool == false,
+           photos.values.contains(where: { $0.faceRecords != nil }) { dropFacePrints() }
         let handlers = readyHandlers; readyHandlers = []
         handlers.forEach { $0() }
         noteMemory()
@@ -277,7 +303,7 @@ final class Library: ObservableObject {
         staggered([{ lib in
             lib.retrain {
                 lib.learnPeople()
-                if !lib.claudeBatches.isEmpty { Task { await Shared.claude.collect(lib) } }
+                if !lib.claudeBatches.isEmpty { Task { await lib.claude.collect(lib) } }
             }
         }])
     }
@@ -320,14 +346,14 @@ final class Library: ObservableObject {
     /// Fills the per-photo cache (decoded measurements, learned score, removal check, balanced score) off the
     /// main thread, then calls `then` on the main thread.
     private func prewarmDerived(then: @escaping () -> Void) {
-        let snapshot = Array(photos.values), model = learned, filter = learnedFilter, epoch = learningEpoch, likes = taste
+        let snapshot = Array(photos.values), model = learned, filter = learnedFilter, epoch = learningEpoch, likes = taste, mode = self.mode
         let t0 = Date()
         Task.detached(priority: .userInitiated) { [weak self] in
             var out: [String: Derived] = [:]
             out.reserveCapacity(snapshot.count)
             for p in snapshot {
                 guard let f = p.feat, let x = Learner.decode(f) else { continue }
-                out[p.id] = Library.derive(p, f, x, model: model, filter: filter, taste: likes, epoch: epoch)
+                out[p.id] = Library.derive(p, f, x, model: model, filter: filter, taste: likes, epoch: epoch, mode: mode)
             }
             let took = Date().timeIntervalSince(t0)
             let result = out
@@ -410,9 +436,11 @@ final class Library: ObservableObject {
         Shared.places.nameTowns(self)   // towns for photos this scan added
         // Each step starts only after the one before has finished (a save is written off the main thread).
         staggered([{ lib in
+            let m = lib.mode
             lib.save {
                 Task { @MainActor in
-                    Shared.library.retrain { Shared.library.learnPeople(); Shared.library.noteMemory() }
+                    let lib = Shared.library(m)
+                    lib.retrain { lib.learnPeople(); lib.noteMemory() }
                 }
             }
         }], gap: 1)
@@ -456,7 +484,7 @@ final class Library: ObservableObject {
     @Published private(set) var claudeToSend = 0
     @Published private(set) var claudeRecheckable = 0
     func recountClaude() {
-        let n = Shared.claude.candidates(self).count, r = Shared.claude.recheckCandidates(self).count
+        let n = claude.candidates(self).count, r = claude.recheckCandidates(self).count
         if n != claudeToSend { claudeToSend = n }
         if r != claudeRecheckable { claudeRecheckable = r }
     }
@@ -467,7 +495,7 @@ final class Library: ObservableObject {
     func setRankBy(_ v: String) {
         guard v != rankBy else { return }
         rankBy = v
-        UserDefaults.standard.set(v, forKey: "rankBy")
+        UserDefaults.standard.set(v, forKey: mode.key("rankBy"))
         rebuild()
     }
     /// Photos Claude never returned a score for (batch lost, expired or errored): they can be sent again.
@@ -568,8 +596,9 @@ final class Library: ObservableObject {
     @Published private(set) var filteredOut = 0
     /// The learning built into the app (from Resources/BuiltInLearning.json, when present): new installs start
     /// with it, and this phone's own Claude scores replace each part once there are enough of them.
-    private let builtIn: (model: LearnedModel?, filter: LearnedFilter?) = {
-        guard let u = Bundle.main.url(forResource: "BuiltInLearning", withExtension: "json"),
+    /// (Awwbum only: it learned what's cute in kids' photos, which isn't what AwwSnap ranks.)
+    private lazy var builtIn: (model: LearnedModel?, filter: LearnedFilter?) = {
+        guard self.mode == .aww, let u = Bundle.main.url(forResource: "BuiltInLearning", withExtension: "json"),
               let t = try? String(contentsOf: u, encoding: .utf8) else { return (nil, nil) }
         return LearningPack.read(t)
     }()
@@ -679,13 +708,13 @@ final class Library: ObservableObject {
         let sp = p.special ?? Scorer.specialFromCaption(p.caption)   // a new caption can change this without new measurements
         if let d = derived[p.id], d.epoch == learningEpoch, d.special == sp, d.feat == f { return d }
         guard let x = Learner.decode(f) else { return nil }
-        let d = Library.derive(p, f, x, model: learned, filter: learnedFilter, taste: taste, epoch: learningEpoch)
+        let d = Library.derive(p, f, x, model: learned, filter: learnedFilter, taste: taste, epoch: learningEpoch, mode: mode)
         derived[p.id] = d
         return d
     }
 
     nonisolated private static func derive(_ p: PhotoScore, _ f: Data, _ x: [Double], model: LearnedModel?,
-                                           filter: LearnedFilter?, taste: TasteModel?, epoch: Int) -> Derived {
+                                           filter: LearnedFilter?, taste: TasteModel?, epoch: Int, mode: AppMode) -> Derived {
         let sp = p.special ?? Scorer.specialFromCaption(p.caption)
         // Learn my Likes moves it up to half a point toward what you like.
         let learnedV = model.map { m -> Double in
@@ -694,7 +723,7 @@ final class Library: ObservableObject {
         }
         let removes = filter.map { $0.useful && Learner.removalChance($0, x) >= Learner.removeAt } ?? false
         return Derived(feat: f, epoch: epoch, special: sp, learned: learnedV, removes: removes,
-                       balanced: Scorer.balanced(x, special: sp))
+                       balanced: mode == .snap ? (p.raw ?? p.soft ?? 0) : Scorer.balanced(x, special: sp))
     }
 
     /// True when the learned filter expects Claude would take this photo off the list.
@@ -791,7 +820,7 @@ final class Library: ObservableObject {
                     self.retrainBusy = false   // busy until here, so a second training can't start mid-way
                     self.rebuild()
                     if self.pendingRetrain { self.pendingRetrain = false; self.save(); self.retrain() }
-                    else { self.save { Task { @MainActor in Shared.library.retrainFinished() } } }   // next step after the save
+                    else { let mode = self.mode; self.save { Task { @MainActor in Shared.library(mode).retrainFinished() } } }   // next step after the save
                 }
             }
         }
@@ -807,7 +836,7 @@ final class Library: ObservableObject {
         claudeSent = [:]   // starting over: each year's budget is available again (removals are kept, never re-sent)
         ownModel = nil; ownFilter = nil; trainedSignature = nil; generation += 1
         applyLearning()
-        if rankBy != "learned" { rankBy = "learned"; UserDefaults.standard.set("learned", forKey: "rankBy") }   // falls back to Apple without learning
+        if rankBy != "learned" { rankBy = "learned"; UserDefaults.standard.set("learned", forKey: mode.key("rankBy")) }   // falls back to Apple without learning
         rebuild(); save()
     }
     /// Worked out once per re-rank (screens read these on every redraw; counting thousands of moments each time
@@ -879,7 +908,11 @@ final class Library: ObservableObject {
     @Published private(set) var faceOwner: [String: UUID] = [:]
     /// Faces you skipped in Review faces or Double-check (not asked about again in either, for anyone; they can
     /// still be tagged in Tag people or named in Who is this?).
-    private(set) var skippedFaces = Set<String>()
+    private(set) var skippedFaces: Set<String> {
+        get { Shared.who.skippedFaces }
+        _modify { Shared.who.dirty = true; yield &Shared.who.skippedFaces }
+        set { Shared.who.dirty = true; Shared.who.skippedFaces = newValue }
+    }
     func skipFace(_ photo: String, _ face: FaceRecord) {
         skippedFaces.insert(Library.faceKey(photo, face)); saveSoon()
     }
@@ -904,11 +937,23 @@ final class Library: ObservableObject {
         saveSoon(); learnPeople()
     }
     /// Faces you named or confirmed yourself (face key → person): always that person, never asked about again.
-    private(set) var confirmedFaces: [String: UUID] = [:]
+    private(set) var confirmedFaces: [String: UUID] {
+        get { Shared.who.confirmedFaces }
+        _modify { Shared.who.dirty = true; yield &Shared.who.confirmedFaces }
+        set { Shared.who.dirty = true; Shared.who.confirmedFaces = newValue }
+    }
     /// Faces you said aren't someone (face key → people), so they're never counted as them again.
-    private(set) var notThem: [String: Set<UUID>] = [:]
+    private(set) var notThem: [String: Set<UUID>] {
+        get { Shared.who.notThem }
+        _modify { Shared.who.dirty = true; yield &Shared.who.notThem }
+        set { Shared.who.dirty = true; Shared.who.notThem = newValue }
+    }
     /// Faces you removed from "Who is this?" (strangers and the like), so they aren't asked about again.
-    private(set) var ignoredFaces = Set<String>()
+    private(set) var ignoredFaces: Set<String> {
+        get { Shared.who.ignoredFaces }
+        _modify { Shared.who.dirty = true; yield &Shared.who.ignoredFaces }
+        set { Shared.who.dirty = true; Shared.who.ignoredFaces = newValue }
+    }
 
     /// A face's lasting key: its photo and where it sits in it (stays the same when the photo is read again).
     nonisolated static func faceKey(_ photo: String, _ f: FaceRecord) -> String {
@@ -1115,12 +1160,21 @@ final class Library: ObservableObject {
         UserDefaults.standard.set(on, forKey: "faceConsent")
         if on {
             // Makes the face prints Who's Who needs (listed photos only), after any scan already running.
-            Shared.scanner.whenFinished { [weak self] in if let self { Shared.scanner.start(library: self) } }
+            scanner.whenFinished { [weak self] in if let self { self.scanner.start(library: self) } }
         } else {
             learnedWho = [:]; learnedFaces = []   // before the rebuild, so no one stays tagged
             deleteFacePrints()
+            // The other app's face prints go too (Who's Who is shared).
+            let other = Shared.library(mode.other)
+            if mode == .snap || Shared.snapOpened, other.ready { other.dropFacePrints() }
         }
         whoCache = [:]; rebuild(); save(); learnPeople()
+    }
+
+    /// Another app's library turned Who's Who off: its photos' face prints go too.
+    func dropFacePrints() {
+        for id in photos.keys where photos[id]?.faceRecords != nil { photos[id]?.faceRecords = nil; photos[id]?.facePrintsOff = true }
+        learnedWho = [:]; learnedFaces = []; whoCache = [:]; rebuild(); save()
     }
 
     /// Deletes Who's Who's face prints: from every photo, and each named person's (names and birthdays stay;
@@ -1139,6 +1193,7 @@ final class Library: ObservableObject {
     /// and again on each pass while some of those photos are still waiting to be read again (so it doesn't stay
     /// built from the first few).
     private func refreshPersonPrints() {
+        guard mode == .aww else { return }   // from Awwbum's photos only, so it doesn't depend on the app you're in
         var vecs: [UUID: [Data]] = [:], waiting = Set<UUID>()
         for (key, id) in confirmedFaces.sorted(by: { $0.key < $1.key }) {   // same order every time: same result
             guard let photo = key.split(separator: "|").first.map(String.init),
@@ -1222,7 +1277,8 @@ final class Library: ObservableObject {
             let result = who, known = done, learnedCounts = counts, owners2 = owner, worked = Set(snapshot.map(\.id))
             await MainActor.run {
                 guard gen == self.peopleGeneration else { return }   // names changed meanwhile: a newer run is coming
-                for k in self.people.indices { self.people[k].learnedCount = learnedCounts[self.people[k].id] ?? 0 }
+                // The "faces learned" count shown in Who's Who is Awwbum's (so it doesn't change with the app you're in).
+                if self.mode == .aww { for k in self.people.indices { self.people[k].learnedCount = learnedCounts[self.people[k].id] ?? 0 } }
                 self.learnedWho = result
                 self.learnedFaces = known
                 self.faceOwner = owners2
@@ -1614,20 +1670,23 @@ final class Library: ObservableObject {
         guard ready, !savesBlocked else { if let done { DispatchQueue.main.async(execute: done) }; return }
         saveTask?.cancel()   // this save covers any pending "save soon"
         unsaved = 0; lastSave = Date()
+        // Who's Who is saved with Awwbum's library only (AwwSnap shares it).
+        let ownsWho = mode == .aww
+        if ownsWho { Shared.who.dirty = false } else if Shared.who.dirty { Shared.library.saveSoon() }
         let s = Saved(photos: Array(photos.values), hidden: Array(hidden), birthdays: birthdays,
-                      people: people, strictness: strictness,
+                      people: ownsWho ? people : nil, strictness: ownsWho ? strictness : nil,
                       claudeModel: claudeModel, claudeScope: claudeScope, claudeBatches: claudeBatches, rankBy: rankBy, claudeFailures: claudeFailures, learned: ownModel, claudeSensitive: claudeSensitive,
                       putBack: nil, keptOut: Array(keptOut), learnedFilter: ownFilter,
                       trainedSignature: nil, useBuiltInLearning: useBuiltInLearning,
                       trainedSignatureBits: trainedSignature.map { Int64(bitPattern: $0) },
                       claudeRemoved: claudeRemoved, claudeSent: claudeSent.mapValues { Array($0) },
                       claudeSentYear: claudeSentYear, reactions: reactions,
-                      notThem: notThem.mapValues { $0.map(\.uuidString) }, ignoredFaces: Array(ignoredFaces),
-                      addedBack: Array(addedBack), confirmedFaces: confirmedFaces.mapValues(\.uuidString),
-                      skippedFaces: Array(skippedFaces), taste: taste,
+                      notThem: ownsWho ? notThem.mapValues { $0.map(\.uuidString) } : nil, ignoredFaces: ownsWho ? Array(ignoredFaces) : nil,
+                      addedBack: Array(addedBack), confirmedFaces: ownsWho ? confirmedFaces.mapValues(\.uuidString) : nil,
+                      skippedFaces: ownsWho ? Array(skippedFaces) : nil, taste: taste,
                       tasteSignatureBits: tasteSignature.map { Int64(bitPattern: $0) },
                       untaggedIgnored: Array(untaggedIgnored))
-        let u = url, legacy = legacyURL
+        let u = url, legacy = legacyURL, mode = self.mode
         // One save at a time, in order, so an older snapshot can never land after a newer one.
         Library.saveQueue.async {
             let t0 = Date()
@@ -1649,8 +1708,8 @@ final class Library: ObservableObject {
             }
             let took = Date().timeIntervalSince(t0), size = bytes
             DispatchQueue.main.async {
-                Shared.library.note("Last save", String(format: "%.1f s, ", took) + ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
-                Shared.library.noteMemory()
+                Shared.library(mode).note("Last save", String(format: "%.1f s, ", took) + ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
+                Shared.library(mode).noteMemory()
             }
             if let done { DispatchQueue.main.async(execute: done) }
         }
@@ -1663,6 +1722,8 @@ final class Library: ObservableObject {
         for (id, p) in photos where p.claude?.exclude == "swimwear" { photos[id]?.claude?.exclude = nil }
         hidden = Set(s.hidden)
         birthdays = s.birthdays ?? []
+        // Who's Who is read from Awwbum's library (AwwSnap shares it).
+        if mode == .aww {
         // Names saved with an older fingerprint size can't be compared; keep the names, ask for faces again.
         people = (s.people ?? []).map { p in
             var p = p
@@ -1674,6 +1735,7 @@ final class Library: ObservableObject {
             return p
         }
         strictness = s.strictness ?? 1
+        }
         claudeModel = s.claudeModel ?? claudeModel
         // Haiku is the default; switch earlier saves that were on the old default and never sent anything.
         if claudeModel == "claude-sonnet-5-5" && !s.photos.contains(where: { $0.claude != nil }) && (s.claudeBatches ?? []).isEmpty {
@@ -1681,11 +1743,14 @@ final class Library: ObservableObject {
         }
         keptOut = Set(s.keptOut ?? [])
         reactions = s.reactions ?? [:]
-        notThem = (s.notThem ?? [:]).mapValues { Set($0.compactMap(UUID.init(uuidString:))) }
-        ignoredFaces = Set(s.ignoredFaces ?? [])
+        if mode == .aww {
+            notThem = (s.notThem ?? [:]).mapValues { Set($0.compactMap(UUID.init(uuidString:))) }
+            ignoredFaces = Set(s.ignoredFaces ?? [])
+            confirmedFaces = (s.confirmedFaces ?? [:]).compactMapValues(UUID.init(uuidString:))
+            skippedFaces = Set(s.skippedFaces ?? [])
+            Shared.who.dirty = false
+        }
         addedBack = Set(s.addedBack ?? [])
-        confirmedFaces = (s.confirmedFaces ?? [:]).compactMapValues(UUID.init(uuidString:))
-        skippedFaces = Set(s.skippedFaces ?? [])
         claudeSensitive = s.claudeSensitive ?? false
         ownFilter = s.learnedFilter.flatMap { $0.weights.count == Learner.featureCount ? $0 : nil }
         useBuiltInLearning = s.useBuiltInLearning ?? true

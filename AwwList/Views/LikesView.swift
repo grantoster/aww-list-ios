@@ -75,7 +75,7 @@ struct LikesView: View {
                     Image(systemName: "checkmark.circle.fill").font(.system(size: 56)).foregroundStyle(Theme.grapeInk)
                     let n = answers.filter { $0 != 0 }.count
                     Text("Thanks! \(n.formatted()) vote\(n == 1 ? "" : "s").").font(Theme.label(22, relativeTo: .title2))
-                    Text("Awwbum learns from them when you tap Done. Settings shows how well it predicts your votes.")
+                    Text("\(AppMode.current.title) learns from them when you tap Done. Settings shows how well it predicts your votes.")
                         .multilineTextAlignment(.center).foregroundStyle(.secondary)
                     HStack(spacing: 24) {
                         Button("Undo last") { undo() }.disabled(answers.isEmpty).frame(minHeight: 44)
