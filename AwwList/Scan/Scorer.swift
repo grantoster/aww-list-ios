@@ -21,6 +21,7 @@ struct Signals: Equatable {
     var faces: [FaceSignal] = []
     var sharpness: Double = 0            // 0...1, measured on the subject's face crop
     var labels: [String] = []            // scene/object labels used for the description (Describe.sceneLabels)
+    var sceneTags: [String] = []         // what's in the photo (Vision labels at 35%+, strongest first), for the Setting filter
     var waterScene: Bool = false         // confident water-scene label (Analyzer.waterScenes)
     var isScreenshot: Bool = false
     var blockedLabel: String? = nil      // "bath", "swimwear", "undressed", "document", "screenshot"

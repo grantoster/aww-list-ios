@@ -85,6 +85,8 @@ final class Analyzer {
 
         var bathroomRoom = false, roomFaint = false, tubFaint = false, hint = false
         s.content = Learner.content(labels: (classify.results ?? []).map { ($0.identifier, $0.confidence) })
+        s.sceneTags = Array((classify.results ?? []).filter { $0.confidence >= 0.35 }
+            .sorted { $0.confidence > $1.confidence }.prefix(20).map(\.identifier))
         for obs in classify.results ?? [] {
             let id = obs.identifier
             // The most serious match wins (bath or undressed over swimwear over document or screenshot),

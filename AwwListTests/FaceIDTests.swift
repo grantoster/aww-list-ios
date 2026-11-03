@@ -77,3 +77,41 @@ final class KidBalanceTests: XCTestCase {
         XCTAssertEqual(KidBalance.order(ranked, kids: [(girl, nil), (boy, grownUp)]).map(\.id), ranked.map(\.id))
     }
 }
+
+final class SettingAndPlaceTests: XCTestCase {
+    private func moment(_ i: Int, scenes: [String], date: Date = Date(timeIntervalSince1970: 1_600_000_000)) -> Moment {
+        var p = PhotoScore(id: "s\(i)", date: date.addingTimeInterval(Double(i) * 86_400 * 2), raw: 0.5, excluded: nil, age: nil, caption: "", version: 1)
+        p.scenes = scenes
+        return Moment(best: p, shots: 1, memberIDs: [p.id], score: 5)
+    }
+
+    func testSettingMenu() {
+        let beach = (0..<5).map { moment($0, scenes: ["beach", "sand"]) }
+        let horses = (5..<15).map { moment($0, scenes: ["horse_riding"]) }
+        let menu = Surroundings.menu(beach + horses)
+        // Built-in kinds you have 3+ photos of, then things seen often in your photos (8+).
+        XCTAssertEqual(menu.first?.kind.id, "label:horse_riding")                             // most photos first
+        XCTAssertTrue(menu.contains { $0.kind.id == "beach" && $0.count == 5 })
+        XCTAssertTrue(menu.contains { $0.kind.id == "label:horse_riding" && $0.kind.name == "Horse riding" && $0.count == 10 })
+        XCTAssertFalse(menu.contains { $0.kind.id == "sports" })
+        // Holidays count by date too.
+        var c = DateComponents(); c.year = 2021; c.month = 12; c.day = 25; c.hour = 10
+        let xmas = Calendar.current.date(from: c)!
+        let parties = Surroundings.builtIn.first { $0.id == "parties" }!
+        XCTAssertTrue(Surroundings.matches(moment(0, scenes: [], date: xmas).best.withDate(xmas), parties))
+    }
+
+    func testPlacesAndShots() {
+        XCTAssertEqual(PlaceBook.cell(30.2460, -87.7008), PlaceBook.cell(30.2449, -87.7011))   // same few-km square
+        XCTAssertNotEqual(PlaceBook.cell(30.25, -87.70), PlaceBook.cell(35.15, -90.05))       // Gulf Shores vs Memphis
+        // Two faces with a grown-up recognized in the photo: Family & groups, not Kids together.
+        var m = moment(1, scenes: [])
+        XCTAssertEqual(ShotKind.of(faces: 2, adults: 0), .kids)
+        m.namedAdults = 1
+        XCTAssertEqual(ShotKind.of(faces: 2, adults: max(m.best.adults ?? 0, m.namedAdults)), .family)
+    }
+}
+
+private extension PhotoScore {
+    func withDate(_ d: Date) -> PhotoScore { var p = self; p.date = d; return p }
+}

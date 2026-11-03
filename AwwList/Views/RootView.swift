@@ -148,6 +148,7 @@ struct SettingsView: View {
                 LikesSection()
                 LearnedSection()
                 BirthdaysSection()
+                PlacesSection()
                 Section {
                     NavigationLink("Send feedback") { FeedbackView() }
                 } footer: {
@@ -887,5 +888,68 @@ struct FeedbackView: View {
         .background(Theme.background.ignoresSafeArea())
         .navigationTitle("Send feedback").navigationBarTitleDisplayMode(.inline)
         .sheet(item: $sharing) { t in ShareSheet(text: t.text).presentationDetents([.medium, .large]) }
+    }
+}
+
+/// Settings: places you save (a home, by address) for the Place filter, and naming towns from photo locations.
+struct PlacesSection: View {
+    @ObservedObject private var places = Shared.places
+    @State private var adding = false
+    var body: some View {
+        Section {
+            ForEach(places.saved) { p in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(p.name)
+                    Text(p.address).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .onDelete { idx in idx.map { places.saved[$0].id }.forEach(places.remove) }
+            Button { adding = true } label: { Label("Add a place", systemImage: "mappin.and.ellipse") }
+            Toggle("Name towns from photo locations", isOn: $places.lookUpTowns)
+            if places.naming { HStack { ProgressView(); Text("Naming towns…").foregroundStyle(.secondary) } }
+        } header: {
+            Text("Places")
+        } footer: {
+            Text("Add a home by its address (Grandma's house, say) and Home's Place filter shows every photo taken within about 650 feet of it. The address is looked up with Apple's location service. With naming towns on, towns like Gulf Shores, AL come from each photo's own location: Apple's location service gets a rough location (to about half a mile) for each area your photos are from, never the photos. Swipe left on a place to remove it.")
+        }
+        .sheet(isPresented: $adding) { AddPlaceSheet() }
+    }
+}
+
+struct AddPlaceSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var address = ""
+    @State private var busy = false
+    @State private var problem: String?
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Name (for example, Grandma's house)", text: $name).textInputAutocapitalization(.words)
+                    TextField("Address", text: $address, axis: .vertical).textContentType(.fullStreetAddress)
+                } footer: {
+                    if let problem { Text(problem) }
+                }
+            }
+            .navigationTitle("Add a place").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    if busy { ProgressView() } else {
+                        Button("Save") {
+                            busy = true
+                            Task {
+                                problem = await Shared.places.add(name: name, address: address)
+                                busy = false
+                                if problem == nil { dismiss() }
+                            }
+                        }
+                        .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || address.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium])
     }
 }

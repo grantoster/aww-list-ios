@@ -392,7 +392,7 @@ struct NameSheet: View {
                         DatePicker("Birthday", selection: $birthday, in: ...Date(), displayedComponents: .date)
                     }
                 } footer: {
-                    Text("With a birthday, this person's photos are sorted into Baby, Toddler and Kid exactly.")
+                    Text("With a birthday, this person's photos are sorted into Baby, Toddler and Kid exactly. Once any of your kids has a birthday here, someone without one counts as a grown-up, so group photos with them are under Family & groups, not Kids together.")
                 }
             }
             .navigationTitle("Who is this?")

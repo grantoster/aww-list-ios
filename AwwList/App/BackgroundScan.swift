@@ -10,6 +10,7 @@ enum Shared {
     static let scanner = PhotoScanner()
     static let claude = ClaudeService()
     static let plus = PlusStore()
+    static let places = PlaceBook()
 }
 
 /// Keeps the scan going when the app isn't open:

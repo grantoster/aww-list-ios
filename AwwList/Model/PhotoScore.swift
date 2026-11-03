@@ -63,6 +63,12 @@ struct PhotoScore: Codable, Hashable, Identifiable {
     var facePrintsOff: Bool? = nil
     /// Which way of finding faces made `faceRecords` (FaceID.version); older ones are read again.
     var faceVersion: Int? = nil
+    /// What's in the photo (Apple's scene labels at 35% or more), for the Setting filter; nil until read.
+    var scenes: [String]? = nil
+    /// Where it was taken (the photo's own location), if it has one; `locChecked` once looked up.
+    var lat: Double? = nil
+    var lon: Double? = nil
+    var locChecked: Bool? = nil
     /// Claude's score, description and checks, when this photo was sent to Claude.
     var claude: ClaudeVerdict? = nil
     /// For photos Apple set aside for a soft reason (Scorer.softReasons): the score they'd have had,
@@ -144,5 +150,7 @@ struct Moment: Identifiable, Hashable {
         return best.caption
     }
     var year: Int { Calendar.current.component(.year, from: best.date) }
-    var shot: ShotKind { ShotKind.of(faces: best.mainFaces ?? best.faces, adults: best.adults) }
+    /// Grown-ups recognized in the shot by Who's Who (named people who were 13 or older then; see Library.rebuild).
+    var namedAdults = 0
+    var shot: ShotKind { ShotKind.of(faces: best.mainFaces ?? best.faces, adults: max(best.adults ?? 0, namedAdults)) }
 }

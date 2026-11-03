@@ -2,6 +2,7 @@ import Foundation
 import Photos
 import UIKit
 import ImageIO
+import CoreLocation
 
 /// Walks the photo library on a background queue, analyzes photos it hasn't seen yet, and reports progress.
 @MainActor
@@ -65,6 +66,8 @@ final class PhotoScanner: ObservableObject {
             $0.version == Scorer.version && !(retryUnavailable && $0.excluded == Scorer.unavailable)
                 && ($0.raw == nil || !faceModel || ($0.faceRecords.map { $0.allSatisfy { $0.vec.count == People.dim } } ?? false)
                     || (!facesAllowed && $0.facePrintsOff == true))   // Who's Who off: no face prints needed
+                // listed photos from before what's in them was kept (for the Setting filter)
+                && !(($0.raw != nil || $0.soft != nil) && $0.scenes == nil)
                 // listed photos whose faces were found under older rules (fewer and only bigger faces)
                 && !(facesAllowed && faceModel && $0.raw != nil && ($0.faces ?? 0) > 0 && $0.faceVersion != FaceID.version)
                 // any photo still holding prints from the old face recognizer is read again (flagged ones too)
@@ -97,10 +100,12 @@ final class PhotoScanner: ObservableObject {
                 || Scorer.needsShirtlessRecheck(p) || Scorer.needsLabelRecheck(p)
                 || ((p.raw != nil || p.soft != nil) && (p.faces ?? 0) >= 2 && (p.flagVersion ?? 0) < 7)
                 || (facesAllowed && faceModel && p.raw != nil && (p.faces ?? 0) > 0 && p.faceVersion != FaceID.version)
+                || ((p.raw != nil || p.soft != nil) && p.scenes == nil)
         }
         let flag = cancelFlag
         let changes = self.changes
         let me = self
+        let needPlace = Set(library.photos.values.filter { $0.locChecked != true && ($0.raw != nil || $0.soft != nil) }.map(\.id))
         queue.async {
             let opts = PHFetchOptions()
             opts.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
@@ -110,10 +115,17 @@ final class PhotoScanner: ObservableObject {
             changes.watch(assets)
             var todo: [PHAsset] = []
             var alive = Set<String>()
+            // Where each photo already on file was taken (read from the photo's details: quick, no image needed).
+            var places: [String: CLLocationCoordinate2D?] = [:]
             assets.enumerateObjects { a, _, _ in
                 alive.insert(a.localIdentifier)
                 if !known.contains(a.localIdentifier) { todo.append(a) }
+                else if needPlace.contains(a.localIdentifier) {
+                    let c = a.location?.coordinate
+                    places[a.localIdentifier] = c.flatMap { CLLocationCoordinate2DIsValid($0) && ($0.latitude != 0 || $0.longitude != 0) ? $0 : nil }
+                }
             }
+            if !places.isEmpty { let found = places; Task { @MainActor in library.setPlaces(found) } }
             // Includes photos moved to the Hidden album since the last scan: their records are dropped. With
             // Limited access, photos outside the selection only look gone: they're kept, just not listed.
             let gone = all.subtracting(alive)
@@ -350,6 +362,7 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
         old.version = Scorer.version   // its held-back or flagged reason stands; just don't keep re-reading it
         if old.faceRecords == nil { old.facePrintsOff = true }   // can't be read now: no face prints, don't retry every scan
         if UserDefaults.standard.bool(forKey: "faceConsent") { old.faceVersion = FaceID.version }   // likewise: not re-read every scan for more faces
+        if old.scenes == nil { old.scenes = [] }   // and not for what's in it
         return .done(old)
     }
     return autoreleasepool {
@@ -434,6 +447,11 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
         p.flagVersion = 7
         p.noPairBonus = true
         p.special = signals.labels.contains(where: Scorer.specialLabels.contains) ? 1 : 0
+        p.scenes = (raw != nil || p.soft != nil) ? signals.sceneTags : nil   // listed photos only (keeps the save small)
+        if let c = asset.location?.coordinate, CLLocationCoordinate2DIsValid(c), c.latitude != 0 || c.longitude != 0 {
+            p.lat = c.latitude; p.lon = c.longitude
+        }
+        p.locChecked = true
         let main = signals.mainFaceIndices
         p.mainFaces = main.count
         p.adults = main.filter { signals.isAdult($0) == true }.count

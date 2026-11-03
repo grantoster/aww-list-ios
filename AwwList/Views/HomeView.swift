@@ -15,6 +15,13 @@ struct HomeView: View {
     @State private var age: AgeGroup?
     @State private var shot: ShotKind?
     @State private var person: UUID?
+    /// Setting filter (a SceneKind id) and Place filter ("s:" + saved place id, or "t:" + town name).
+    @State private var scene: String?
+    @State private var place: String?
+    @State private var sceneMenu: [(kind: SceneKind, count: Int)] = []
+    @State private var placeMenu: [(id: String, name: String, count: Int, saved: Bool)] = []
+    private let places = Shared.places
+    @State private var askTowns = false
     @State private var showWho = false
     @State private var viewer: ViewerState?
     @State private var showSettings = false
@@ -54,11 +61,44 @@ struct HomeView: View {
     @AppStorage("balanceKids") private var balanceKids = false
     private var top: [Moment] { Array(pool.prefix(shown)) }
     private var balancing: Bool { balanceKids && person == nil }
+    private func inPlace(_ p: PhotoScore, _ choice: String) -> Bool {
+        if choice.hasPrefix("s:") { return places.savedPlace(p).map { "s:" + $0.id.uuidString } == choice }
+        if choice.hasPrefix("t:") { return places.town(p).map { "t:" + $0 } == choice }
+        return true
+    }
+    /// The Place menu: your saved places, then towns by how many photos (3 or more), up to 20.
+    private func placeChoices(_ ms: [Moment]) -> [(id: String, name: String, count: Int, saved: Bool)] {
+        var saved: [UUID: Int] = [:], towns: [String: Int] = [:]
+        for m in ms {
+            if let s = places.savedPlace(m.best) { saved[s.id, default: 0] += 1 }
+            if let t = places.town(m.best) { towns[t, default: 0] += 1 }
+        }
+        let a = places.saved.map { (id: "s:" + $0.id.uuidString, name: $0.name, count: saved[$0.id] ?? 0, saved: true) }
+        let b = towns.filter { $0.value >= 3 }.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }.prefix(20)
+            .map { (id: "t:" + $0.key, name: $0.key, count: $0.value, saved: false) }
+        return a + b
+    }
+
+    /// The Who menu: Daniel and Natalie first, then everyone else A to Z.
+    private var peopleOrder: [Person] {
+        let first = ["daniel", "natalie"]
+        return library.people.sorted { a, b in
+            let ia = first.firstIndex(of: a.name.lowercased()) ?? first.count, ib = first.firstIndex(of: b.name.lowercased()) ?? first.count
+            return ia != ib ? ia < ib : a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+        }
+    }
     /// The Home list settings, watched together (one change handler keeps the body quick to type-check).
-    private var listSettings: String { "\(groupSimilar)|\(balanceKids)" }
+    private var listSettings: String { "\(groupSimilar)|\(balanceKids)|\(scene ?? "")|\(place ?? "")" }
+    private var filtersOn: Bool { age != nil || shot != nil || person != nil || scene != nil || place != nil }
+    private var sceneTitle: String { scene.flatMap { id in sceneMenu.first { $0.kind.id == id }?.kind.name } ?? "Any setting" }
+    private var placeTitle: String { place.flatMap { id in placeMenu.first { $0.id == id }?.name } ?? "Anywhere" }
 
     private func refreshLists(_ moments: [Moment]? = nil) {
-        let filtered = (moments ?? library.moments).filter { m in
+        let all = moments ?? library.moments
+        let kind = scene.flatMap { id in sceneMenu.first { $0.kind.id == id }?.kind ?? Surroundings.builtIn.first { $0.id == id } }
+        let filtered = all.filter { m in
+            if let kind, !Surroundings.matches(m.best, kind) { return false }
+            if let place, !inPlace(m.best, place) { return false }
             if case .year(let y) = scope, m.year != y { return false }
             if let age, !m.ages.contains(age) { return false }
             if let shot, m.shot != shot { return false }
@@ -68,6 +108,11 @@ struct HomeView: View {
         let folded = groupSimilar ? SimilarShots.fold(filtered) : filtered
         // Not when one person is picked: then every photo is theirs anyway.
         pool = balancing ? KidBalance.order(folded, kids: KidBalance.kids(library.people)) : folded
+        sceneMenu = Surroundings.menu(all)
+        placeMenu = placeChoices(all)
+        // A choice that's gone (a removed place, a learned kind that dropped off) stops filtering.
+        if let s = scene, !sceneMenu.contains(where: { $0.kind.id == s }) { scene = nil }
+        if let p = place, !placeMenu.contains(where: { $0.id == p }) { place = nil }
         // On this day: same month and day in earlier years, best first, from the same (filtered, folded) list.
         // Only shown on the Overall list. A Feb 29 photo shows on Feb 29 only.
         if case .all = scope {
@@ -109,8 +154,8 @@ struct HomeView: View {
                         ClaudeNotRunView(openSettings: { showSettings = true }).padding(.top, 24)
                     } else if pool.isEmpty {
                         rankMenu
-                        EmptyListView(filtersOn: age != nil || shot != nil || person != nil,
-                                      clear: { age = nil; shot = nil; person = nil }).padding(.top, 40)
+                        EmptyListView(filtersOn: filtersOn,
+                                      clear: { age = nil; shot = nil; person = nil; scene = nil; place = nil }).padding(.top, 40)
                     } else {
                         if scope == .all && !onThisDay.isEmpty { onThisDaySection }
                         topSection
@@ -176,7 +221,7 @@ struct HomeView: View {
             .onChange(of: age) { shown = 30; if !preparing { endSelecting() } }
             .onChange(of: shot) { shown = 30; if !preparing { endSelecting() } }
             .onChange(of: person) { shown = 30; if !preparing { endSelecting() } }
-            .onChange(of: listSettings) { refreshLists() }
+            .onChange(of: listSettings) { shown = 30; if !preparing { endSelecting() }; refreshLists() }
             .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged).receive(on: RunLoop.main)) { _ in refreshLists() }
             .onChange(of: scope) { refreshLists() }
             .onChange(of: age) { refreshLists() }
@@ -184,7 +229,7 @@ struct HomeView: View {
             .onChange(of: person) { refreshLists() }
             // Coalesced: a burst of changes re-filters once.
             .onReceive(library.$moments.debounce(for: .milliseconds(80), scheduler: DispatchQueue.main)) { refreshLists($0) }
-            .onAppear { refreshLists() }
+            .onAppear { refreshLists(); places.nameTowns(library) }
             .onChange(of: faceConsent) { if !faceConsent { person = nil } }
             .onChange(of: library.people) {
                 if let p = person, !library.people.contains(where: { $0.id == p }) { person = nil }
@@ -220,6 +265,31 @@ struct HomeView: View {
                         ForEach(ShotKind.allCases) { k in Text(k.label).tag(ShotKind?.some(k)) }
                     }
                 } label: { DropChip(title: shot?.label ?? "All shots", on: shot != nil) }
+                // What kind of photo: outdoors, a party, sports... (learned from your photos too).
+                if !sceneMenu.isEmpty || scene != nil {
+                    Menu {
+                        Picker("Setting", selection: $scene) {
+                            Text("Any setting").tag(String?.none)
+                            ForEach(sceneMenu, id: \.kind.id) { e in Text("\(e.kind.name) (\(e.count))").tag(String?.some(e.kind.id)) }
+                        }
+                    } label: { DropChip(title: sceneTitle, on: scene != nil) }
+                }
+                // Where: your saved places and the towns your photos are from.
+                Menu {
+                    Picker("Place", selection: $place) {
+                        Text("Anywhere").tag(String?.none)
+                        ForEach(placeMenu, id: \.id) { e in Text("\(e.name) (\(e.count))").tag(String?.some(e.id)) }
+                    }
+                    if !places.lookUpTowns {
+                        Divider()
+                        Button("Name towns from photo locations…") { askTowns = true }
+                    }
+                } label: { DropChip(title: placeTitle, on: place != nil) }
+                .confirmationDialog("Name towns from photo locations?", isPresented: $askTowns, titleVisibility: .visible) {
+                    Button("Name towns") { places.lookUpTowns = true }
+                } message: {
+                    Text("Apple's location service gets a rough location (to about half a mile) for each area your photos are from, never the photos, and names the town, like Gulf Shores, AL. You can turn this off in Settings → Places.")
+                }
                 if library.people.isEmpty || !faceConsent {
                     Button { showWho = true } label: {
                         DropChip(title: library.people.isEmpty ? "Who's Who…" : "Turn on Who's Who…", on: false, chevron: false)
@@ -228,7 +298,7 @@ struct HomeView: View {
                     Menu {
                         Picker("Who", selection: $person) {
                             Text("Everyone").tag(UUID?.none)
-                            ForEach(library.people) { p in Text(p.name).tag(UUID?.some(p.id)) }
+                            ForEach(peopleOrder) { p in Text(p.name).tag(UUID?.some(p.id)) }
                         }
                         Divider()
                         Button("Who's Who…") { showWho = true }
@@ -923,9 +993,38 @@ enum Collage {
         return UIGraphicsImageRenderer(size: CGSize(width: width, height: height), format: fmt).image { ctx in
             UIColor(red: 0.99, green: 0.97, blue: 0.94, alpha: 1).setFill()
             ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
-            let titleAttrs: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: 56, weight: .heavy),
+            let grape = UIColor(red: 0x7B / 255, green: 0x5C / 255, blue: 0xF0 / 255, alpha: 1)
+            let brand = { (size: CGFloat) in UIFont(name: Theme.displayFont, size: size) ?? UIFont.systemFont(ofSize: size, weight: .heavy) }
+            // The app's logo and name, top right, as in the app's header.
+            let logo = UIImage(named: "BrandMark")
+            let mark: CGFloat = 76
+            let word = "awwbum" as NSString
+            let wordAttrs: [NSAttributedString.Key: Any] = [.font: brand(54), .foregroundColor: grape]
+            let ws = word.size(withAttributes: wordAttrs)
+            // On a narrow collage (one photo), just the logo up top, so the title has room.
+            let showWord = width >= 900
+            let brandWidth = mark + (showWord ? 12 + ws.width : 0)
+            let bx = width - margin - brandWidth, by = (header - mark) / 2 - 4
+            if let logo {
+                ctx.cgContext.saveGState()
+                UIBezierPath(roundedRect: CGRect(x: bx, y: by, width: mark, height: mark), cornerRadius: 18).addClip()
+                logo.draw(in: CGRect(x: bx, y: by, width: mark, height: mark))
+                ctx.cgContext.restoreGState()
+            }
+            if showWord { word.draw(at: CGPoint(x: bx + mark + 12, y: by + (mark - ws.height) / 2), withAttributes: wordAttrs) }
+            // The title on the left, shrunk if it would run into the logo.
+            var titleSize: CGFloat = 56
+            var titleAttrs: [NSAttributedString.Key: Any] = [.font: brand(titleSize),
                                                               .foregroundColor: UIColor(red: 0.29, green: 0.16, blue: 0.40, alpha: 1)]
-            (title as NSString).draw(at: CGPoint(x: margin, y: 30), withAttributes: titleAttrs)
+            while (title as NSString).size(withAttributes: titleAttrs).width > bx - margin - 24 && titleSize > 28 {
+                titleSize -= 2; titleAttrs[.font] = brand(titleSize)
+            }
+            let ts = (title as NSString).size(withAttributes: titleAttrs)
+            let room = bx - margin - 24
+            let style = NSMutableParagraphStyle(); style.lineBreakMode = .byTruncatingTail
+            titleAttrs[.paragraphStyle] = style
+            (title as NSString).draw(in: CGRect(x: margin, y: (header - ts.height) / 2 - 4, width: room, height: ts.height + 4),
+                                     withAttributes: titleAttrs)
             for (i, img) in images.enumerated() {
                 let r = CGRect(x: margin + CGFloat(i % cols) * (tile + gap),
                                y: header + CGFloat(i / cols) * (tile + gap), width: tile, height: tile)
@@ -944,9 +1043,24 @@ enum Collage {
                 UIBezierPath(roundedRect: br, cornerRadius: 26).fill()
                 n.draw(at: CGPoint(x: br.midX - bs.width / 2, y: br.midY - bs.height / 2), withAttributes: badge)
             }
+            // "made with" and the logo and name again, bottom right.
+            let small: CGFloat = 40
             let foot: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: 26, weight: .semibold),
                                                         .foregroundColor: UIColor(white: 0.45, alpha: 1)]
-            ("made with awwbum" as NSString).draw(at: CGPoint(x: margin, y: height - footer - 6), withAttributes: foot)
+            let footWord: [NSAttributedString.Key: Any] = [.font: brand(32), .foregroundColor: grape]
+            let made = "made with" as NSString, ms = made.size(withAttributes: foot), fw = word.size(withAttributes: footWord)
+            let fy = height - margin - footer / 2 - small / 2 + 6
+            var fx = width - margin - (ms.width + 10 + small + 8 + fw.width)
+            made.draw(at: CGPoint(x: fx, y: fy + (small - ms.height) / 2), withAttributes: foot)
+            fx += ms.width + 10
+            if let logo {
+                ctx.cgContext.saveGState()
+                UIBezierPath(roundedRect: CGRect(x: fx, y: fy, width: small, height: small), cornerRadius: 10).addClip()
+                logo.draw(in: CGRect(x: fx, y: fy, width: small, height: small))
+                ctx.cgContext.restoreGState()
+            }
+            fx += small + 8
+            word.draw(at: CGPoint(x: fx, y: fy + (small - fw.height) / 2), withAttributes: footWord)
         }
     }
 }

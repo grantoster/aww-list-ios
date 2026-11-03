@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import CoreLocation
 
 /// Holds every analyzed photo, saves them to disk, and builds the ranked moments.
 @MainActor
@@ -405,6 +406,7 @@ final class Library: ObservableObject {
     /// (all at once could push a large library past iOS's memory limit).
     func finishScan() {
         rebuild()
+        Shared.places.nameTowns(self)   // towns for photos this scan added
         // Each step starts only after the one before has finished (a save is written off the main thread).
         staggered([{ lib in
             lib.save {
@@ -1071,6 +1073,19 @@ final class Library: ObservableObject {
         }
     }
 
+    /// Bumped when saved places or town names change, so Home's Place filter is worked out again.
+    @Published private(set) var placesVersion = 0
+    func placesChanged() { placesVersion += 1; rebuildSoon() }   // Home's lists (and Place menu) follow the new list
+
+    /// Where photos already on file were taken (from the scanner's quick pass over the photos' details).
+    func setPlaces(_ found: [String: CLLocationCoordinate2D?]) {
+        for (id, c) in found where photos[id] != nil {
+            photos[id]?.lat = c?.latitude; photos[id]?.lon = c?.longitude; photos[id]?.locChecked = true
+        }
+        rebuildSoon(); saveSoon()
+        Shared.places.nameTowns(self)
+    }
+
     /// Undoes setting a face aside (it can be asked about again).
     func unignoreFace(_ photo: String, _ face: FaceRecord) {
         let k = Library.faceKey(photo, face)
@@ -1338,6 +1353,7 @@ final class Library: ObservableObject {
         let matcher = People.Matcher((Library.faceConsent ? named : []).map { p -> Person in var p = p; p.examples = nil; return p })
         let gregorian = Calendar(identifier: .gregorian)
         // A named person's birthday only sorts photos while they're a child (grown-ups named in Who's Who don't count).
+        let anyBirthday = named.contains { $0.birthday != nil }
         func childAt(_ birth: Date, _ date: Date) -> Bool {
             birth <= date && (gregorian.dateComponents([.year], from: birth, to: date).year ?? 0) < 13
         }
@@ -1369,6 +1385,14 @@ final class Library: ObservableObject {
                 ? AgeGroup.tags(date: date, birthdays: bdays, looksLikeBaby: g.best.age == .baby, faces: g.best.faces ?? 1)
                 : Set(known.map { AgeGroup.of(birth: $0, at: g.best.date) })
             var m = Moment(best: g.best, shots: g.shots, memberIDs: g.ids, score: s, ages: ages, people: who)
+            // A grown-up recognized in the photo makes it a Family & groups shot, never Kids together: someone named
+            // who was 13 or older then, or, once your kids have birthdays, someone named without one.
+            let together = (g.best.mainFaces ?? g.best.faces ?? 1) >= 2
+            m.namedAdults = named.filter { p in
+                guard who.contains(p.id) else { return false }
+                if let b = p.birthday { return !childAt(b, date) && b <= date }
+                return anyBirthday && together   // only decides Kids together vs Family; a solo shot stays Solo
+            }.count
             m.apple = s
             m.claudeScore = g.best.claude.flatMap { $0.exclude == nil ? $0.score : nil }
             m.learnedScore = learnedScore(for: g.best)

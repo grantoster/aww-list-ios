@@ -56,11 +56,11 @@ struct SearchView: View {
 /// Word matching for search: ignores capitals and accents, treats plurals and -ing forms alike, matches the start
 /// of words ("birth" finds "birthday"), knows a few everyday synonyms, and needs every word typed to match.
 enum PhotoSearch {
-    static func matches(_ query: String, in moments: [Moment], names: [UUID: String]) -> [Moment] {
+    @MainActor static func matches(_ query: String, in moments: [Moment], names: [UUID: String], places: PlaceBook = Shared.places) -> [Moment] {
         let wanted = words(query)
         guard !wanted.isEmpty else { return [] }
         return moments.filter { m in
-            var text = m.caption + " " + m.best.caption
+            var text = m.caption + " " + m.best.caption + " " + Surroundings.searchText(m.best) + " " + places.searchText(m.best)
             for id in m.people { if let n = names[id] { text += " " + n } }
             let have = words(text)
             return wanted.allSatisfy { q in have.contains { w in same(q, w) } }
