@@ -59,10 +59,14 @@ final class PhotoScanner: ObservableObject {
         // Photos scored by an older version of the scorer are analyzed again.
         // Counted photos from before Who's Who are measured again to get their face fingerprints.
         let facesAllowed = UserDefaults.standard.bool(forKey: "faceConsent")
+        // Without the face recognizer (it failed to load), face prints can't be made: don't re-read photos for them.
+        let faceModel = FaceID.available
         let known = Set(library.photos.values.filter {
             $0.version == Scorer.version && !(retryUnavailable && $0.excluded == Scorer.unavailable)
-                && ($0.raw == nil || ($0.faceRecords.map { $0.allSatisfy { $0.vec.count == People.dim } } ?? false)
+                && ($0.raw == nil || !faceModel || ($0.faceRecords.map { $0.allSatisfy { $0.vec.count == People.dim } } ?? false)
                     || (!facesAllowed && $0.facePrintsOff == true))   // Who's Who off: no face prints needed
+                // any photo still holding prints from the old face recognizer is read again (flagged ones too)
+                && !(facesAllowed && faceModel && ($0.faceRecords?.contains { $0.vec.count != People.dim } ?? false))
                 // set-aside photos from before Claude could overrule Apple get one more look
                 && !(Scorer.softReasons.contains($0.excluded ?? "") && $0.softChecked != true
                      && ($0.faces ?? 0) > 0)
@@ -350,7 +354,7 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
         // Photos that look AI-generated or face-retouched (from the file's details) are flagged, not dropped:
         // they're analyzed like any other photo and listed, and Claude decides.
         let verdict = signals.isScreenshot ? nil : Provenance.verdict(fileInfo(asset, manager: manager))
-        var records: [FaceRecord] = []
+        var records: [FaceRecord]? = []
         if !signals.isScreenshot {
             let req = PHImageRequestOptions()
             req.deliveryMode = .highQualityFormat   // one callback, at the 768 px size asked for

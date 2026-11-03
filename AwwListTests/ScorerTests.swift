@@ -328,7 +328,7 @@ final class PeopleTests: XCTestCase {
         let a = (0..<768).map { Float(sin(Double($0))) }, b = (0..<768).map { Float(cos(Double($0) * 1.3)) }
         XCTAssertEqual(People.embed(a), People.embed(a))                       // same every time
         let faces = (0..<5).map { People.floats(People.embed(noisy(a, $0))) } + (0..<4).map { People.floats(People.embed(noisy(b, $0))) }
-        let groups = People.cluster(faces, threshold: People.threshold(strictness: 1))
+        let groups = People.cluster(faces, threshold: Float(0.84))
         XCTAssertEqual(groups.map(\.count), [5, 4])
         let daniel = Person(name: "Daniel", centroid: People.merged([], count: 0, adding: Array(faces[0..<5])), count: 5,
                             samplePhoto: "x", sampleBox: [0, 0, 1, 1])
@@ -343,7 +343,7 @@ final class PeopleTests: XCTestCase {
         func mix(_ t: Float) -> [Float] { zip(a, c).map { $0 * (1 - t) + $1 * t } }
         let path = (0...20).map { People.floats(People.embed(mix(Float($0) / 20))) }
         let other = (0..<4).map { People.floats(People.embed(noisy(b, $0))) }
-        let t = People.threshold(strictness: 1)
+        let t = Float(0.84)
         // Named: only the first two baby faces.
         var maya = Person(name: "Maya", centroid: People.merged([], count: 0, adding: Array(path[0..<2])), count: 2,
                           samplePhoto: "x", sampleBox: [0, 0, 1, 1])
@@ -371,7 +371,7 @@ final class PeopleTests: XCTestCase {
         var maya = Person(name: "Maya", centroid: People.merged([], count: 0, adding: Array(aFaces[0..<4])), count: 4,
                           samplePhoto: "x", sampleBox: [0, 0, 1, 1])
         maya.examples = aFaces[0..<4].map { v in Data(v.map { UInt8(bitPattern: Int8(max(-127, min(127, ($0 * 127).rounded())))) }) }
-        let t = People.threshold(strictness: 2)
+        let t = Float(0.78)
         let both = [aFaces[4], aFaces[5]]
         let res = People.learn(both, people: [maya], threshold: t, owners: ["p1", "p1"])
         XCTAssertEqual(res.matched.count + res.learned.count, 1)

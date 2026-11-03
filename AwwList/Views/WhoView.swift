@@ -244,7 +244,7 @@ struct WhoView: View {
                     }
                     .pickerStyle(.segmented)
                 } footer: {
-                    Text("Stricter if groups mix different people; looser if one person is split across many groups. Kids' faces change a lot, so naming a child once or twice per year or so helps the app follow them.")
+                    Text("Stricter if groups mix different people; looser if one person is split across many groups. Kids' faces change a lot, so naming a child once or twice per year or so helps the app follow them. With a birthday set, a child is never matched in photos from before they were born. Faces are recognized on this iPhone with InsightFace's face model (non-commercial license).")
                 }
                 Section {
                     Button("Turn off Who's Who") { faceConsent = false; library.setFaceConsent(false) }
@@ -282,6 +282,7 @@ struct WhoView: View {
         let gen = generation
         let faces = library.unnamedFaces()
         let t = library.threshold
+        let dates = Dictionary(faces.map { ($0.photo, library.photos[$0.photo]?.date ?? .distantPast) }, uniquingKeysWith: { a, _ in a })
         let named = library.people
         let declined = library.declinedChecks
         let rejected = library.notThemKeys
@@ -302,7 +303,10 @@ struct WhoView: View {
                 let key = p.id.uuidString + ":" + (c.map { faces[$0].photo }.min() ?? "")
                 guard !declined.contains(key) else { return false }   // answered No: show it as an ordinary group
                 // A face you said isn't them never comes back through a quick "yes".
-                let fs = c.map { faces[$0] }.filter { !rejectedFor(p.id, $0) }
+                // Nor a face from before they were born.
+                let fs = c.map { faces[$0] }.filter { f in
+                    !rejectedFor(p.id, f) && !(p.birthday.map { (dates[f.photo] ?? .distantPast) < $0.addingTimeInterval(-86_400) } ?? false)
+                }
                 guard fs.count >= 3 else { return false }
                 asks.append(Suggestion(id: key, person: p, faces: fs))
                 return true

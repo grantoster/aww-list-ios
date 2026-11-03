@@ -341,10 +341,19 @@ final class Library: ObservableObject {
     /// New results from the scanner. The list is re-ranked at most every 30 seconds while scanning.
     func add(_ new: [PhotoScore]) {
         guard !new.isEmpty else { return }
+        // A photo whose faces couldn't be read this time keeps its earlier face prints (and is read again later).
+        let new = new.map { p -> PhotoScore in
+            var p = p
+            if Library.faceConsent, p.faceRecords == nil, p.facePrintsOff != true,
+               let old = photos[p.id]?.faceRecords { p.faceRecords = old }
+            return p
+        }
         for p in new {
             whoCache[p.id] = nil
             // Only when the faces themselves changed; otherwise who's in the photo stays put during a rescan.
             guard let old = photos[p.id], old.faceRecords != p.faceRecords else { continue }
+            carryOverFaces(p.id, from: old.faceRecords ?? [], to: p.faceRecords ?? [])
+            facesChangedDuringPass.insert(p.id)
             for j in 0..<(old.faceRecords?.count ?? 0) { learnedFaces.remove(p.id + "#\(j)") }
             learnedWho[p.id] = nil
             learnedPhotos.remove(p.id)   // its faces changed: worked out again on the next learning pass
@@ -368,6 +377,28 @@ final class Library: ObservableObject {
         // The whole library is rewritten on each save, so while scanning save at most every 2 minutes (iOS limits
         // how much an app writes); the end of a scan, closing the app and background time always save.
         if unsaved >= 200 && Date().timeIntervalSince(lastSave) > 120 { save() }
+    }
+
+    /// A photo's faces were read again (for example with the new face recognizer): what you said about each face —
+    /// your tags, "not them", set aside, skipped — moves to the same face in the new reading (matched by where it is).
+    private func carryOverFaces(_ photo: String, from old: [FaceRecord], to new: [FaceRecord]) {
+        guard !old.isEmpty, !new.isEmpty else { return }
+        func rect(_ b: [Float]) -> CGRect { b.count == 4 ? CGRect(x: CGFloat(b[0]), y: CGFloat(b[1]), width: CGFloat(b[2]), height: CGFloat(b[3])) : .null }
+        var taken = Set<Int>()
+        for o in old {
+            let ok = Library.faceKey(photo, o)
+            guard confirmedFaces[ok] != nil || notThem[ok] != nil || ignoredFaces.contains(ok) || skippedFaces.contains(ok) else { continue }
+            let scored = new.indices.filter { !taken.contains($0) }.map { ($0, FaceID.overlap(rect(o.box), rect(new[$0].box))) }
+            guard let best = scored.max(by: { $0.1 < $1.1 }), best.1 >= 0.4 else { continue }
+            taken.insert(best.0)
+            let nk = Library.faceKey(photo, new[best.0])
+            guard nk != ok else { continue }
+            if let id = confirmedFaces.removeValue(forKey: ok) { confirmedFaces[nk] = id }
+            if let r = notThem.removeValue(forKey: ok) { notThem[nk, default: []].formUnion(r) }
+            if ignoredFaces.remove(ok) != nil { ignoredFaces.insert(nk) }
+            if skippedFaces.remove(ok) != nil { skippedFaces.insert(nk) }
+            if let id = faceOwner.removeValue(forKey: ok) { faceOwner[nk] = id }
+        }
     }
 
     /// After a scan: re-rank now, then save, re-check the learning and update Who's Who a few seconds apart
@@ -808,6 +839,8 @@ final class Library: ObservableObject {
     private var peopleLearned = false
     /// The photos the last learning pass worked out (new or rescanned photos aren't in it until the next pass).
     private var learnedPhotos = Set<String>()
+    /// Photos whose faces were read again while a learning pass was running (its answer for them is out of date).
+    private var facesChangedDuringPass = Set<String>()
     /// Faces (photo id # face number) already known to be someone, so Who's Who doesn't ask about them.
     private var learnedFaces = Set<String>()
     @Published private(set) var learningPeople = false
@@ -985,7 +1018,28 @@ final class Library: ObservableObject {
         }
     }
 
+    /// People named before the current recognizer get their average face back from the faces you tagged as them,
+    /// and again on each pass while some of those photos are still waiting to be read again (so it doesn't stay
+    /// built from the first few).
+    private func refreshPersonPrints() {
+        var vecs: [UUID: [Data]] = [:], waiting = Set<UUID>()
+        for (key, id) in confirmedFaces.sorted(by: { $0.key < $1.key }) {   // same order every time: same result
+            guard let photo = key.split(separator: "|").first.map(String.init),
+                  let f = photos[photo]?.faceRecords?.first(where: { Library.faceKey(photo, $0) == key }) else { continue }
+            if f.vec.count == People.dim { vecs[id, default: []].append(f.vec) } else { waiting.insert(id) }
+        }
+        for i in people.indices where people[i].centroid.count != People.dim || waiting.contains(people[i].id) {
+            guard let v = vecs[people[i].id], !v.isEmpty else { continue }
+            let ex = People.spread(v, to: 80)
+            if people[i].examples == ex && people[i].centroid.count == People.dim { continue }   // nothing new
+            people[i].centroid = People.merged([], count: 0, adding: v.map(People.floats))
+            people[i].count = v.count
+            people[i].examples = People.spread(v, to: 80); people[i].namedExamples = people[i].examples?.count
+        }
+    }
+
     func learnPeople() {
+        refreshPersonPrints()
         peopleGeneration += 1
         peopleTask?.cancel()
         guard !people.isEmpty, Library.faceConsent else {
@@ -994,6 +1048,7 @@ final class Library: ObservableObject {
             updateFaceTally(); return
         }
         let gen = peopleGeneration
+        facesChangedDuringPass = []
         let snapshot = photos.values.filter { !notVisible.contains($0.id) }   // not photos that can't be seen now
         let named = people, t = threshold, rejected = notThem, ignoredKeys = ignoredFaces, confirmedKeys = confirmedFaces
         let namedIDs = Set(people.map(\.id))
@@ -1001,7 +1056,13 @@ final class Library: ObservableObject {
         peopleTask = Task.detached(priority: .utility) {
             var faces: [[Float]] = [], owners: [String] = [], keys: [String] = [], faceKeys: [String] = []
             var records: [FaceRecord] = [], dates: [Date] = []
+            // Faces you tagged whose photo hasn't been read again by the current recognizer yet: still that person.
+            var legacy: [(photo: String, key: String, id: UUID)] = []
             for p in snapshot {
+                for f in p.faceRecords ?? [] where f.vec.count != People.dim {
+                    let k = Library.faceKey(p.id, f)
+                    if let id = confirmedKeys[k], namedIDs.contains(id) { legacy.append((p.id, k, id)) }
+                }
                 for (j, f) in (p.faceRecords ?? []).enumerated() where f.vec.count == People.dim {
                     faces.append(People.floats(f.vec)); owners.append(p.id); keys.append(p.id + "#\(j)"); dates.append(p.date)
                     faceKeys.append(Library.faceKey(p.id, f)); records.append(f)
@@ -1040,6 +1101,7 @@ final class Library: ObservableObject {
             for (i, id) in learned where rejected[faceKeys[i]]?.contains(id) != true {
                 who[owners[i], default: []].insert(id); done.insert(keys[i]); counts[id, default: 0] += 1; owner[faceKeys[i]] = id
             }
+            for l in legacy { who[l.photo, default: []].insert(l.id); owner[l.key] = l.id }
             let result = who, known = done, learnedCounts = counts, owners2 = owner, worked = Set(snapshot.map(\.id))
             await MainActor.run {
                 guard gen == self.peopleGeneration else { return }   // names changed meanwhile: a newer run is coming
@@ -1052,7 +1114,7 @@ final class Library: ObservableObject {
                 // Faces named before confirmations were saved are remembered for good from now on.
                 for (k, id) in remembered where self.confirmedFaces[k] == nil { self.confirmedFaces[k] = id }
                 self.whoCache = [:]
-                self.learnedPhotos = worked
+                self.learnedPhotos = worked.subtracting(self.facesChangedDuringPass)
                 self.peopleLearned = true
                 self.learningPeople = false
                 self.updateFaceTally()
@@ -1197,6 +1259,8 @@ final class Library: ObservableObject {
                     let key = Library.faceKey(g.best.id, f)
                     if let id = confirmedFaces[key] { return id }
                     guard !ignoredFaces.contains(key), let id = matcher.match(People.floats(f.vec), threshold: t) else { return nil }
+                    // Not someone you said it isn't, nor someone born after the photo was taken.
+                    if let b = named.first(where: { $0.id == id })?.birthday, g.best.date < b.addingTimeInterval(-86_400) { return nil }
                     return rejected[key]?.contains(id) == true ? nil : id
                 })
                 whoCache[g.best.id] = who
@@ -1476,6 +1540,10 @@ final class Library: ObservableObject {
         people = (s.people ?? []).map { p in
             var p = p
             if p.centroid.count != People.dim { p.centroid = []; p.count = 0 }
+            // Example faces from an older recognizer can't be compared either (their faces carry over as your tags).
+            if let ex = p.examples, ex.contains(where: { $0.count != People.dim }) {
+                p.examples = ex.filter { $0.count == People.dim }; p.namedExamples = 0
+            }
             return p
         }
         strictness = s.strictness ?? 1

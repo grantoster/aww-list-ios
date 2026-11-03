@@ -5,7 +5,7 @@ import Foundation
 struct FaceRecord: Codable, Hashable {
     /// Normalized box on the upright photo, bottom-left origin: x, y, width, height.
     var box: [Float]
-    /// 256 signed bytes: the face's appearance, projected and normalized (see People.embed).
+    /// 512 signed bytes: the face-identity model's print of the face (see FaceID).
     var vec: Data
 }
 
@@ -20,7 +20,7 @@ struct Person: Codable, Identifiable, Hashable {
     /// A face to show for them: photo id and box.
     var samplePhoto: String
     var sampleBox: [Float]
-    /// Example faces (256-byte fingerprints): the ones you named first, then ones the app learned are this person.
+    /// Example faces (512-byte face prints): the ones you named first, then ones the app learned are this person.
     /// Matching against all of them (not just the average) recognizes a child across the years.
     var examples: [Data]? = nil
     /// How many of `examples` you named yourself (the rest were learned).
@@ -33,7 +33,9 @@ struct Person: Codable, Identifiable, Hashable {
 /// compared with Vision's image fingerprint of the face crop and grouped here; the user names the groups.
 /// This is looser than Apple's own face recognition, so the user confirms every name.
 enum People {
-    static let dim = 256
+    /// Face prints are the face-identity model's 512 numbers (FaceID); prints from older versions (256 numbers from
+    /// a general image fingerprint) are read again.
+    static let dim = FaceID.dims
 
     // MARK: Fingerprints
 
@@ -107,7 +109,8 @@ enum People {
 
     /// How alike two faces must be to count as the same person, by the Who's Who "Grouping" setting
     /// (0 stricter, 1 normal, 2 looser).
-    static func threshold(strictness: Int) -> Float { strictness <= 0 ? 0.90 : strictness == 1 ? 0.84 : 0.78 }
+    /// (For the face-identity model: the same person usually scores well above 0.4, different people well below.)
+    static func threshold(strictness: Int) -> Float { strictness <= 0 ? 0.48 : strictness == 1 ? 0.40 : 0.33 }
 
     /// Greedy grouping: each face joins the most similar group above the threshold, or starts a new one.
     /// Returns groups as index lists, largest first.
@@ -255,8 +258,14 @@ enum People {
         var inPhoto: [String: [Int: Int]] = [:]   // photo → person index → face
         func claim(_ i: Int, _ id: UUID) { if photos, let k = pIndex[id] { inPhoto[owners[i], default: [:]][k] = i } }
         for (i, id) in matched { claim(i, id) }
+        // Nobody is in a photo taken before they were born (a day's leeway for time zones).
+        let born: [Double?] = people.map { $0.birthday.map { $0.timeIntervalSinceReferenceDate - 86_400 } }
+        func unborn(_ i: Int) -> Set<Int> {
+            guard let t = when[i] else { return [] }
+            return Set((0..<P).filter { k in born[k].map { t < $0 } ?? false })
+        }
         func excluded(_ i: Int) -> Set<Int> {
-            var out = Set((rejected[i] ?? []).compactMap { pIndex[$0] })
+            var out = Set((rejected[i] ?? []).compactMap { pIndex[$0] }).union(unborn(i))
             if photos { for (k, j) in inPhoto[owners[i]] ?? [:] where j != i { out.insert(k) } }
             return out
         }
@@ -369,7 +378,7 @@ enum People {
                 for (i, id) in matched.merging(learned, uniquingKeysWith: { a, _ in a }) { counted.insert(owners[i] + "|" + id.uuidString) }
             }
             for i in faces.indices where matched[i] == nil && learned[i] == nil && !ignored.contains(i) {
-                guard let top = chances(faces[i], Set((rejected[i] ?? []).compactMap { pIndex[$0] })).first, top.p >= 0.6,
+                guard let top = chances(faces[i], Set((rejected[i] ?? []).compactMap { pIndex[$0] }).union(unborn(i))).first, top.p >= 0.6,
                       anchor[i * P + top.k] >= reach else { continue }
                 let id = people[top.k].id
                 if photos && counted.contains(owners[i] + "|" + id.uuidString) { continue }

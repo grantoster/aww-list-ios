@@ -183,15 +183,9 @@ final class Analyzer {
         return fp.data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
     }
 
-    /// Face fingerprints for Who's Who: Vision's image feature print of each of the (up to 4) largest faces.
-    func facePrints(_ image: CGImage, orientation: CGImagePropertyOrientation, faces: [FaceSignal]) -> [FaceRecord] {
-        let ci = CIImage(cgImage: image).oriented(orientation)
-        var out: [FaceRecord] = []
-        for f in faces.filter({ $0.box.count == 4 && $0.area >= 0.006 }).sorted(by: { $0.area > $1.area }).prefix(4) {
-            let floats = cropPrint(ci, f)
-            if !floats.isEmpty { out.append(FaceRecord(box: f.box.map { Float($0) }, vec: People.embed(floats))) }
-        }
-        return out
+    /// Face fingerprints for Who's Who: the face-identity model's print of each of the (up to 4) largest faces.
+    func facePrints(_ image: CGImage, orientation: CGImagePropertyOrientation, faces: [FaceSignal]) -> [FaceRecord]? {
+        FaceID.records(image, orientation: orientation, faces: faces, context: ciContext)
     }
 
     /// Vision's feature print of one face crop (empty if the face is too small or it fails).
