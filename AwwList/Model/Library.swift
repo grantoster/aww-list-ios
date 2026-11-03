@@ -347,6 +347,7 @@ final class Library: ObservableObject {
             guard let old = photos[p.id], old.faceRecords != p.faceRecords else { continue }
             for j in 0..<(old.faceRecords?.count ?? 0) { learnedFaces.remove(p.id + "#\(j)") }
             learnedWho[p.id] = nil
+            learnedPhotos.remove(p.id)   // its faces changed: worked out again on the next learning pass
         }
         for var p in new {
             // A scan that started before Who's Who was turned off can still hand over face prints: drop them.
@@ -795,7 +796,7 @@ final class Library: ObservableObject {
 
     var threshold: Float { People.threshold(strictness: strictness) }
     func setStrictness(_ v: Int) {
-        strictness = v; learnedWho = [:]; learnedFaces = []; whoCache = [:]; rebuild(); save(); learnPeople()
+        strictness = v; learnedFaces = []; whoCache = [:]; rebuild(); save(); learnPeople()
     }
 
     /// Who's in each photo (photo id → people), worked out off the main thread from the faces you named:
@@ -803,6 +804,10 @@ final class Library: ObservableObject {
     private(set) var learnedWho: [String: Set<UUID>] = [:]
     /// Who's in each photo, cached between rebuilds (cleared whenever names or learning change).
     private var whoCache: [String: Set<UUID>] = [:]
+    /// True once Who's Who has worked out every face since launch (then only its answers say who is in a photo).
+    private var peopleLearned = false
+    /// The photos the last learning pass worked out (new or rescanned photos aren't in it until the next pass).
+    private var learnedPhotos = Set<String>()
     /// Faces (photo id # face number) already known to be someone, so Who's Who doesn't ask about them.
     private var learnedFaces = Set<String>()
     @Published private(set) var learningPeople = false
@@ -923,6 +928,7 @@ final class Library: ObservableObject {
             lastFaceRemoval = nil
         }
         faceOwner[key] = person.id
+        learnedWho[photo, default: []].insert(person.id)
         whoCache = [:]; rebuildSoon(); saveSoon(); learnPeople()
     }
     /// Faces you said aren't someone (a copy for work off the main thread).
@@ -940,8 +946,9 @@ final class Library: ObservableObject {
         for f in faces {
             let k = Library.faceKey(f.photo, f.face)
             if ignoredFaces.insert(k).inserted, faceOwner[k] == nil, faceTally.total > 0 { faceTally.setAside += 1 }
+            whoCache[f.photo] = nil
         }
-        saveSoon()
+        rebuildSoon(); saveSoon()
     }
 
     /// "Is this X?" checks answered No this session (person id : group key), so they aren't asked again.
@@ -983,6 +990,7 @@ final class Library: ObservableObject {
         peopleTask?.cancel()
         guard !people.isEmpty, Library.faceConsent else {
             learnedWho = [:]; learnedFaces = []; whoCache = [:]; reviewFaces = [:]; learningPeople = false
+            peopleLearned = true   // no one named (or Who's Who off): no one is in any photo
             updateFaceTally(); return
         }
         let gen = peopleGeneration
@@ -1032,7 +1040,7 @@ final class Library: ObservableObject {
             for (i, id) in learned where rejected[faceKeys[i]]?.contains(id) != true {
                 who[owners[i], default: []].insert(id); done.insert(keys[i]); counts[id, default: 0] += 1; owner[faceKeys[i]] = id
             }
-            let result = who, known = done, learnedCounts = counts, owners2 = owner
+            let result = who, known = done, learnedCounts = counts, owners2 = owner, worked = Set(snapshot.map(\.id))
             await MainActor.run {
                 guard gen == self.peopleGeneration else { return }   // names changed meanwhile: a newer run is coming
                 for k in self.people.indices { self.people[k].learnedCount = learnedCounts[self.people[k].id] ?? 0 }
@@ -1044,6 +1052,8 @@ final class Library: ObservableObject {
                 // Faces named before confirmations were saved are remembered for good from now on.
                 for (k, id) in remembered where self.confirmedFaces[k] == nil { self.confirmedFaces[k] = id }
                 self.whoCache = [:]
+                self.learnedPhotos = worked
+                self.peopleLearned = true
                 self.learningPeople = false
                 self.updateFaceTally()
                 self.rebuild(); self.save()
@@ -1175,11 +1185,20 @@ final class Library: ObservableObject {
         }
         func makeMoment(_ g: (best: PhotoScore, shots: Int, ids: [String]), _ s: Int, _ rr: Double = 0) -> Moment {
             let who: Set<UUID>
-            if let cached = whoCache[g.best.id] { who = cached } else {
+            if let cached = whoCache[g.best.id] { who = cached }
+            else if peopleLearned && learnedPhotos.contains(g.best.id) {
+                // Who's Who has worked out every face (your tags first, one person per face and per photo): only
+                // those people count, so a look-alike sibling's face isn't pulled in as them.
+                who = learnedWho[g.best.id] ?? []
+                whoCache[g.best.id] = who
+            } else {
+                // Until learning finishes after launch: your tags, then a quick look at each person's average face.
                 who = Set((g.best.faceRecords ?? []).compactMap { f -> UUID? in
-                    guard let id = matcher.match(People.floats(f.vec), threshold: t) else { return nil }
-                    return rejected[Library.faceKey(g.best.id, f)]?.contains(id) == true ? nil : id
-                }).union(learnedWho[g.best.id] ?? [])
+                    let key = Library.faceKey(g.best.id, f)
+                    if let id = confirmedFaces[key] { return id }
+                    guard !ignoredFaces.contains(key), let id = matcher.match(People.floats(f.vec), threshold: t) else { return nil }
+                    return rejected[key]?.contains(id) == true ? nil : id
+                })
                 whoCache[g.best.id] = who
             }
             // Named people with birthdays give exact ages; otherwise ages come from the birthdays and the photo.

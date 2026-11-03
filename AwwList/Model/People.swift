@@ -299,7 +299,8 @@ enum People {
         }
         // Ordinary matching: close enough to someone's named or confirmed faces (not someone you confirmed is
         // another face in the same photo). The closest face in a photo wins; the other can be someone else below.
-        for i in faces.indices where matched[i] == nil {
+        // Faces you set aside (strangers and the like) are never matched or learned as anyone, unless you tag them.
+        for i in faces.indices where matched[i] == nil && !ignored.contains(i) {
             if let b = best(row(anchor, i), excluded(i)), b.s >= threshold { matched[i] = people[b.k].id; sims[i] = b.s }
         }
         onePerPhoto()
@@ -327,7 +328,7 @@ enum People {
         let bar = threshold + 0.03, reach = threshold - 0.15
         for _ in 0..<rounds {
             if Task.isCancelled { break }
-            let open = faces.indices.filter { matched[$0] == nil && learned[$0] == nil }
+            let open = faces.indices.filter { matched[$0] == nil && learned[$0] == nil && !ignored.contains($0) }
             if open.isEmpty { break }
             let near = closeness(faces, open, when: when, refs: refs, people: P)
             var added: [(Int, UUID)] = []

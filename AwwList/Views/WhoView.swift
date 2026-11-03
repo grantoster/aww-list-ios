@@ -379,6 +379,11 @@ struct NameSheet: View {
                     Button("Save") {
                         if !faces.isEmpty {
                             library.name(faces, as: name, birthday: hasBirthday ? Calendar.current.startOfDay(for: birthday) : nil)
+                            // The faces you took out of the group aren't this person, so they're never learned as them.
+                            let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if let p = library.people.first(where: { $0.name.caseInsensitiveCompare(n) == .orderedSame }) {
+                                library.rejectFaces(removed, for: p)
+                            }
                         }
                         library.ignoreFaces(removed)
                         dismiss()
