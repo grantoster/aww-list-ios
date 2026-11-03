@@ -83,11 +83,10 @@ final class Library: ObservableObject {
     /// What a thumbs moves a photo's score, in points: up a quarter, down a half (it's mostly for pushing photos down).
     nonisolated static func thumbNudge(_ r: Int) -> Double { r > 0 ? 0.25 : r < 0 ? -0.5 : 0 }
     /// Your thumbs up (1) or down (-1) by photo id: up a quarter point, down a half, on Claude's or the learned score when ranking
-    /// (it settles ties in Apple's and Consolidated); for photos Claude scored, the learning learns from it; and
-    /// Learn my Likes learns your taste from all of them.
+    /// (it settles ties in Apple's and Consolidated). They don't teach the learning; Learn my Likes' votes do.
     @Published private(set) var reactions: [String: Int] = [:]
     func setReaction(_ m: Moment, _ value: Int, learnSoon: Bool = true) {
-        for id in m.memberIDs { reactions[id] = nil }
+        for id in m.memberIDs { reactions[id] = nil; if value == 0 { legacyThumbs[id] = nil } }
         if value != 0 { reactions[m.best.id] = value }
         rebuildSoon(); saveSoon()
         // Thumbs no longer teach the learning (Learn my Likes' votes do); only the thumbs from before votes
@@ -646,7 +645,12 @@ final class Library: ObservableObject {
     /// are left out. Built off the main thread; nil if there's nothing to share or the file can't be written.
     func writeLearningData() async -> URL? {
         // Claude-scored photos, plus the photos in your Learn my Likes votes (so the shared model can learn from them).
-        let votes = pairVotes.filter { $0.winner != nil }
+        let picked = pairVotes.filter { $0.winner != nil }
+        func ok(_ id: String) -> Bool {
+            guard let p = photos[id] else { return false }
+            return shareableVoted(p) && (Library.shareable(p) || p.claude == nil)
+        }
+        let votes = picked.filter { ok($0.a) && ok($0.b) }   // only votes whose two photos may both be sent
         let inVotes = Set(votes.flatMap { [$0.a, $0.b] })
         let scored = photos.values.filter {
             inVotes.contains($0.id) ? (shareableVoted($0) && (Library.shareable($0) || $0.claude == nil)) : Library.shareable($0)

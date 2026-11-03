@@ -422,13 +422,18 @@ struct ClaudeSection: View {
 struct LearnedSection: View {
     @EnvironmentObject var library: Library
     @State private var copied = false
+    /// "12 Claude results and 3 votes", leaving out whichever is zero.
+    private func shareText(_ results: Int, _ votes: Int) -> String {
+        [results > 0 ? "\(results.formatted()) Claude result\(results == 1 ? "" : "s")" : nil,
+         votes > 0 ? "\(votes.formatted()) vote\(votes == 1 ? "" : "s")" : nil].compactMap { $0 }.joined(separator: " and ")
+    }
     @State private var askShare = false
     @State private var preparingShare = false
     @State private var shareFile: ShareFile?
     var body: some View {
         Section {
             if let m = library.learned {
-                LabeledContent("Learned from", value: "\(m.trainedOn.formatted()) " + (library.pairVotes.isEmpty ? "Claude scores" : "photos (Claude scores and your votes)"))
+                LabeledContent("Learned from", value: "\(m.trainedOn.formatted()) " + (library.pairVotes.contains { $0.winner != nil } ? "Claude scores, plus your votes" : "Claude scores"))
                 let pct = { (v: Double) in "\(Int((v * 100 + 1e-9).rounded(.toNearestOrAwayFromZero)))%" }
                 let pts = { (v: Double) in String(format: "%.1f", (v * 10).rounded(.toNearestOrAwayFromZero) / 10) + " points" }
                 LabeledContent("Within 1 point of Claude", value: pct(m.within1))
@@ -519,7 +524,7 @@ struct LearnedSection: View {
                     .sheet(item: $shareFile, onDismiss: {
                         try? FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appendingPathComponent("Awwbum learning data.json"))
                     }) { f in ShareSheet(items: [f.url]) }
-                Text("Optional. Sends the numbers behind your \(shareable.formatted()) Claude result\(shareable == 1 ? "" : "s")\(votesShared > 0 ? " and \(votesShared.formatted()) vote\(votesShared == 1 ? "" : "s")" : "") so the learning built into the app can learn from more families. No photos, names, faces, captions, places or dates. You choose how to send it (Messages, Mail, AirDrop).")
+                Text("Optional. Sends the numbers behind your \(shareText(shareable, votesShared)) so the learning built into the app can learn from more families. No photos, names, faces, captions, places or dates. You choose how to send it (Messages, Mail, AirDrop).")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             if library.training { HStack { ProgressView(); Text("Learning…").foregroundStyle(.secondary) } }

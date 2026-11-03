@@ -25,6 +25,7 @@ struct LikesSection: View {
 struct LikesView: View {
     @EnvironmentObject var library: Library
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var pair: (Moment, Moment)?
     @State private var started = false
     /// Votes (and skips) this session, for the counter and Undo.
@@ -43,7 +44,8 @@ struct LikesView: View {
                     let a = p.0, b = p.1
                     Text(question).font(Theme.display(26, relativeTo: .title2))
                     GeometryReader { geo in
-                        let wide = geo.size.width >= geo.size.height * 0.7   // side by side on iPad and Mac, stacked on a phone held upright
+                        // Side by side on iPad, Mac and a phone on its side; stacked on a phone held upright.
+                        let wide = sizeClass == .regular || geo.size.width > geo.size.height
                         let layout = wide ? AnyLayout(HStackLayout(spacing: 12)) : AnyLayout(VStackLayout(spacing: 12))
                         layout {
                             choice(a, other: b)
