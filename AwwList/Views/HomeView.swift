@@ -50,7 +50,10 @@ struct HomeView: View {
     @State private var onThisDay: [Moment] = []
     /// Fold lower-ranked look-alike shots from the same few minutes under the best one (Settings → Home list).
     @AppStorage("groupSimilar") private var groupSimilar = true
+    /// Give each named child a fair share of the top spots (Settings → Home list).
+    @AppStorage("balanceKids") private var balanceKids = false
     private var top: [Moment] { Array(pool.prefix(shown)) }
+    private var balancing: Bool { balanceKids && person == nil }
 
     private func refreshLists(_ moments: [Moment]? = nil) {
         let filtered = (moments ?? library.moments).filter { m in
@@ -60,12 +63,14 @@ struct HomeView: View {
             if let person, !m.people.contains(person) { return false }
             return true
         }
-        pool = groupSimilar ? SimilarShots.fold(filtered) : filtered
+        let folded = groupSimilar ? SimilarShots.fold(filtered) : filtered
+        // Not when one person is picked: then every photo is theirs anyway.
+        pool = balancing ? KidBalance.order(folded, kids: KidBalance.kids(library.people)) : folded
         // On this day: same month and day in earlier years, best first, from the same (filtered, folded) list.
         // Only shown on the Overall list. A Feb 29 photo shows on Feb 29 only.
         if case .all = scope {
             let cal = Calendar.current, today = cal.dateComponents([.year, .month, .day], from: Date())
-            onThisDay = Array(pool.lazy.filter { m in
+            onThisDay = Array(folded.lazy.filter { m in   // best first, not balanced
                 let c = cal.dateComponents([.year, .month, .day], from: m.best.date)
                 return c.month == today.month && c.day == today.day && (c.year ?? 0) < (today.year ?? 0)
             }.prefix(12))
@@ -170,6 +175,7 @@ struct HomeView: View {
             .onChange(of: shot) { shown = 30; if !preparing { endSelecting() } }
             .onChange(of: person) { shown = 30; if !preparing { endSelecting() } }
             .onChange(of: groupSimilar) { refreshLists() }
+            .onChange(of: balanceKids) { refreshLists() }
             .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged).receive(on: RunLoop.main)) { _ in refreshLists() }
             .onChange(of: scope) { refreshLists() }
             .onChange(of: age) { refreshLists() }
@@ -248,12 +254,12 @@ struct HomeView: View {
             } label: {
                 HStack(spacing: 4) {
                     Text("Ranked by").foregroundStyle(.secondary)
-                    Text(rankLabel).foregroundStyle(Theme.grapeInk)
+                    Text(rankLabel + (balancing ? " · balanced" : "")).foregroundStyle(Theme.grapeInk)
                     Image(systemName: "chevron.down").font(.caption2.bold()).foregroundStyle(Theme.grapeInk)
                 }
                 .font(Theme.label(15))
             }
-            .accessibilityLabel("Ranked by \(rankLabel)")
+            .accessibilityLabel("Ranked by \(rankLabel)" + (balancing ? ", kids balanced" : ""))
         }
     }
     private var rankChoice: String { library.rankBy == "learned" && library.learned == nil ? "apple" : library.rankBy }

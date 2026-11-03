@@ -49,3 +49,31 @@ final class FaceIDTests: XCTestCase {
         XCTAssertEqual(r.matched[1] ?? r.learned[1], kid.id)
     }
 }
+
+final class KidBalanceTests: XCTestCase {
+    func testBalanceKids() {
+        let girl = UUID(), boy = UUID()
+        func m(_ i: Int, _ who: Set<UUID>) -> Moment {
+            var x = Moment(best: PhotoScore(id: "p\(i)", date: Date(timeIntervalSince1970: Double(i) * 86_400), raw: 0.5,
+                                            excluded: nil, age: nil, caption: "", version: 1),
+                           shots: 1, memberIDs: ["p\(i)"], score: 5)
+            x.people = who
+            return x
+        }
+        // Scores favor her: her 6 photos rank above his 6.
+        let ranked = (0..<6).map { m($0, [girl]) } + (6..<12).map { m($0, [boy]) }
+        let out = KidBalance.order(ranked, kids: [(girl, nil), (boy, nil)])
+        XCTAssertEqual(out.count, 12)
+        XCTAssertEqual(Set(out.map(\.id)).count, 12)                                   // nothing lost or doubled
+        let top4 = out.prefix(4)
+        XCTAssertEqual(top4.filter { $0.people.contains(boy) }.count, 2)               // half the top spots each
+        XCTAssertEqual(out.first?.id, "p0")                                            // the best photo still first
+        // Each child's own order is unchanged.
+        XCTAssertEqual(out.filter { $0.people.contains(boy) }.map(\.id), (6..<12).map { "p\($0)" })
+        // One named child: nothing to balance.
+        XCTAssertEqual(KidBalance.order(ranked, kids: [(girl, nil)]).map(\.id), ranked.map(\.id))
+        // A grown-up with a birthday isn't balanced as a kid: with him born long before these photos, nothing moves.
+        let grownUp = Date(timeIntervalSince1970: 0).addingTimeInterval(-40 * 365 * 86_400)
+        XCTAssertEqual(KidBalance.order(ranked, kids: [(girl, nil), (boy, grownUp)]).map(\.id), ranked.map(\.id))
+    }
+}

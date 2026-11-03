@@ -138,6 +138,7 @@ struct SettingsView: View {
     @EnvironmentObject var scanner: PhotoScanner
     @State private var keepTick = 0
     @AppStorage("groupSimilar") private var groupSimilar = true
+    @AppStorage("balanceKids") private var balanceKids = false
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         NavigationStack {
@@ -170,10 +171,11 @@ struct SettingsView: View {
                 }
                 Section {
                     Toggle("Fold similar shots together", isOn: $groupSimilar)
+                    Toggle("Balance kids", isOn: $balanceKids)
                 } header: {
                     Text("Home list")
                 } footer: {
-                    Text("Look-alike photos taken within 5 minutes of a better-ranked one are tucked under it (shown as +3 and so on), so the top lists show more different moments. Tap a photo and \"See similar\" to view them.")
+                    Text("Look-alike photos taken within 5 minutes of a better-ranked one are tucked under it (shown as +3 and so on), so the top lists show more different moments. Tap a photo and \"See similar\" to view them.\n\nBalance kids gives each child in Who's Who (the ones with a birthday, while they're under 13, or everyone named if no one has a birthday) a share of the top spots that matches how often they're in your photos, so the scores can't favor one of them. Photos without a named child get their share too. Each child's best photos still come first, and scores don't change. It's off while one person is picked.")
                 }
                 HeldBackSection()
                 Section("What's left out") {
