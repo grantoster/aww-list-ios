@@ -86,7 +86,7 @@ final class Library: ObservableObject {
     /// (it settles ties in Apple's and Consolidated). They don't teach the learning; Learn my Likes' votes do.
     @Published private(set) var reactions: [String: Int] = [:]
     func setReaction(_ m: Moment, _ value: Int, learnSoon: Bool = true) {
-        for id in m.memberIDs { reactions[id] = nil; if value == 0 { legacyThumbs[id] = nil } }
+        for id in m.memberIDs { reactions[id] = nil; legacyThumbs[id] = nil }
         if value != 0 { reactions[m.best.id] = value }
         rebuildSoon(); saveSoon()
         // Thumbs no longer teach the learning (Learn my Likes' votes do); only the thumbs from before votes

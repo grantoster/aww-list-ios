@@ -498,8 +498,9 @@ enum Learner {
     static func train(_ claudeRows: [(date: Date, x: [Double], y: Double)], extra: [(date: Date, x: [Double], y: Double)] = [],
                       averaged: Int = 0, useNet: Bool = true) -> LearnedModel? {
         let test = claudeRows.filter { heldBack($0.date) }, claudeTrain = claudeRows.filter { !heldBack($0.date) }
-        guard claudeTrain.count + extra.count >= minimumExamples, test.count >= 10 else { return nil }
-        let train = claudeTrain + extra.filter { !heldBack($0.date) }, examples = claudeRows + extra
+        let extraTrain = extra.filter { !heldBack($0.date) }
+        guard claudeTrain.count + extraTrain.count >= minimumExamples, test.count >= 10 else { return nil }
+        let train = claudeTrain + extraTrain, examples = claudeRows + extra
         func fold(_ d: Date) -> UInt64 { (group(d) / 5) % 4 }
         var bestLambda = 100.0, bestGap = Double.infinity
         for lambda in [1.0, 10, 100, 1000, 10000] {
