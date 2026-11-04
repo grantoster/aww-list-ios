@@ -50,6 +50,28 @@ enum BackgroundScan {
     }
     static var overnightID: String { bundle + ".scan" }
     static var continuedID: String { bundle + ".continued.scan" }
+    static var resultsID: String { bundle + ".claude-results" }
+
+    /// While photos are with Claude: ask iOS to wake the app now and then to collect the scores (a quick check, so
+    /// "Claude scored your photos" can arrive while the app is closed). Asked again after each check while any wait.
+    @MainActor static func scheduleResultsCheck() {
+        guard !Shared.library.claudeBatches.isEmpty || (Shared.snapOpened && !Shared.snapLibrary.claudeBatches.isEmpty) else { return }
+        let req = BGAppRefreshTaskRequest(identifier: resultsID)
+        req.earliestBeginDate = Date().addingTimeInterval(20 * 60)
+        try? BGTaskScheduler.shared.submit(req)
+    }
+    @MainActor private static func runResultsCheck(_ task: BGAppRefreshTask) {
+        guard whenLibraryReady(task, { runResultsCheck(task) }) else { return }
+        let work = Task { @MainActor in
+            await Shared.claude(.aww).collect(Shared.library)
+            if Shared.snapOpened { await Shared.claude(.snap).collect(Shared.snapLibrary) }
+            Shared.library.flush()
+            if Shared.snapOpened { Shared.snapLibrary.flush() }
+            scheduleResultsCheck()
+            task.setTaskCompleted(success: true)
+        }
+        task.expirationHandler = { work.cancel() }
+    }
 
     /// Called once at launch, before the app finishes launching.
     static func register() {
@@ -58,6 +80,11 @@ enum BackgroundScan {
         nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: nil) { _ in Analyzer.inBackground.set(true) }
         nc.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: nil) { _ in Analyzer.inBackground.set(false) }
         nc.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: nil) { _ in Analyzer.inBackground.set(false) }
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: resultsID, using: nil) { task in
+            Task { @MainActor in
+                if let t = task as? BGAppRefreshTask { runResultsCheck(t) } else { task.setTaskCompleted(success: false) }
+            }
+        }
         BGTaskScheduler.shared.register(forTaskWithIdentifier: overnightID, using: nil) { task in
             Analyzer.inBackground.set(true)   // launched straight into the background: no notification says so
             Task { @MainActor in runOvernight(task) }
@@ -247,6 +274,7 @@ enum BackgroundScan {
     /// Stays out of the way when a background task already owns the scan.
     @MainActor static func wrapUpAfterClosing() {
         Shared.library.flush()
+        scheduleResultsCheck()
         let scanner = Shared.scanner
         guard scanner.isScanning, !taskOwnsScan else { return }
         note("Left the app mid-scan: 30-second wrap-up" + (continuedRunning ? " (waiting for iOS to take over)" : ""))

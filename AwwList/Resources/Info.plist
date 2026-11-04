@@ -33,11 +33,13 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>processing</string>
+		<string>fetch</string>
 	</array>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
 		<string>$(PRODUCT_BUNDLE_IDENTIFIER).scan</string>
 		<string>$(PRODUCT_BUNDLE_IDENTIFIER).continued.*</string>
+		<string>$(PRODUCT_BUNDLE_IDENTIFIER).claude-results</string>
 	</array>
 	<key>UIAppFonts</key>
 	<array>

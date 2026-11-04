@@ -317,6 +317,34 @@ final class ClaudeService: ObservableObject {
     }
 
     /// After a dropped upload: did Anthropic create the batch anyway? (Avoids sending and paying twice.)
+    // MARK: A send cut off before its batch id came back
+
+    /// A batch being uploaded, written to disk just before the upload: if the app is closed or killed before
+    /// Anthropic answers with the batch's id, the next run finds that batch (by its size and time) and records it,
+    /// instead of sending (and paying for) the same photos again.
+    struct PendingSend: Codable { var map: [String: String]; var count: Int; var started: Date; var model: String; var recheck: Bool }
+    private var pendingURL: URL? {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("\(mode.name)-claude-pending.json")
+    }
+    private func setPending(_ p: PendingSend?) {
+        guard let u = pendingURL else { return }
+        if let p, let d = try? JSONEncoder().encode(p) {
+            try? FileManager.default.createDirectory(at: u.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? d.write(to: u, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        } else { try? FileManager.default.removeItem(at: u) }
+    }
+    /// Records a batch whose upload was cut off, if Anthropic made it; gives up on it after a day.
+    func adoptPendingSend(_ library: Library) async {
+        guard let u = pendingURL, let d = try? Data(contentsOf: u), let p = try? JSONDecoder().decode(PendingSend.self, from: d) else { return }
+        if let id = await recentBatch(count: p.count, since: p.started, known: Set(library.claudeBatches.map(\.id))) {
+            library.addClaudeBatch(ClaudeBatch(id: id, model: p.model, photos: p.map, sent: p.started, recheck: p.recheck ? true : nil))
+            setPending(nil)
+        } else if Date().timeIntervalSince(p.started) > 86_400 {
+            setPending(nil)   // never made (it would be listed by now): the photos can simply be sent again
+        }
+    }
+
     private func recentBatch(count: Int, since: Date, known: Set<String>) async -> String? {
         guard let r = try? request(URL(string: "https://api.anthropic.com/v1/messages/batches?limit=10")!),
               let (data, code) = try? await fetch(r), code == 200,
@@ -486,6 +514,7 @@ final class ClaudeService: ObservableObject {
     func send(_ library: Library, recheck: Bool = false) async {
         lastOutcome = .notStarted   // stays so on the early returns below (a send already running sets its own when done)
         guard !busy else { return }
+        await adoptPendingSend(library)   // a batch cut off last time is recorded first, so its photos aren't sent twice
         // Only once the scan is finished: until then a bath photo near a candidate may not be checked yet.
         guard !scanner.isScanning else { status = "Checking your photos first; Claude scoring starts by itself when that finishes."; return }
         if scanner.needsScan {
@@ -629,6 +658,7 @@ final class ClaudeService: ObservableObject {
                 let started = Date()
                 var id: String?
                 var aborted = false
+                setPending(PendingSend(map: map, count: reqs.count, started: started, model: model, recheck: recheck))
                 for attempt in 1...3 where id == nil {
                     // Before a retry (which can come minutes later), check again: new photos may have arrived.
                     if attempt > 1 && (stopRequested || scanner.isScanning || scanner.needsScan
@@ -652,9 +682,10 @@ final class ClaudeService: ObservableObject {
                         try await Task.sleep(nanoseconds: UInt64(attempt * 3) * 1_000_000_000)
                     }
                 }
-                if aborted { paused = true; break }
-                guard let id else { throw URLError(.networkConnectionLost) }
+                if aborted { paused = true; break }   // stays pending: an earlier try may still show up as a batch
+                guard let id else { throw URLError(.networkConnectionLost) }   // stays pending: checked next time
                 library.addClaudeBatch(ClaudeBatch(id: id, model: model, photos: map, sent: Date(), recheck: recheck ? true : nil))
+                setPending(nil)
                 madeProgress = true
                 sent += reqs.count
             }
@@ -839,6 +870,7 @@ final class ClaudeService: ObservableObject {
     func collect(_ library: Library) async {
         guard !collecting else { return }   // one check at a time, so a batch is never counted twice
         collecting = true; defer { collecting = false }
+        await adoptPendingSend(library)
         for b in library.claudeBatches {
             do {
                 let (data, code) = try await fetch(request(endpoint.appendingPathComponent(b.id)))
