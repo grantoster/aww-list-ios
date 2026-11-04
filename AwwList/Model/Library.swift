@@ -1277,7 +1277,16 @@ final class Library: ObservableObject {
         return ownLearning && viaLearned && m.learnedScore != nil && votesAlreadyLearned(m, pickStrengths) ? 0 : d
     }
     /// The votes (per photo) this phone's own learning was last trained with.
-    private var votesLearned: [String: Double] = [:]
+    private var votesLearned: [String: Double] {
+        get {
+            if let c = votesLearnedCache { return c }
+            let v = (UserDefaults.standard.data(forKey: mode.key("votesLearned")))
+                .flatMap { try? JSONDecoder().decode([String: Double].self, from: $0) } ?? [:]
+            votesLearnedCache = v; return v
+        }
+        set { votesLearnedCache = newValue; UserDefaults.standard.set(try? JSONEncoder().encode(newValue), forKey: mode.key("votesLearned")) }
+    }
+    private var votesLearnedCache: [String: Double]?
     /// Whether this phone's own learning was trained with this photo's votes as they are now (then it already
     /// carries their move; until then, the list adds it).
     private func votesAlreadyLearned(_ m: Moment, _ strengths: [String: Double]) -> Bool {
