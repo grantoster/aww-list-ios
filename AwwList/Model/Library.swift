@@ -522,12 +522,17 @@ final class Library: ObservableObject {
     @Published private(set) var claudeToSend = 0
     @Published private(set) var claudeRecheckable = 0
     @Published private(set) var claudeRescorable = 0
+    /// Some photos are already re-scored with the current "My taste" note (the button then says "next").
+    @Published private(set) var claudeRescoreBegun = false
     func recountClaude() {
         let n = claude.candidates(self).count, r = claude.recheckCandidates(self).count
         let t = Claude.tasteID(mode) == nil && !photos.values.contains(where: { $0.claude?.taste != nil }) ? 0 : claude.rescoreCandidates(self).count
         if n != claudeToSend { claudeToSend = n }
         if r != claudeRecheckable { claudeRecheckable = r }
         if t != claudeRescorable { claudeRescorable = t }
+        let tasteNow = Claude.tasteID(mode)
+        let begun = tasteNow != nil && photos.values.contains { $0.claude?.taste == tasteNow }
+        if begun != claudeRescoreBegun { claudeRescoreBegun = begun }
     }
     /// How many of each ranking's best moments per year go into Consolidated.
     nonisolated static let consolidatedTop = 100

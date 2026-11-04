@@ -504,12 +504,11 @@ struct TasteSection: View {
                 .disabled(claude.busy || text.trimmingCharacters(in: .whitespacesAndNewlines) == saved)   // not mid-send
                 let n = library.claudeRescorable
                 let tasteNow = Claude.tasteID(library.mode)
-                let begun = tasteNow != nil && library.photos.values.contains { $0.claude?.taste == tasteNow }
+                let begun = library.claudeRescoreBegun
                 if n > 0 && tasteNow != nil && Claude.hasKey(library.mode) {
                     Button("Re-score my \(begun ? "next" : "top") \(n.formatted()) with my taste…") { askRescore = true }
-                        .disabled(claude.busy || scanner.isScanning || scanner.needsScan || claude.pendingPhotos != nil
-                                  || text.trimmingCharacters(in: .whitespacesAndNewlines) != saved)
-                        .confirmationDialog("Re-score your top \(n.formatted()) photos?", isPresented: $askRescore, titleVisibility: .visible) {
+                        .disabled(claude.busy || scanner.isScanning || scanner.needsScan || text.trimmingCharacters(in: .whitespacesAndNewlines) != saved)
+                        .confirmationDialog("Re-score your \(begun ? "next" : "top") \(n.formatted()) photos?", isPresented: $askRescore, titleVisibility: .visible) {
                             Button("Re-score, about \(Claude.dollars(micros: Claude.costMicros(photos: n, model: library.claudeModel, fast: fast)))") {
                                 Task { await claude.send(library, rescore: true) }
                             }
