@@ -347,21 +347,28 @@ final class ClaudeService: ObservableObject {
         guard !adopting else { return }   // one check at a time (send and collect can both ask)
         adopting = true; defer { adopting = false }
         guard let u = pendingURL, let d = try? Data(contentsOf: u), let p = try? JSONDecoder().decode(PendingSend.self, from: d) else { return }
-        if let id = await recentBatch(count: p.count, since: p.started, until: p.started.addingTimeInterval(15 * 60),
-                                      known: Set(library.claudeBatches.map(\.id))) {
+        let found = await findBatch(count: p.count, since: p.started, until: p.started.addingTimeInterval(15 * 60),
+                                    known: Set(library.claudeBatches.map(\.id)))
+        if let id = found.id {
             library.addClaudeBatch(ClaudeBatch(id: id, model: p.model, photos: p.map, sent: p.started, recheck: p.recheck ? true : nil, adopted: true))
             setPending(nil)
-        } else if Date().timeIntervalSince(p.started) > 86_400 {
-            setPending(nil)   // never made (it would be listed by now): the photos can simply be sent again
+        } else if (found.checked && Date().timeIntervalSince(p.started) > 20 * 60) || Date().timeIntervalSince(p.started) > 86_400 {
+            // Not among the batches made in its 15 minutes (or a day has passed): it was never made, so the photos
+            // can simply be sent again.
+            setPending(nil)
         }
     }
 
     /// A batch made between `since` (less 2 minutes) and `until` with `count` requests that isn't recorded yet.
     private func recentBatch(count: Int, since: Date, until: Date = .distantFuture, known: Set<String>) async -> String? {
+        await findBatch(count: count, since: since, until: until, known: known).id
+    }
+    /// Like recentBatch, and whether Anthropic's list could be read at all (so "not there" can be told from "couldn't check").
+    private func findBatch(count: Int, since: Date, until: Date, known: Set<String>) async -> (id: String?, checked: Bool) {
         guard let r = try? request(URL(string: "https://api.anthropic.com/v1/messages/batches?limit=10")!),
               let (data, code) = try? await fetch(r), code == 200,
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let list = obj["data"] as? [[String: Any]] else { return nil }
+              let list = obj["data"] as? [[String: Any]] else { return (nil, false) }
         let iso = ISO8601DateFormatter(); iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let iso2 = ISO8601DateFormatter()
         for b in list {
@@ -369,9 +376,9 @@ final class ClaudeService: ObservableObject {
                   !known.contains(id),   // never one of the batches already recorded
                   let when = iso.date(from: created) ?? iso2.date(from: created), when >= since.addingTimeInterval(-120), when <= until,
                   let counts = b["request_counts"] as? [String: Int] else { continue }
-            if counts.values.reduce(0, +) == count { return id }
+            if counts.values.reduce(0, +) == count { return (id, true) }
         }
-        return nil
+        return (nil, true)
     }
 
     private func request(_ url: URL, method: String = "GET", body: Data? = nil) throws -> URLRequest {
@@ -697,6 +704,7 @@ final class ClaudeService: ObservableObject {
                         } else if (code == 429 || code >= 500) && attempt < 3 {
                             try await Task.sleep(nanoseconds: UInt64(attempt * 3) * 1_000_000_000)
                         } else {
+                            if (400..<500).contains(code) { setPending(nil) }   // refused outright: no batch was made
                             throw ClaudeError.http(code, code == 429 || code >= 500 ? "Claude is busy; try again in a few minutes." : "")
                         }
                     } catch where Self.transient(error) {

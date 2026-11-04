@@ -664,8 +664,9 @@ struct ReviewGridView: View {
                                     }
                             }
                             .buttonStyle(.plain)
-                            .accessibilityLabel(a == nil ? "Not answered" : (a == true ? person.name : "Not \(person.name)"))
-                            .accessibilityHint("Tap to change")
+                            .accessibilityLabel("Face \(person.name) might be")
+                            .accessibilityValue(a == nil ? "Not answered" : (a == true ? "Yes, \(person.name)" : "No, not \(person.name)"))
+                            .accessibilityHint("Tap for yes; tap again for no; a third tap clears it")
                         }
                     }
                     Button { confirm() } label: {
@@ -699,7 +700,7 @@ struct ReviewGridView: View {
         library.applyReview(person: p, yes: yes, no: no)
         named += yes.count; rounds += 1
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        // Answered faces leave; unanswered ones stay for later, after the next most likely.
+        // Answered faces leave; unanswered ones come back in the next batch.
         let done = Set((yes + no).map { Library.faceKey($0.photo, $0.face) })
         batch = Array((library.reviewFaces[person.id] ?? []).filter { !done.contains(Library.faceKey($0.photo, $0.face)) }.prefix(24))
         answers = [:]

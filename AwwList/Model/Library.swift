@@ -363,6 +363,28 @@ final class Library: ObservableObject {
     }
 
     /// New results from the scanner. The list is re-ranked at most every 30 seconds while scanning.
+    /// Two readings of a photo find the same faces in the same places (so their face prints are interchangeable).
+    nonisolated static func sameFaces(_ a: [FaceRecord], _ b: [FaceRecord]) -> Bool {
+        guard a.count == b.count else { return false }
+        func rect(_ f: [Float]) -> CGRect { f.count == 4 ? CGRect(x: CGFloat(f[0]), y: CGFloat(f[1]), width: CGFloat(f[2]), height: CGFloat(f[3])) : .null }
+        return a.allSatisfy { x in b.contains { FaceID.overlap(rect(x.box), rect($0.box)) >= 0.8 } }
+    }
+
+    /// AwwSnap takes Awwbum's face prints for photos both have read the same way, so every tag and answer about a
+    /// face is the same in both (once per learning pass; only photos whose prints differ are touched).
+    private func shareFacesWithAwwbum() {
+        guard mode == .snap, Library.faceConsent, Shared.library.ready else { return }
+        let aww = Shared.library
+        for (id, p) in photos where p.faceVersion == FaceID.version {
+            guard let mine = p.faceRecords, !mine.isEmpty, let o = aww.photos[id], o.faceVersion == FaceID.version,
+                  let theirs = o.faceRecords, theirs != mine, theirs.allSatisfy({ $0.vec.count == People.dim }),
+                  Library.sameFaces(mine, theirs) else { continue }
+            carryOverFaces(id, from: mine, to: theirs)
+            photos[id]?.faceRecords = theirs
+            whoCache[id] = nil; learnedWho[id] = nil; learnedPhotos.remove(id)
+        }
+    }
+
     /// The other app's library, if it's open (Awwbum's always is; AwwSnap's once it's been used this time).
     private var otherLibrary: Library? {
         let o: Library? = mode == .snap ? Shared.library : (Shared.snapOpened ? Shared.snapLibrary : nil)
@@ -380,7 +402,8 @@ final class Library: ObservableObject {
             // tags and answers about these faces match in both apps (and the faces aren't read twice).
             if Library.faceConsent, p.faceRecords != nil, p.faceVersion == FaceID.version,
                let other = otherLibrary, let o = other.photos[p.id], o.faceVersion == FaceID.version,
-               let shared = o.faceRecords, !shared.isEmpty, shared.allSatisfy({ $0.vec.count == People.dim }) {
+               let shared = o.faceRecords, !shared.isEmpty, shared.allSatisfy({ $0.vec.count == People.dim }),
+               let mine = p.faceRecords, Library.sameFaces(mine, shared) {   // the same faces in the same places (not from before an edit)
                 p.faceRecords = shared
             }
             return p
@@ -1009,6 +1032,7 @@ final class Library: ObservableObject {
         let k = Library.faceKey(photo, face)
         guard confirmedFaces[k] == person.id else { return }
         confirmedFaces[k] = nil
+        clearOtherCopies(photo, person.id)
         if let before, let i = people.firstIndex(where: { $0.id == person.id }) {
             people[i].centroid = before.centroid; people[i].count = before.count
             people[i].examples = before.examples; people[i].namedExamples = before.namedExamples
@@ -1093,6 +1117,7 @@ final class Library: ObservableObject {
         if let i = people.firstIndex(where: { $0.id == person.id }) {
             lastFaceRemoval = (key, people[i], confirmedFaces[key] == person.id)   // so Undo puts everything back as it was
             if confirmedFaces[key] == person.id { confirmedFaces[key] = nil }
+            clearOtherCopies(photo, person.id)
             if var ex = people[i].examples, let j = ex.firstIndex(of: face.vec) {
                 ex.remove(at: j)
                 if let n = people[i].namedExamples, j < n { people[i].namedExamples = n - 1 }
@@ -1127,6 +1152,13 @@ final class Library: ObservableObject {
         whoCache = [:]; saveSoon(); learnPeople()
     }
     /// Undoes a tag: the face is no longer counted as them, and it isn't marked "not them" either (just untagged).
+    /// A tag copied to another reading of the same photo (see carryOverFaces) goes too when you take it off, so
+    /// it can't come back when the other app reads the photo again.
+    private func clearOtherCopies(_ photo: String, _ person: UUID) {
+        let prefix = photo + "|"
+        for (k, id) in confirmedFaces where id == person && k.hasPrefix(prefix) { confirmedFaces[k] = nil }
+    }
+
     func untagFace(_ photo: String, _ face: FaceRecord, from person: Person) {
         removeFace(photo, face, from: person)
         let key = Library.faceKey(photo, face)
@@ -1306,7 +1338,7 @@ final class Library: ObservableObject {
     private func votesAlreadyLearned(_ m: Moment, _ strengths: [String: Double]) -> Bool {
         let id = strengths[m.best.id] != nil ? m.best.id : m.memberIDs.first { strengths[$0] != nil }
         guard let id, let now = strengths[id], let then = votesLearned[id] else { return false }
-        return abs(now - then) < 0.0005   // the precision the learning's change check uses
+        return Int((now * 1000).rounded()) == Int((then * 1000).rounded())   // the precision the learning's change check uses
     }
     private func voteShift(_ m: Moment, _ strengths: [String: Double]) -> Double {
         guard !strengths.isEmpty, let st = strengths[m.best.id] ?? m.memberIDs.lazy.compactMap({ strengths[$0] }).first else { return 0 }
@@ -1424,6 +1456,7 @@ final class Library: ObservableObject {
     }
 
     func learnPeople() {
+        shareFacesWithAwwbum()
         refreshPersonPrints()
         peopleGeneration += 1
         peopleTask?.cancel()
