@@ -147,8 +147,10 @@ final class Analyzer {
             }
             // Is this person a child? (Checked for the four largest faces big enough to read.)
             // Only worth it with two or more faces and some sign of a child (otherwise it can't change the subject).
-            if faceObs.count >= 2 && (s.childPrecise || s.childConfidence >= 0.1)
-                && box.height >= 0.02 && boxes.filter({ $0.width * $0.height > box.width * box.height }).count < 4 {
+            // AwwSnap asks for every larger face, even alone: the whole-photo "child" label often fires on grown-ups.
+            let fewLarger = boxes.filter({ $0.width * $0.height > box.width * box.height }).count < 4
+            if (faceObs.count >= 2 && (s.childPrecise || s.childConfidence >= 0.1) && box.height >= 0.02 && fewLarger)
+                || (portrait && box.height >= 0.025 && fewLarger) {
                 let measured = childConfidence(handler, face: box, avoiding: boxes.filter { $0 != box })
                 face.child = measured?.value
                 face.childTight = measured?.tight ?? false

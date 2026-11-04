@@ -9,9 +9,12 @@ enum SnapScorer {
         let main = s.mainFaceIndices.isEmpty ? Array(s.faces.indices) : s.mainFaceIndices
         return main.filter { i in
             let f = s.faces[i]
-            guard f.box.count == 4, f.box[3] >= 0.04 else { return false }   // too small to judge
+            guard f.box.count == 4, f.box[3] >= 0.025 else { return false }   // too small to judge
+            if s.isAdult(i) == true { return true }
+            // This person's own reading beats the whole photo's (which a child anywhere in it, or a youthful
+            // grown-up, can set off).
+            if let c = f.child { return c < 0.3 }
             if let a = s.isAdult(i) { return a }
-            if let c = f.child { return c < 0.25 }
             return s.childConfidence < 0.3 && s.babyConfidence < 0.3
         }
     }
@@ -33,7 +36,7 @@ enum SnapScorer {
     }
 
     /// Bumped when the measurements or the scoring change, so AwwSnap reads its photos again.
-    static let version = 2
+    static let version = 3   // 3: each face's own grown-up check, smaller faces
 
     /// 0...1 light on a face from its exposure and evenness (both 0...1).
     static func lightScore(exposure: Double, even: Double) -> Double { max(0, min(1, 0.3 * exposure + 0.7 * even)) }

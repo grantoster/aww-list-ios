@@ -220,3 +220,21 @@ final class VoteShiftTests: XCTestCase {
         XCTAssertEqual(Pairwise.maxShift, 2)
     }
 }
+
+final class SnapAdultTests: XCTestCase {
+    func testGrownUpsCountByTheirOwnReading() {
+        var f = FaceSignal(area: 0.01, quality: 0.5, smile: true, eyesClosed: false)
+        f.box = [0.45, 0.5, 0.05, 0.03]          // a small face (3% of the photo's height), as in a full-length shot
+        f.child = 0.1                            // this person reads as a grown-up
+        var s = Signals(); s.faces = [f]; s.sharpness = 1
+        s.childConfidence = 0.6                  // even though the whole photo's "child" label fired
+        XCTAssertEqual(SnapScorer.adults(s), [0])
+        XCTAssertNotNil(SnapScorer.value(s))
+        // The same face reading as a child isn't a grown-up.
+        s.faces[0].child = 0.7
+        XCTAssertTrue(SnapScorer.adults(s).isEmpty)
+        // Too small to judge (under 2.5% of the height).
+        s.faces[0].child = 0.1; s.faces[0].box = [0.45, 0.5, 0.03, 0.02]
+        XCTAssertTrue(SnapScorer.adults(s).isEmpty)
+    }
+}
