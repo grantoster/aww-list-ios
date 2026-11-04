@@ -314,6 +314,13 @@ enum People {
         }
         onePerPhoto()
         for (i, id) in matched { claim(i, id) }
+        // A face that lost its photo's spot to a closer face (a kid who looks a bit like the parent beside them)
+        // gets one more ordinary match, with the people already in that photo ruled out.
+        for i in faces.indices where matched[i] == nil && !ignored.contains(i) {
+            if let b = best(row(anchor, i), excluded(i)), b.s >= threshold {
+                matched[i] = people[b.k].id; sims[i] = b.s; claim(i, people[b.k].id)
+            }
+        }
         // Each person's recognizer, trained on their named faces against everyone else's and your rejections.
         var negatives: [UUID: [[Float]]] = [:]
         for (i, ids) in rejected { for id in ids { negatives[id, default: []].append(faces[i]) } }
@@ -360,6 +367,19 @@ enum People {
                         added.append((i, people[top.k].id)); sims[i] = close
                     }
                 }
+            }
+            // Two faces in one photo learned as the same person this round: only the closer one is kept, before
+            // either becomes a reference (so a look-alike sibling can't pull in their own photos as the other child).
+            if photos {
+                var bestIn: [String: Int] = [:]
+                for (n, (i, id)) in added.enumerated() {
+                    let k = owners[i] + "|" + id.uuidString
+                    if let m = bestIn[k], (sims[added[m].0] ?? 0) >= (sims[i] ?? 0) { continue }
+                    bestIn[k] = n
+                }
+                let keep = Set(bestIn.values)
+                for (n, (i, _)) in added.enumerated() where !keep.contains(n) { sims[i] = nil }
+                added = added.enumerated().filter { keep.contains($0.offset) }.map(\.element)
             }
             if added.isEmpty { break }
             for (i, id) in added { learned[i] = id; claim(i, id) }

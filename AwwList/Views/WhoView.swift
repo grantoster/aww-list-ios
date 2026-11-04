@@ -44,6 +44,7 @@ struct WhoView: View {
     @EnvironmentObject var library: Library
     @Environment(\.dismiss) private var dismiss
     @State private var groups: [[(photo: String, face: FaceRecord)]] = []
+    @State private var askTurnOff = false
     @State private var loading = true
     @State private var naming: NamingGroup?
     @State private var editing: Person?
@@ -81,7 +82,7 @@ struct WhoView: View {
                     Text("Turn on Who's Who?").font(Theme.label(24, relativeTo: .title2))
                     Text("Who's Who recognizes the people you name, like your kids, so you can see each person's best photos.")
                     VStack(alignment: .leading, spacing: 10) {
-                        Label("Turning it on makes face measurements (face prints) of up to 4 faces in each photo on your list, on this iPhone, so it can tell people apart. It re-reads those photos, which can take a while on a large library.", systemImage: "face.smiling")
+                        Label("Turning it on makes face measurements (face prints) of up to 8 faces in each photo on your list, on this iPhone, so it can tell people apart. It re-reads those photos, which can take a while on a large library.", systemImage: "face.smiling")
                         Label("Face prints and names stay in Awwbum on this iPhone. They're never sent to us, Claude or Anthropic (they're part of your iPhone backup if backups are on).", systemImage: "lock.fill")
                         Label("Forget a person, or turn Who's Who off to delete every face print. Deleting the app deletes all of it (copies in earlier backups stay until those backups are deleted).", systemImage: "trash")
                         Label("Only name people who are OK with it (or whose parent is).", systemImage: "hand.raised")
@@ -264,7 +265,13 @@ struct WhoView: View {
                     Text("Stricter if groups mix different people; looser if one person is split across many groups. Kids' faces change a lot, so naming a child once or twice per year or so helps the app follow them. With a birthday set, a child is never matched in photos from before they were born. Faces are recognized on this iPhone with InsightFace's face model (non-commercial license).")
                 }
                 Section {
-                    Button("Turn off Who's Who") { faceConsent = false; library.setFaceConsent(false) }
+                    Button("Turn off Who's Who") { askTurnOff = true }
+                        .confirmationDialog("Turn off Who's Who?", isPresented: $askTurnOff, titleVisibility: .visible) {
+                            Button("Turn off and delete face prints", role: .destructive) { faceConsent = false; library.setFaceConsent(false) }
+                            Button("Cancel", role: .cancel) {}
+                        } message: {
+                            Text("Every face print in Awwbum and AwwSnap is deleted. Names and birthdays stay.")
+                        }
                 } footer: {
                     Text("Stops recognizing people and deletes every Who's Who face print. Names and birthdays stay; to recognize someone again, turn Who's Who back on and name a few of their faces with the same name.")
                 }

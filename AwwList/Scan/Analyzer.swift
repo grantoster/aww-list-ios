@@ -273,7 +273,7 @@ final class Analyzer {
         return SnapScorer.lightScore(exposure: exposure, even: even)
     }
 
-    /// Face fingerprints for Who's Who: the face-identity model's print of each of the (up to 4) largest faces.
+    /// Face fingerprints for Who's Who: the face-identity model's print of each of the (up to 8) largest faces.
     func facePrints(_ image: CGImage, orientation: CGImagePropertyOrientation, faces: [FaceSignal]) -> [FaceRecord]? {
         FaceID.records(image, orientation: orientation, faces: faces, context: ciContext)
     }

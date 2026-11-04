@@ -100,7 +100,8 @@ struct WelcomeView: View {
             Spacer(minLength: 0)
             Theme.logoImage.resizable().scaledToFit().frame(width: 150, height: 150).accessibilityHidden(true)
             Text(AppMode.current.name).font(Theme.display(44, relativeTo: .largeTitle)).foregroundStyle(Theme.accent)
-            Text("Finds the photos of your kids that make everyone go aww, and ranks them year by year.")
+            Text(AppMode.current == .snap ? "Finds the photos where you and the other grown-ups look your best, and ranks them year by year."
+                 : "Finds the photos of your kids that make everyone go aww, and ranks them year by year.")
                 .font(Theme.label(19, relativeTo: .title3)).multilineTextAlignment(.center).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 10) {
                 Label("Scoring happens on this iPhone. Photos are only uploaded if you choose to score them with Claude.", systemImage: "lock.fill")
@@ -512,9 +513,9 @@ struct LearnedSection: View {
                     UIPasteboard.general.string = text
                     copied = true
                 }
-                Text("Copies this phone's own learning (numbers only, no photos) so it can be built into the app as the starting point for new installs.")
+                Text("Copies this phone's own learning (numbers only: no photos, and the face-picture part left out) so it can be built into the app as the starting point for new installs.")
                     .font(.footnote).foregroundStyle(.secondary)
-            } else {
+            } else if library.mode == .aww {
                 Text("Copy learning appears once this phone has learned from its own Claude scores (about 80–100 of them, spread over enough days).")
                     .font(.footnote).foregroundStyle(.secondary)
             }
@@ -546,7 +547,7 @@ struct LearnedSection: View {
         } header: {
             Text("Learned score")
         } footer: {
-            Text("The app studies Claude's scores alongside what it measures on the phone (smiles, closeness, face size, sharpness and the scene), then predicts a Claude-style score for every photo, privately and for free. It also learns which photos Claude takes off the list, so removals follow Claude's judgment instead of Apple's. Both are checked on a fifth of Claude's verdicts it didn't learn from. Your Learn my Likes votes move the photos you voted on up or down every ranking (up to 2 points) and the score the learning aims for, ahead of Claude's where the two disagree (votes stay on this iPhone). Claude's own score and removals always win where they exist; with Rank by Claude, photos Claude hasn't seen use the learned score.")
+            Text("The app studies Claude's scores alongside what it measures on the phone (smiles, closeness, face size, sharpness and the scene), then predicts a Claude-style score for every photo, privately and for free. It also learns which photos Claude takes off the list, so removals follow Claude's judgment instead of Apple's. Both are checked on a fifth of Claude's verdicts it didn't learn from. Your Learn my Likes votes move the photos you voted on up or down every ranking (up to 2 points) and the score the learning aims for, ahead of Claude's where the two disagree (votes stay on this iPhone). With Rank by Claude, Claude's own score and removals win where they exist, and photos Claude hasn't seen use the learned score; with Rank by Learned, every photo uses the learned score.")
         }
     }
 }

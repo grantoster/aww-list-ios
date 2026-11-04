@@ -69,6 +69,8 @@ struct PhotoScore: Codable, Hashable, Identifiable {
     var lat: Double? = nil
     var lon: Double? = nil
     var locChecked: Bool? = nil
+    /// When the photo was last read (analyzed), to tell an edit made in Photos afterwards.
+    var readAt: Date? = nil
     /// Claude's score, description and checks, when this photo was sent to Claude.
     var claude: ClaudeVerdict? = nil
     /// For photos Apple set aside for a soft reason (Scorer.softReasons): the score they'd have had,

@@ -130,7 +130,7 @@ enum FaceID {
         return pb
     }
 
-    /// Face prints for Who's Who from the (up to 4) largest faces of an upright photo. Nil when the recognizer
+    /// Face prints for Who's Who from the (up to 8) largest faces of an upright photo. Nil when the recognizer
     /// couldn't run (then the photo keeps what it had and is read again on a later scan).
     static func records(_ image: CGImage, orientation: CGImagePropertyOrientation, faces: [FaceSignal],
                         context: CIContext) -> [FaceRecord]? {

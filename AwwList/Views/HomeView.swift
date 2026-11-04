@@ -231,7 +231,7 @@ struct HomeView: View {
     }
 
     private var scopeBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        ScrollView(.horizontal, showsIndicators: true) {   // visible, so a mouse can drag it on a Mac
             HStack(spacing: 8) {
                 Pill(title: "All", on: scope == .all) { scope = .all }
                 ForEach(library.years, id: \.self) { y in
@@ -243,7 +243,7 @@ struct HomeView: View {
 
     /// Age, kind of shot and person, each a compact dropdown on one row (a chip turns purple when it's set).
     private var filterBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        ScrollView(.horizontal, showsIndicators: true) {   // visible, so a mouse can drag it on a Mac
             HStack(spacing: 8) {
                 if AppMode.current == .aww {   // Baby, Toddler, Kid: Awwbum only
                     Menu {
@@ -337,7 +337,7 @@ struct HomeView: View {
     private var onThisDaySection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("On this day").font(Theme.display(22)).accessibilityAddTraits(.isHeader)
-            ScrollView(.horizontal, showsIndicators: false) {
+            ScrollView(.horizontal, showsIndicators: true) {   // visible, so a mouse can drag it on a Mac
                 HStack(spacing: 8) {
                     ForEach(Array(onThisDay.enumerated()), id: \.element.id) { i, m in
                         VStack(alignment: .leading, spacing: 4) {
@@ -379,7 +379,7 @@ struct HomeView: View {
                 HStack(spacing: 8) {
                     Menu {
                         ForEach(shareSizes, id: \.self) { k in
-                            Button("Copy top \(min(k, pool.count))") { send(Array(pool.prefix(k)).map(\.best.id), copy: true, limit: k) }
+                            Button("Copy top \(min(k, bulkPool.count))") { send(Array(bulkPool.prefix(k)).map(\.best.id), copy: true, limit: k) }
                         }
                     } label: {
                         Label("Copy", systemImage: "doc.on.doc").frame(maxWidth: .infinity)
@@ -387,7 +387,7 @@ struct HomeView: View {
                     .accessibilityLabel("Copy top photos")
                     Menu {
                         ForEach(shareSizes, id: \.self) { k in
-                            Button("Share top \(min(k, pool.count))") { send(Array(pool.prefix(k)).map(\.best.id), copy: false, limit: k) }
+                            Button("Share top \(min(k, bulkPool.count))") { send(Array(bulkPool.prefix(k)).map(\.best.id), copy: false, limit: k) }
                         }
                     } label: {
                         Label("Share", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
@@ -407,11 +407,11 @@ struct HomeView: View {
                 }
                 .opacity(selecting ? 0 : 1)
                 .accessibilityHidden(selecting)
-                Text(selecting ? "Tap photos to pick up to \(maxPick)." : "Tip: hold any photo to pick several to send.")
+                Text(selecting ? "Tap photos to pick up to \(maxPick)." : "Tip: hold any photo to pick several to send. Copy, Share and collages leave out photos flagged as possible bath or undressed photos (and the ones around them).")
                     .font(.caption).foregroundStyle(.secondary)
                 Menu {
                     Button("Top 10 collage") { makeCollage(10) }
-                    if pool.count > 10 { Button("Top 20 collage") { makeCollage(20) } }
+                    if bulkPool.count > 10 { Button("Top 20 collage") { makeCollage(20) } }
                 } label: {
                     Label(makingCollage ? "Making the collage…" : "Share a collage", systemImage: "square.grid.2x2")
                         .font(.subheadline)
@@ -446,10 +446,15 @@ struct HomeView: View {
         }
     }
 
+    /// The list without photos that are never sent (possible bath or undressed photos and the ones around them,
+    /// held-back photos, and swimwear or shirtless unless allowed): Copy, Share and collages take from this.
+    /// Picking photos yourself, or sharing one from the viewer, is still up to you.
+    private var bulkPool: [Moment] { pool.filter { !$0.memberIDs.contains(where: library.neverSend.contains) } }
+
     /// The current list's top 10 or top 20 (this year or overall, with your filters) as one picture to share. Made on the
     /// phone and handed to the share sheet; nothing is saved to Photos.
     private func makeCollage(_ count: Int) {
-        let ids = Array(pool.prefix(count)).map(\.best.id)
+        let ids = Array(bulkPool.prefix(count)).map(\.best.id)
         let title = scopeTitle + " top \(ids.count)"
         makingCollage = true
         Task {
@@ -814,13 +819,14 @@ struct EmptyListView: View {
                 Button("Clear filters", action: clear).buttonStyle(.borderedProminent)
             }
         } else if scanner.isScanning {
-            ContentUnavailableView("Finding your awws", systemImage: "heart.circle",
+            ContentUnavailableView(AppMode.current == .snap ? "Finding your best shots" : "Finding your awws", systemImage: "heart.circle",
                                    description: Text("Still looking through your photos. The good ones show up here as they're found."))
         } else {
-            ContentUnavailableView("No awws here yet", systemImage: "heart.circle",
+            let who = AppMode.current == .snap ? "grown-ups" : "kids"
+            ContentUnavailableView(AppMode.current == .snap ? "No photos here yet" : "No awws here yet", systemImage: "heart.circle",
                                    description: Text(PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited
-                                                     ? "No photos of kids were found in the photos you picked. Tap Add photos above to include more."
-                                                     : "No photos of kids were found here yet."))
+                                                     ? "No photos of \(who) were found in the photos you picked. Tap Add photos above to include more."
+                                                     : "No photos of \(who) were found here yet."))
         }
     }
 }

@@ -613,7 +613,8 @@ final class Library: ObservableObject {
 
     /// This phone's own learning as text (for building into the app); nil until it has learned something.
     var learningText: String? {
-        ownModel == nil && ownFilter == nil ? nil : LearningPack(model: ownModel, filter: ownFilter).text()
+        // Awwbum only: AwwSnap's learning never leaves the phone.
+        mode != .aww || (ownModel == nil && ownFilter == nil) ? nil : LearningPack(model: ownModel, filter: ownFilter).text()
     }
     /// Photos whose Claude result could be shared as learning data. Bath and undressed photos are never shared.
     private static func shareable(_ p: PhotoScore) -> Bool {
@@ -629,7 +630,7 @@ final class Library: ObservableObject {
         return true
     }
     /// How many Claude results this phone could share as learning data.
-    var shareableLearningCount: Int { photos.values.filter(Library.shareable).count }
+    var shareableLearningCount: Int { photos.values.filter { Library.shareable($0) && shareableVoted($0) }.count }
     /// How many "Which is cuter?" votes would go with them (both photos must be shareable).
     var shareableVoteCount: Int {
         pairVotes.filter { v in
@@ -653,8 +654,9 @@ final class Library: ObservableObject {
         }
         let votes = picked.filter { ok($0.a) && ok($0.b) }   // only votes whose two photos may both be sent
         let inVotes = Set(votes.flatMap { [$0.a, $0.b] })
+        // Every row passes the same privacy check: nothing held back, kept from Claude or near either (in either app).
         let scored = photos.values.filter {
-            inVotes.contains($0.id) ? (shareableVoted($0) && (Library.shareable($0) || $0.claude == nil)) : Library.shareable($0)
+            shareableVoted($0) && (inVotes.contains($0.id) ? (Library.shareable($0) || $0.claude == nil) : Library.shareable($0))
         }
         guard !scored.isEmpty else { return nil }
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
@@ -847,6 +849,7 @@ final class Library: ObservableObject {
             await MainActor.run { self.training = true }      // shown in Settings only while really learning
             // Only what changed is learned again (votes alone don't re-learn Claude's scoring).
             let model = claudeChanged ? Learner.train(examples, extra: moved, averaged: averaged) : nil
+            let keepIfShort = !moved.isEmpty && !examples.isEmpty
             let filter = claudeChanged ? Learner.trainFilter(verdicts) : nil
             let likes = likesChanged ? Learner.trainTaste(votes) : nil
             await MainActor.run {
@@ -857,7 +860,13 @@ final class Library: ObservableObject {
                 }
                 // This phone's own learning is always kept (and can be copied out); it's used once it has learned
                 // from at least as many verdicts as the built-in one, or right away if the built-in one is turned off.
-                if claudeChanged { self.trainedSignature = signature; self.ownModel = model; self.ownFilter = filter }
+                // Votes take photos out of the check; if that leaves too few to check, the learning so far is kept
+                // rather than lost.
+                if claudeChanged {
+                    self.trainedSignature = signature
+                    self.ownModel = model ?? (keepIfShort ? self.ownModel : nil)
+                    self.ownFilter = filter ?? (keepIfShort ? self.ownFilter : nil)
+                }
                 if likesChanged { self.tasteSignature = likeSignature; self.taste = likes }
                 self.applyLearning()
                 // New learning changes every photo's learned score: work those out off the main thread first, so
@@ -1183,7 +1192,9 @@ final class Library: ObservableObject {
     /// Each photo's preference from your votes (Bradley-Terry strength; earlier thumbs are a weak start).
     var voteStrengths: [String: Double] {
         if let c = strengthsCache { return c }
-        let s = Pairwise.strengths(pairVotes, starts: legacyThumbs)
+        // Earlier thumbs are a starting hint only for photos you've also voted on (on their own they don't teach).
+        let voted = Set(pairVotes.filter { $0.winner != nil }.flatMap { [$0.a, $0.b] })
+        let s = Pairwise.strengths(pairVotes, starts: legacyThumbs.filter { voted.contains($0.key) })
         strengthsCache = s
         return s
     }
@@ -1261,11 +1272,10 @@ final class Library: ObservableObject {
         } else {
             learnedWho = [:]; learnedFaces = []   // before the rebuild, so no one stays tagged
             deleteFacePrints()
-            // The other app's face prints go too (Who's Who is shared).
-            if mode == .snap || Shared.snapOpened {
-                let other = Shared.library(mode.other)
-                if other.ready { other.dropFacePrints() }
-            }
+            // The other app's face prints go too (Who's Who is shared), now, even if it hasn't been opened this time:
+            // loading it drops them (see load), or they go here if it's already loaded.
+            let other = Shared.library(mode.other)
+            if other.ready { other.dropFacePrints() }
         }
         whoCache = [:]; rebuild(); save(); learnPeople()
     }
@@ -1463,8 +1473,18 @@ final class Library: ObservableObject {
     }
 
     /// Drops scores for photos that were deleted from the library (ids found by the scanner).
+    /// Records from before `readAt`: a photo modified more than this after it was taken counts as edited.
+    nonisolated static let editSlack: TimeInterval = 120
+    /// Whether a photo was changed in Photos since it was read (so it must be read again before it's sent).
+    nonisolated static func editedSinceRead(_ p: PhotoScore, _ modified: Date?) -> Bool {
+        guard let md = modified else { return false }
+        return md > (p.readAt ?? p.date.addingTimeInterval(editSlack)).addingTimeInterval(5)
+    }
+
     func remove(_ ids: Set<String>) {
         guard !ids.isEmpty else { return }
+        // A held-back photo that's gone (hidden or deleted) still guards the photos taken around it.
+        PrivacyMarks.shared.add(ids.compactMap { photos[$0] }, removed: claudeRemoved, gone: true)
         ids.forEach { photos[$0] = nil; derived[$0] = nil }
         addedBack.subtract(ids)
         rebuild(); save()
@@ -1514,7 +1534,9 @@ final class Library: ObservableObject {
         let matcher = People.Matcher((Library.faceConsent ? named : []).map { p -> Person in var p = p; p.examples = nil; return p })
         let gregorian = Calendar(identifier: .gregorian)
         // A named person's birthday only sorts photos while they're a child (grown-ups named in Who's Who don't count).
-        let anyBirthday = named.contains { $0.birthday != nil }
+        // Only a kid's birthday turns on "someone named without one is a grown-up" (a grown-up's birthday doesn't).
+        let now = Date()
+        let anyBirthday = named.contains { p in p.birthday.map { (gregorian.dateComponents([.year], from: $0, to: now).year ?? 99) < 18 } ?? false }
         func childAt(_ birth: Date, _ date: Date) -> Bool {
             birth <= date && (gregorian.dateComponents([.year], from: birth, to: date).year ?? 0) < 13
         }
@@ -1565,7 +1587,13 @@ final class Library: ObservableObject {
         // (possible bath/undressed and their sessions, even after a put back; swimwear/shirtless unless allowed).
         // Once the app has learned, it picks what to send Claude by its prediction of Claude's score.
         func poolValue(_ m: Moment) -> Double { m.learnedScore ?? 10 * m.rankRaw }   // once per moment; not-yet-re-read photos (old scale) sort a bit lower
-        let forbidden = Scorer.neverSend(Array(photos.values), allowSwimShirtless: claudeSensitive, removed: claudeRemoved)
+        var forbidden = Scorer.neverSend(Array(photos.values), allowSwimShirtless: claudeSensitive, removed: claudeRemoved)
+        // Marks are shared by both apps and outlive the photo: one app's (or a hidden photo's) privacy hold counts here too.
+        let marks = PrivacyMarks.shared
+        marks.add(Array(photos.values), removed: claudeRemoved)
+        for p in photos.values where !forbidden.contains(p.id) && marks.blocks(p.date, allowSwimShirtless: claudeSensitive) {
+            forbidden.insert(p.id)
+        }
         neverSend = forbidden
         // Photos with faces but no child label: not listed, but offered to Claude too (Apple's labels miss kids).
         let listedIDs = Set(groups.flatMap(\.ids))
@@ -1591,19 +1619,13 @@ final class Library: ObservableObject {
         var filtered = 0
         var filteredIDs = Set<String>()
         // Your Learn my Likes votes move a photo up or down every ranking right away (up to 2 points). Only real
-        // votes count here (old thumbs keep their own small nudge). Where this phone's own learning already learned
-        // from the votes, a voted photo's learned value starts from Claude's score so the votes aren't counted twice.
+        // votes count here (old thumbs keep their own small nudge).
         let strengths = pickStrengths
-        let ownLearning = learned != nil && !learnedIsBuiltIn
         func learnedValue(_ m: Moment) -> Double? {
             guard let l = m.learnedScore else { return nil }
             let d = voteShift(m, strengths)
-            guard d != 0 else { return l }
-            if !ownLearning { return l + d }
-            if let c = m.claudeScore { return c + d }
-            // The same unmoved starting point the learning used for it: the built-in learning, or Apple's score.
-            if let b = builtIn.model, let f = m.best.feat, let x = Learner.decode(f) { return Learner.predict(b, x) + d }
-            return Double(m.apple) + d
+            // Always from the photo's own learned score, so a vote only ever moves it the way you voted.
+            return l + d
         }
         let fallbackIDs = Set(fIdx.map { groups[$0].best.id })   // not yet re-read: Apple's score stays at most 6
         // Built up locally and published once at the end: changing the published list item by item made every
@@ -1663,10 +1685,11 @@ final class Library: ObservableObject {
                 ms[i].score = min(cal[i], cap)
                 ms[i].rankKey = vals[i]
             }
-        } else if !strengths.isEmpty && !useConsolidated {
+        } else if !useConsolidated {
             // Apple's ranking: your votes move its 1–10 score directly.
             for i in ms.indices {
-                let d = voteShift(ms[i], strengths)
+                ms[i].rankKey = ms[i].rankRaw   // Apple's own order within a score (not Claude's or the learned one)
+                let d = strengths.isEmpty ? 0 : voteShift(ms[i], strengths)
                 let cap = fallbackIDs.contains(ms[i].best.id) ? 6 : 10
                 if d != 0 { ms[i].score = max(1, min(max(cap, ms[i].score), Int((Double(ms[i].score) + d).rounded(.toNearestOrAwayFromZero)))) }
             }
@@ -1678,8 +1701,8 @@ final class Library: ObservableObject {
         everyMoment = ms.sorted(by: Library.ranked)
         var outsideTop = Set<String>()
         if useConsolidated {
-            // Each ranking covers only the moments it actually scored (no filling in from the others, which would
-            // count the same opinion twice).
+            // Each ranking uses only its own scores (no filling in from the others, which would count the same
+            // opinion twice); moments it didn't score sit at its middle.
             // Your votes move a photo within each ranking.
             let vs = ms.map { voteShift($0, strengths) }
             let list = ms
@@ -1694,6 +1717,13 @@ final class Library: ObservableObject {
                 for f in rankers {
                     var vals: [Int: Double] = [:]
                     for i in idx { if let v = f(i) { vals[i] = v } }
+                    // Moments a ranking didn't score sit at its middle (just below), so being scored at all isn't a
+                    // bonus: a low Claude score ranks below the ones Claude never saw.
+                    let present = vals.values.sorted()
+                    if !present.isEmpty {
+                        let mid = present[present.count / 2] - 1e-6
+                        for i in idx where vals[i] == nil { vals[i] = mid }
+                    }
                     let order = vals.keys.sorted { a, b in
                         let va = vals[a]!, vb = vals[b]!
                         if va != vb { return va > vb }

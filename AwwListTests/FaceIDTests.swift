@@ -256,3 +256,47 @@ final class SnapAdultTests: XCTestCase {
         XCTAssertTrue(SnapScorer.adults(lone).isEmpty)
     }
 }
+
+final class AuditFixTests: XCTestCase {
+    func testPrivacyMarksOutliveThePhoto() {
+        let marks = PrivacyMarks()
+        let t = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        let bath = PhotoScore(id: "gone-bath", date: t, raw: nil, excluded: "Bath", age: nil, caption: "")
+        marks.add([bath], removed: [:], gone: true)
+        // Photos within 10 minutes of the (now hidden or deleted) bath photo stay blocked; later ones don't.
+        XCTAssertTrue(marks.blocks(t.addingTimeInterval(599), allowSwimShirtless: true))
+        XCTAssertTrue(marks.blocks(t.addingTimeInterval(-599), allowSwimShirtless: true))
+        XCTAssertFalse(marks.blocks(t.addingTimeInterval(700), allowSwimShirtless: true))
+        // Swimwear only while swimwear isn't allowed; a bare chest for 2 minutes.
+        let swim = PhotoScore(id: "swim", date: t.addingTimeInterval(10_000), raw: nil, excluded: "Swimwear", age: nil, caption: "")
+        marks.add([swim], removed: [:])
+        XCTAssertTrue(marks.blocks(t.addingTimeInterval(10_300), allowSwimShirtless: false))
+        XCTAssertFalse(marks.blocks(t.addingTimeInterval(10_300), allowSwimShirtless: true))
+        // A photo that just couldn't be read leaves no mark while it's still there.
+        let unread = PhotoScore(id: "u", date: t.addingTimeInterval(50_000), raw: nil, excluded: Scorer.unavailable, age: nil, caption: "")
+        XCTAssertNil(PrivacyMarks.kind(unread, removed: nil))
+        XCTAssertEqual(PrivacyMarks.kind(unread, removed: nil, unreadable: true), .always)
+    }
+
+    func testEditedSinceRead() {
+        var p = PhotoScore(id: "e", date: Date(timeIntervalSinceReferenceDate: 0), raw: 0.5, excluded: nil, age: nil, caption: "")
+        p.readAt = Date(timeIntervalSinceReferenceDate: 1_000)
+        XCTAssertFalse(Library.editedSinceRead(p, Date(timeIntervalSinceReferenceDate: 1_003)))
+        XCTAssertTrue(Library.editedSinceRead(p, Date(timeIntervalSinceReferenceDate: 2_000)))
+        XCTAssertFalse(Library.editedSinceRead(p, nil))
+        p.readAt = nil   // an older record: modified well after it was taken counts as edited
+        XCTAssertTrue(Library.editedSinceRead(p, Date(timeIntervalSinceReferenceDate: 1_000)))
+    }
+
+    func testCopiedLearningLeavesOutFacePictures() {
+        let n = Learner.featureCount
+        let m = LearnedModel(mean: Array(repeating: 0.3, count: n), std: Array(repeating: 2, count: n),
+                             weights: Array(repeating: 0.1, count: n), bias: 5, lambda: 10, trainedOn: 100, tested: 20,
+                             within1: 0.8, meanGap: 0.6, date: Date())
+        let (back, _) = LearningPack.read(LearningPack(model: m, filter: nil).text())
+        let r = LearningPack.faceRange
+        XCTAssertEqual(back?.weights[r.lowerBound], 0); XCTAssertEqual(back?.mean[r.upperBound - 1], 0)
+        XCTAssertEqual(back?.std[r.lowerBound], 1)
+        XCTAssertEqual(back!.weights[r.lowerBound - 1], 0.1, accuracy: 1e-6)   // the rest is untouched
+    }
+}

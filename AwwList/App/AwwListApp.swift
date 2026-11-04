@@ -7,6 +7,7 @@ final class ModeSwitch: ObservableObject {
     @Published private(set) var mode = AppMode.current
     func switchTo(_ m: AppMode) {
         guard m != mode else { return }
+        Shared.scanner(mode).stop()    // one scan at a time: the app being left stops checking photos
         Shared.library(mode).flush()   // nothing lost from the app being left
         AppMode.current = m
         if m == .snap { Shared.snapOpened = true }

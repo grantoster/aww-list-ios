@@ -432,6 +432,14 @@ final class ClaudeService: ObservableObject {
         var dates: [Date] = []
         live.enumerateObjects { a, _, _ in if let d = a.creationDate { dates.append(d) } }
         guard dates.count == m.memberIDs.count, let lo = dates.min(), let hi = dates.max() else { return false }
+        // Near a photo held back for privacy in either app, even one since hidden or deleted.
+        if dates.contains(where: { PrivacyMarks.shared.blocks($0, allowSwimShirtless: library.claudeSensitive) }) { return false }
+        // Edited in Photos since it was checked: not sent until it's checked again (an edit can change what's in it).
+        var edited = false
+        live.enumerateObjects { a, _, stop in
+            if let p = library.photos[a.localIdentifier], Library.editedSinceRead(p, a.modificationDate) { edited = true; stop.pointee = true }
+        }
+        if edited { return false }
         let o = PHFetchOptions()
         o.includeHiddenAssets = false   // never look in the Hidden album
         o.predicate = NSPredicate(format: "mediaType == %d AND creationDate >= %@ AND creationDate <= %@",

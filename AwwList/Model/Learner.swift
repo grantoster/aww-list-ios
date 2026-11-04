@@ -611,8 +611,17 @@ struct LearningPack: Codable {
         return out
     }
 
+    /// The face-picture part of the fingerprint (Vision's print of the main face): blanked in anything copied out
+    /// (average 0, spread 1, weight 0), so a pack carries no average of the family's faces. It only lowers the
+    /// learned score's accuracy a little.
+    static var faceRange: Range<Int> { let s = Learner.signalCount + Learner.sceneDims; return s..<(s + Learner.faceDims) }
+    static func blankFaces(_ mean: inout [Double], _ std: inout [Double], _ w: inout [Double]) {
+        for i in faceRange where i < mean.count && i < std.count && i < w.count { mean[i] = 0; std[i] = 1; w[i] = 0 }
+    }
+
     init(model: LearnedModel?, filter: LearnedFilter?) {
         if var m = model {
+            Self.blankFaces(&m.mean, &m.std, &m.weights)
             modelArrays = [m.mean, m.std, m.weights].map(Self.pack)
             m.mean = []; m.std = []; m.weights = []
             if var net = m.mlp {
@@ -623,6 +632,7 @@ struct LearningPack: Codable {
             self.model = m
         }
         if var f = filter {
+            Self.blankFaces(&f.mean, &f.std, &f.weights)
             filterArrays = [f.mean, f.std, f.weights].map(Self.pack)
             f.mean = []; f.std = []; f.weights = []
             self.filter = f

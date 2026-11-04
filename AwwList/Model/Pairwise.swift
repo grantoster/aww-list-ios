@@ -28,7 +28,7 @@ enum Pairwise {
     /// send it to the top or bottom. `starts` are weak hints from earlier thumbs (+1 up, −1 down), each worth
     /// `thumbWeight` of an imaginary game won or lost against an average photo; real votes soon outweigh them.
     static func strengths(_ votes: [PairVote], starts: [String: Int] = [:], prior: Double = 1, thumbWeight: Double = 0.15,
-                          iterations: Int = 200) -> [String: Double] {
+                          iterations: Int = 2000) -> [String: Double] {
         var wins: [String: Double] = [:]
         var games: [String: [String: Double]] = [:]   // photo → opponent → games played
         for v in votes {

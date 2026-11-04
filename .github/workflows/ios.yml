@@ -18,7 +18,7 @@ on:
 
 # A newer run replaces an older one that's still going (no more piling up).
 concurrency:
-  group: ios-${{ github.ref }}
+  group: ios-${{ github.ref }}-${{ github.event_name }}   # a manual build never cancels the monthly refresh
   cancel-in-progress: true
 
 jobs:
