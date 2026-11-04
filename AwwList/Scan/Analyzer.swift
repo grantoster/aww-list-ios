@@ -6,7 +6,12 @@ import ImageIO
 /// Runs Apple's on-device Vision models on one image and returns the measured signals.
 /// Nothing leaves the phone.
 final class Analyzer {
-    private let ciContext = CIContext(options: [.useSoftwareRenderer: false])
+    private let gpuContext = CIContext(options: [.useSoftwareRenderer: false])
+    private let cpuContext = CIContext(options: [.useSoftwareRenderer: true])
+    /// iOS doesn't let apps use the GPU in the background, so a scan that keeps going after you leave the app
+    /// measures on the CPU (slower, same results) instead of getting blank pictures.
+    private var ciContext: CIContext { Analyzer.inBackground.value ? cpuContext : gpuContext }
+    static let inBackground = BackgroundFlag()
     private lazy var faceDetector = CIDetector(ofType: CIDetectorTypeFace, context: ciContext,
                                                options: [CIDetectorAccuracy: CIDetectorAccuracyHigh])
 
@@ -172,6 +177,7 @@ final class Analyzer {
         }
         // AwwSnap: sharpness is the grown-up's face (the largest one), not a child's.
         if portrait, let a = SnapScorer.adults(s).max(by: { s.faces[$0].area < s.faces[$1].area }), s.faces[a].box.count == 4 {
+            s.preferredSubject = a   // the learned score's subject too (smile, eyes, face shape)
             let b = s.faces[a].box
             subjectBox = CGRect(x: b[0], y: b[1], width: b[2], height: b[3])
         }
@@ -481,4 +487,12 @@ final class Analyzer {
                          format: .L8, colorSpace: CGColorSpaceCreateDeviceGray())
         return Scorer.sharpness(gray: px, width: w, height: h)
     }
+}
+
+/// Whether the app is in the background (set from the app's lifecycle; read by scan workers).
+final class BackgroundFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var v = false
+    var value: Bool { lock.lock(); defer { lock.unlock() }; return v }
+    func set(_ b: Bool) { lock.lock(); v = b; lock.unlock() }
 }

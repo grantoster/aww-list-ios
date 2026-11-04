@@ -82,9 +82,12 @@ jobs:
           set -o pipefail
           gem list -i xcpretty >/dev/null || gem install xcpretty --no-document
           SIM=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k in sorted(d, reverse=True) if 'iOS' in k for x in d[k] if x['name'].startswith('iPhone')))")
+          xcrun simctl boot "$SIM" || true   # boots while the app compiles
+          # Optimized (with testability): the learning tests do heavy math and take ~50 minutes unoptimized.
           xcodebuild test \
             -project AwwList.xcodeproj -scheme AwwList \
             -destination "id=$SIM" \
+            SWIFT_OPTIMIZATION_LEVEL=-O ENABLE_TESTABILITY=YES \
             CODE_SIGNING_ALLOWED=NO 2>&1 | tee build.log | xcpretty
       - name: Show compile errors
         if: failure()

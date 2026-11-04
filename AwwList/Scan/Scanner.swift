@@ -43,7 +43,8 @@ final class PhotoScanner: ObservableObject {
     /// photos, or switching back to the app, doesn't start the scan over. Photos that couldn't be loaded
     /// (offline iCloud) are retried automatically about once a day.
     func startIfNeeded(library: Library) {
-        if isScanning { return }
+        // A scan that was told to stop (leaving the app) but is still winding down: start again once it's done.
+        if isScanning { if cancelFlag.isCancelled { restartAfterStop = true }; return }
         guard library.ready else { library.whenReady { [weak self] in self?.startIfNeeded(library: library) }; return }                       // don't consume a change while a scan is running
         let last = UserDefaults.standard.object(forKey: retryKey) as? Date ?? .distantPast
         let retry = Date().timeIntervalSince(last) > 86_400
@@ -53,7 +54,7 @@ final class PhotoScanner: ObservableObject {
 
     /// `retryUnavailable` also retries photos whose image couldn't be loaded before.
     func start(library: Library, retryUnavailable: Bool = false) {
-        guard !isScanning else { return }
+        guard !isScanning else { if cancelFlag.isCancelled { restartAfterStop = true }; return }
         // Not before the saved library is read (it would look like every photo is new).
         guard library.ready else { library.whenReady { [weak self] in self?.start(library: library, retryUnavailable: retryUnavailable) }; return }
         isScanning = true
@@ -207,8 +208,11 @@ final class PhotoScanner: ObservableObject {
                 library.add(out); library.finishScan()
                 me.done = n; me.isScanning = false
                 me.stoppedEarly = flag.isCancelled
-                // Photos added while scanning are picked up right away (unless the scan was stopped).
-                if !flag.isCancelled && me.changes.peekChanged() {
+                // Photos added while scanning are picked up right away (unless the scan was stopped); a stopped
+                // scan that was asked to run again (you came back to the app) picks up where it left off.
+                let again = me.restartAfterStop && AppMode.current == me.mode
+                me.restartAfterStop = false
+                if again || (!flag.isCancelled && me.changes.peekChanged()) {
                     me.start(library: library)
                 } else {
                     let handlers = me.finishHandlers
@@ -219,7 +223,9 @@ final class PhotoScanner: ObservableObject {
         }
     }
 
-    func stop() { cancelFlag.cancel() }
+    func stop() { cancelFlag.cancel(); restartAfterStop = false }
+    /// Asked to scan again while a stopped scan was still finishing up (see startIfNeeded).
+    private var restartAfterStop = false
 
     /// True when photos were added or changed since the last scan, or it was stopped before finishing.
     var needsScan: Bool { stoppedEarly || changes.peekChanged() }
@@ -442,7 +448,8 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
                 signals.scenePrint = analyzer.scenePrint(cg, orientation: CGImagePropertyOrientation(img.imageOrientation))
                 let ex = analyzer.learningExtras(cg, orientation: CGImagePropertyOrientation(img.imageOrientation), subject: measured.subject)
                 signals.aesthetic = ex.aesthetic; signals.isUtility = ex.utility
-                signals.faceShape = ex.shape; signals.facePrint = ex.facePrint; signals.poseAndFocus = ex.poseAndFocus
+                // AwwSnap leaves the face picture out of its learning: it learns what makes a good photo, never what someone looks like.
+                signals.faceShape = ex.shape; signals.facePrint = mode == .snap ? [] : ex.facePrint; signals.poseAndFocus = ex.poseAndFocus
             }
             // Who's Who's face prints are made only after you turn Who's Who on.
             // Who's Who's face prints are made only after you turn Who's Who on, for photos on the list.

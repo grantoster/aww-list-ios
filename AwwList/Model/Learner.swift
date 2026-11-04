@@ -494,7 +494,7 @@ enum Learner {
     /// 3. reports how close that model gets on the held-back days, next to just guessing the average;
     /// 4. refits on everything. Nil until there are enough scores.
     /// `extra` rows (targets your Learn my Likes votes moved) are learned from but never part of the check, so
-    /// the reported accuracy and `trainedOn` are about Claude's own scores only.
+    /// the reported accuracy is about Claude's own scores only (`trainedOn` counts every row learned from).
     static func train(_ claudeRows: [(date: Date, x: [Double], y: Double)], extra: [(date: Date, x: [Double], y: Double)] = [],
                       averaged: Int = 0, useNet: Bool = true) -> LearnedModel? {
         let test = claudeRows.filter { heldBack($0.date) }, claudeTrain = claudeRows.filter { !heldBack($0.date) }
@@ -555,9 +555,15 @@ enum Learner {
             guard let n = testNet else { return linear }
             return max(1, min(10, (1 - blend) * linear + blend * mlpOut(n, netInput(x, f))))
         }
-        let preds = test.map { testPredict($0.x) }
+        let netPreds = test.map { testPredict($0.x) }
+        let linearPreds = test.map { predict(f, $0.x) }
+        let linearGaps = zip(linearPreds, test).map { abs($0 - $1.y) }
+        // The net is kept only with enough rows to judge it and when it actually beat the formula on the check;
+        // otherwise the formula alone is used (and reported).
+        let netGap = zip(netPreds, test).map { abs($0 - $1.y) }.reduce(0, +) / Double(max(1, test.count))
+        let keepNet = blend > 0 && train.count >= 400 && netGap < linearGaps.reduce(0, +) / Double(max(1, test.count))
+        let preds = keepNet ? netPreds : linearPreds
         let gaps = zip(preds, test).map { abs($0 - $1.y) }
-        let linearGaps = test.map { abs(predict(f, $0.x) - $0.y) }
         let avg = claudeTrain.isEmpty ? 5.5 : claudeTrain.map(\.y).reduce(0, +) / Double(claudeTrain.count)
         let baseGaps = test.map { abs(avg - $0.y) }
         func within(_ g: [Double]) -> Double { Double(g.filter { $0 <= 1 }.count) / Double(g.count) }
@@ -570,9 +576,9 @@ enum Learner {
         let overlap = Double(learnedTop.filter { test[$0].y >= kth - 1e-9 }.count) / Double(k)
         // The final net, on everything (same number of epochs).
         var finalNet: MLP? = nil
-        if blend > 0 { finalNet = trainMLP(netRows(examples, all), examples.map(\.y), epochs: epochs)?.net }
+        if keepNet { finalNet = trainMLP(netRows(examples, all), examples.map(\.y), epochs: epochs)?.net }
         return LearnedModel(mean: all.mean, std: all.std, weights: all.w, bias: all.bias, lambda: bestLambda,
-                            trainedOn: claudeRows.count, tested: test.count, within1: within(gaps), meanGap: mean(gaps),
+                            trainedOn: claudeRows.count + extra.count, tested: test.count, within1: within(gaps), meanGap: mean(gaps),
                             date: Date(), baselineWithin1: within(baseGaps), baselineGap: mean(baseGaps),
                             mlp: finalNet, blend: finalNet == nil ? 0 : blend, linearGap: mean(linearGaps),
                             topOverlap: overlap, averaged: averaged)

@@ -179,7 +179,7 @@ struct ViewerView: View {
             if changed == nil || changed == 0 {
                 favorite = !on
                 favNote = changed == nil ? "Photos didn't allow that. Check Awwbum's photo access in Settings."
-                                         : "This photo isn't in your library any more."
+                                         : "This photo isn't in your library anymore."
                 AccessibilityNotification.Announcement(favNote ?? "").post()
             } else {
                 favNote = nil
@@ -211,7 +211,7 @@ struct ViewerView: View {
             let i = parts.count - 1
             if parts[i].hasPrefix("ranked by ") { parts[i] = "photo: " + parts[i].dropFirst("ranked by ".count) }
         }
-        let d = library.voteShift(m)
+        let d = library.appliedVoteShift(m)
         if abs(d) >= 0.05 {
             // Apple's ranking moves whole points, so no number there.
             let appleView = library.rankBy == "apple" || (library.rankBy == "claude" && library.claudeScored == 0)
@@ -265,7 +265,7 @@ struct ZoomablePhoto: View {
 
     var body: some View {
         GeometryReader { geo in
-            AssetImage(id: id, contentMode: .fit, targetSide: 1600, cached: false)   // sharp enough to zoom into
+            AssetImage(id: id, contentMode: .fit, targetSide: 1000, cached: false)   // sharp enough to zoom into (about 3,000 px)
                 .frame(width: geo.size.width, height: geo.size.height)
                 .scaleEffect(scale)
                 .offset(offset)

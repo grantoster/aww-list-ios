@@ -37,12 +37,14 @@ struct Signals: Equatable {
     var content: [Float] = []            // what's in the photo: every classifier label, hashed into Learner.contentDims
     var poseAndFocus: [Double] = []      // 0...1 each: bodies, arms up, body size, whole body, reach; focus found, size, off-center, count
     var privacyHint = false              // even a faint bath/undressed sign: listed, but never sent to Claude
-    var upright: Double? = nil           // AwwSnap: 0...1, the biggest person's shoulders level and head up (posture)
+    var upright: Double? = nil
+    var preferredSubject: Int? = nil     // AwwSnap: the largest grown-up's face is the photo's subject (not a child's)           // AwwSnap: 0...1, the biggest person's shoulders level and head up (posture)
 
     /// The main subject: among the faces that are part of the shot, the largest with a clear kid reading (0.3 or
     /// more); failing that, the highest face-only reading of 0.15 or more; failing that, the largest face.
     /// So in a selfie with a parent it's the kid, not the grown-up's bigger face, and never someone in the background.
     var subjectIndex: Int? {
+        if let p = preferredSubject, faces.indices.contains(p) { return p }   // AwwSnap: the main grown-up
         let main = mainFaceIndices.isEmpty ? Array(faces.indices) : mainFaceIndices
         let kids = main.filter { (faces[$0].child ?? 0) >= 0.3 }
         if !kids.isEmpty { return kids.max { faces[$0].area < faces[$1].area } }

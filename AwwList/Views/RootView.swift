@@ -210,11 +210,18 @@ struct SettingsView: View {
                     }
                     Text("Counts are photos, not moments; a moment's other shots in a burst count as on the list.")
                         .font(.footnote).foregroundStyle(.secondary)
-                    Text("Left off on the phone: screenshots, documents, and photos with no face and no sign of a child. Photos with faces but no child label stay off the list but are offered to Claude, which can put them on it. Possible bath or undressed photos are listed and scored on the phone (you can keep any out above), but they, and every shot within 10 minutes of one or of any faint bath sign, are never sent to Claude.")
-                        .font(.footnote)
-                    Text("Everything else Apple isn't sure about stays on the list with a flag: no child spotted, water scenes, swimwear, shirtless, and files that look AI-generated, face-retouched or not from a camera. Claude makes the call on those, and once the app has learned from Claude's calls, it hides the ones it expects Claude would remove when ranking by Claude or by the learned score. Ranking by Apple shows them all.")
-                        .font(.footnote)
-                    Text("Awwbum reads your photo library. It never edits, adds or deletes photos; the only change it can make is a favorite, when you tap the heart. Remove from list only hides a photo inside this app.")
+                    if library.mode == .snap {
+                        Text("Left off on the phone: screenshots, documents, and photos with no grown-up as a main subject. Possible bath or undressed photos and the ones around them are held back.")
+                            .font(.footnote)
+                    } else {
+                        Text("Left off on the phone: screenshots, documents, and photos with no face and no sign of a child. Photos with faces but no child label stay off the list but are offered to Claude, which can put them on it. Possible bath or undressed photos are listed and scored on the phone (you can keep any out above), but they, and every shot within 10 minutes of one or of any faint bath sign, are never sent to Claude.")
+                            .font(.footnote)
+                    }
+                    if library.mode == .aww {
+                        Text("Everything else Apple isn't sure about stays on the list with a flag: no child spotted, water scenes, swimwear, shirtless, and files that look AI-generated, face-retouched or not from a camera. Claude makes the call on those, and once the app has learned from Claude's calls, it hides the ones it expects Claude would remove when ranking by Claude or by the learned score. Ranking by Apple shows them all.")
+                            .font(.footnote)
+                    }
+                    Text("\(AppMode.current.title) reads your photo library. It never edits, adds or deletes photos; the only change it can make is a favorite, when you tap the heart. Remove from list only hides a photo inside this app.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 if !library.flagged.isEmpty {
@@ -312,6 +319,8 @@ struct BirthdaysSection: View {
 
 /// Optional: Claude gives the final score, description and checks for the photos you choose.
 struct ClaudeSection: View {
+    @State private var askClear = false
+    @State private var askRemoveKey = false
     @EnvironmentObject var library: Library
     @EnvironmentObject var claude: ClaudeService
     @EnvironmentObject var scanner: PhotoScanner
@@ -329,7 +338,11 @@ struct ClaudeSection: View {
     @ViewBuilder private var keyRows: some View {
         if hasKey {
             LabeledContent("API key", value: "Saved on this iPhone")
-            Button("Remove key", role: .destructive) { Claude.apiKey = nil; hasKey = false }
+            Button("Remove key", role: .destructive) { askRemoveKey = true }
+                .confirmationDialog("Remove your Claude key?", isPresented: $askRemoveKey, titleVisibility: .visible) {
+                    Button("Remove key", role: .destructive) { Claude.apiKey = nil; hasKey = false }
+                    Button("Cancel", role: .cancel) {}
+                } message: { Text("Claude scoring stops until you add a key again. Scores you already have stay.") }
         } else {
             SecureField("Paste your Claude API key", text: $key)
                 .textInputAutocapitalization(.never).autocorrectionDisabled()
@@ -418,10 +431,14 @@ struct ClaudeSection: View {
             if !claude.status.isEmpty { Text(claude.status).font(.footnote).foregroundStyle(.secondary) }
             if library.claudeScored > 0 {
                 LabeledContent("Scored by Claude", value: library.claudeScored.formatted())
-                Button("Go back to on-device scores only", role: .destructive) {
-                    autoClaude = false; claude.stop()   // so nothing is re-sent by itself afterward
-                    library.clearClaude()
-                }
+                Button("Go back to on-device scores only", role: .destructive) { askClear = true }
+                    .confirmationDialog("Delete every Claude score?", isPresented: $askClear, titleVisibility: .visible) {
+                        Button("Delete \(library.claudeScored.formatted()) Claude scores", role: .destructive) {
+                            autoClaude = false; claude.stop()   // so nothing is re-sent by itself afterward
+                            library.clearClaude()
+                        }
+                        Button("Cancel", role: .cancel) {}
+                    } message: { Text("This can't be undone. Getting them back means paying Claude to score those photos again, and this phone's own learning starts over.") }
                     .disabled(claude.busy || !library.claudeBatches.isEmpty)   // not while photos are out being scored
             }
         } header: {
@@ -438,6 +455,7 @@ struct ClaudeSection: View {
 
 /// The app's learned score: what it picked up from Claude's scores, and how close it gets.
 struct LearnedSection: View {
+    @State private var askRelearn = false
     @EnvironmentObject var library: Library
     @State private var copied = false
     /// "12 Claude results and 3 votes", leaving out whichever is zero.
@@ -451,7 +469,7 @@ struct LearnedSection: View {
     var body: some View {
         Section {
             if let m = library.learned {
-                LabeledContent("Learned from", value: "\(m.trainedOn.formatted()) " + (library.pairVotes.contains { $0.winner != nil } ? "Claude scores, plus your votes" : "Claude scores"))
+                LabeledContent("Learned from", value: "\(m.trainedOn.formatted()) " + (library.pairVotes.contains { $0.winner != nil } ? "photos (Claude scores and your votes)" : "Claude scores"))
                 let pct = { (v: Double) in "\(Int((v * 100 + 1e-9).rounded(.toNearestOrAwayFromZero)))%" }
                 let pts = { (v: Double) in String(format: "%.1f", (v * 10).rounded(.toNearestOrAwayFromZero) / 10) + " points" }
                 LabeledContent("Within 1 point of Claude", value: pct(m.within1))
@@ -506,7 +524,11 @@ struct LearnedSection: View {
                 let n = max(library.ownModel?.trainedOn ?? 0, library.ownFilter?.trainedOn ?? 0)
                 LabeledContent("This phone's own learning", value: "\(n.formatted()) Claude verdicts")
             }
-            Button("Start learning over") { library.relearn(); copied = false }
+            Button("Start learning over") { askRelearn = true }
+                .confirmationDialog("Start learning over?", isPresented: $askRelearn, titleVisibility: .visible) {
+                    Button("Start over", role: .destructive) { library.relearn(); copied = false }
+                    Button("Cancel", role: .cancel) {}
+                } message: { Text("This phone's own learning is thrown away and learned again from your Claude scores. The built-in learning isn't affected.") }
                 .disabled(library.training)
             Text("Throws away this phone's own learning and learns again from every Claude score on this iPhone (\(library.learnableCount.formatted()) so far). The built-in learning isn't affected.")
                 .font(.footnote).foregroundStyle(.secondary)
@@ -736,8 +758,8 @@ struct KeySetupView: View {
                     .font(.footnote).foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 10) {
                     Label("The bath filter can miss photos", systemImage: "exclamationmark.triangle").font(.subheadline.bold())
-                    Text("Awwbum holds back photos it thinks may show a child in the bath or undressed, and every shot within 10 minutes of one. It's an automatic guess, not a guarantee, so some of those photos could still be sent to Claude. If that's a worry, turn off scoring every photo above and send fewer photos from Settings, or skip Claude scoring.")
-                    Text("Photos you send go to Anthropic (the company behind Claude), including other people and other families' kids in them. Anthropic's terms say it doesn't train its models on them. It normally deletes them within 30 days, but can keep anything its safety checks flag for up to 2 years.")
+                    Text("\(AppMode.current.title) holds back photos it thinks may show \(AppMode.current == .snap ? "someone" : "a child") in the bath or undressed, and every shot within 10 minutes of one. It's an automatic guess, not a guarantee, so some of those photos could still be sent to Claude. If that's a worry, turn off scoring every photo above and send fewer photos from Settings, or skip Claude scoring.")
+                    Text("Photos you send go to Anthropic (the company behind Claude), including other people\(AppMode.current == .snap ? "" : " and other families' kids") in them. Anthropic's terms say it doesn't train its models on them. It normally deletes them within 30 days, but can keep anything its safety checks flag for up to 2 years.")
                 }
                 .font(.footnote).padding(14).frame(maxWidth: .infinity, alignment: .leading)
                 .background(Theme.surface, in: RoundedRectangle(cornerRadius: 14))

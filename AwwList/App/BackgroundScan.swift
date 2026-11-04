@@ -53,7 +53,13 @@ enum BackgroundScan {
 
     /// Called once at launch, before the app finishes launching.
     static func register() {
+        // Scans measure on the CPU while the app is in the background (no GPU there).
+        let nc = NotificationCenter.default
+        nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: nil) { _ in Analyzer.inBackground.set(true) }
+        nc.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: nil) { _ in Analyzer.inBackground.set(false) }
+        nc.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: nil) { _ in Analyzer.inBackground.set(false) }
         BGTaskScheduler.shared.register(forTaskWithIdentifier: overnightID, using: nil) { task in
+            Analyzer.inBackground.set(true)   // launched straight into the background: no notification says so
             Task { @MainActor in runOvernight(task) }
         }
         if #available(iOS 26.0, *) {
@@ -220,7 +226,8 @@ enum BackgroundScan {
         var restarts = 0
         func attach() {
             scanner.whenFinished {
-                if scanner.stoppedEarly && !expired.used && restarts < 3 {
+                // (Not when you've switched to AwwSnap: Awwbum's scan was stopped on purpose.)
+                if scanner.stoppedEarly && !expired.used && restarts < 3 && AppMode.current == .aww {
                     restarts += 1
                     scanner.start(library: Shared.library)
                     attach()

@@ -237,7 +237,7 @@ final class ClaudeService: ObservableObject {
         if c.viaPlus { await Shared.plus.refreshQuota() }
         // Finished while you were away: say so (only if you allowed notifications).
         if UIApplication.shared.applicationState != .active && c.scoredNow > 0 {
-            ClaudeService.notify("Claude scored \(c.scoredNow.formatted()) photos", body: "Open \(mode == .snap ? "AwwSnap (tap the logo in Awwbum)" : "Awwbum") to see your updated top photos.")
+            ClaudeService.notify("Claude scored \(c.scoredNow.formatted()) photos", body: "Open \(mode == .snap ? "the app" : "Awwbum") to see your updated top photos.")
         }
         let d = UserDefaults.standard
         switch c.lastOutcome {
@@ -880,7 +880,7 @@ final class ClaudeService: ObservableObject {
                 }
                 library.removeClaudeBatch(b.id)
                 if UIApplication.shared.applicationState != .active && !verdicts.isEmpty && b.recheck != true {
-                    ClaudeService.notify("Claude scored \(verdicts.count.formatted()) photos", body: "Open \(mode == .snap ? "AwwSnap (tap the logo in Awwbum)" : "Awwbum") to see your updated top photos.")
+                    ClaudeService.notify("Claude scored \(verdicts.count.formatted()) photos", body: "Open \(mode == .snap ? "the app" : "Awwbum") to see your updated top photos.")
                 }
                 status = "Claude scored \(verdicts.count.formatted()) photos." +
                     (failed.isEmpty ? "" : " \(failed.count.formatted()) couldn't be scored" + (firstError.isEmpty ? "." : ": \(firstError)"))

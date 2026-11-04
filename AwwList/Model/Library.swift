@@ -1236,6 +1236,14 @@ final class Library: ObservableObject {
     }
     /// How far your votes move a moment on the list, in points (0 when you haven't voted on it).
     func voteShift(_ m: Moment) -> Double { voteShift(m, pickStrengths) }
+    /// The part of that move the current ranking adds (half where it comes from this phone's own learning, which
+    /// has already learned the other half), for "Why it's here".
+    func appliedVoteShift(_ m: Moment) -> Double {
+        let d = voteShift(m)
+        let ownLearning = learned != nil && !learnedIsBuiltIn
+        let viaLearned = rankBy == "learned" || (rankBy == "claude" && m.claudeScore == nil && m.learnedScore != nil)
+        return ownLearning && viaLearned && m.learnedScore != nil ? d / 2 : d
+    }
     private func voteShift(_ m: Moment, _ strengths: [String: Double]) -> Double {
         guard !strengths.isEmpty, let st = strengths[m.best.id] ?? m.memberIDs.lazy.compactMap({ strengths[$0] }).first else { return 0 }
         return Pairwise.shift(st)

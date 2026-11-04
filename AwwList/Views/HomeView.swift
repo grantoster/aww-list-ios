@@ -504,7 +504,13 @@ struct HomeView: View {
         return who.map { "\($0)'s" } ?? "Overall"
     }
 
-    private func open(_ list: [Moment], _ i: Int) { viewer = ViewerState(list: list, index: i) }
+    /// Opens the viewer. From the top list it gets the whole list, not just the photos shown so far, so you can keep
+    /// swiping past the first 30.
+    private func open(_ list: [Moment], _ i: Int) {
+        let whole = list.count < pool.count && list.indices.contains(i) && pool.indices.contains(i) && pool[i].id == list[i].id
+        // (Up to 500 photos, so the pages stay quick to set up.)
+        viewer = ViewerState(list: whole ? Array(pool.prefix(max(500, i + 100))) : list, index: i)
+    }
 
     // MARK: Picking photos to send
 
@@ -616,7 +622,7 @@ struct HomeView: View {
             favoriting = false
             switch changed {
             case nil: flash("Photos didn't allow that. Check photo access in Settings.")
-            case 0: flash("Those photos aren't in your library any more.")
+            case 0: flash("Those photos aren't in your library anymore.")
             case let n?: flash("Favorited \(n) in Photos" + (n < ids.count ? " (\(ids.count - n) not found)" : ""))
             }
             if (changed ?? 0) > 0 && selecting && picked == ids { endSelecting() }
