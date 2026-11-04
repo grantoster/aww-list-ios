@@ -243,7 +243,7 @@ enum People {
     /// Indices are into `faces`. Stops early (with what it has) if the task is cancelled.
     /// `rejected`: faces you said aren't someone (index → those people); they're never matched or learned as
     /// them, and so never become references that reach further.
-    static func learn(_ faces: [[Float]], people: [Person], threshold: Float, rounds: Int = 3,
+    static func learn(_ faces: [[Float]], people: [Person], threshold: Float, rounds: Int = 5,
                       rejected: [Int: Set<UUID>] = [:], owners: [String] = [], ignored: Set<Int> = [],
                       confirmed: [Int: UUID] = [:], dates: [Date] = [])
         -> (matched: [Int: UUID], learned: [Int: UUID], review: [Int: (id: UUID, chance: Float)]) {
@@ -497,7 +497,7 @@ struct PeopleCache: Codable {
 
     /// Order doesn't matter (each part is hashed alone and the hashes combined), so the same library always gives
     /// the same fingerprint. Bump `version` when People.learn changes.
-    static let version = 1
+    static let version = 2   // 2: five learning rounds
     static func signature(faceKeys: [String], dates: [Date], people: [Person], threshold: Float,
                           rejected: [Int: Set<UUID>], ignored: Set<Int>, confirmed: [Int: UUID]) -> UInt64 {
         func h(_ s: String) -> UInt64 { Learner.stableHash([s]) }

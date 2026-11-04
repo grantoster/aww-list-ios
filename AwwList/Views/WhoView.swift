@@ -129,7 +129,7 @@ struct WhoView: View {
                     Section {
                         ForEach(reviewable) { p in
                             NavigationLink {
-                                ReviewFacesView(person: p)
+                                ReviewGridView(person: p)
                             } label: {
                                 HStack(spacing: 12) {
                                     FaceThumb(photo: p.samplePhoto, box: p.sampleBox, size: 36)
@@ -608,6 +608,88 @@ struct QuickCheckSheet: View {
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
             .onAppear { if faces.isEmpty && removed.isEmpty { faces = suggestion.faces } }
         }
+    }
+}
+
+/// Review faces, many at a time: up to 24 of a person's likely faces in a grid, all marked yes. Tap the ones that
+/// aren't them, then confirm: the marked ones are named as them, the rest never count as them. Each round teaches
+/// the app, so the next round finds more. "One at a time" offers the slower view with more choices.
+struct ReviewGridView: View {
+    let person: Person
+    @EnvironmentObject var library: Library
+    @Environment(\.dismiss) private var dismiss
+    @State private var batch: [(photo: String, face: FaceRecord)] = []
+    @State private var notThem = Set<String>()
+    @State private var rounds = 0
+    @State private var named = 0
+    private let columns = [GridItem(.adaptive(minimum: 96), spacing: 10)]
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                if batch.isEmpty {
+                    ContentUnavailableView(rounds == 0 ? "Nothing to check right now" : "All caught up",
+                                           systemImage: "checkmark.circle",
+                                           description: Text(rounds == 0
+                                                             ? "New faces to check show up as the app finds them."
+                                                             : "You confirmed \(named.formatted()) faces of \(person.name). The app is learning from them; more show up here as it finds them."))
+                } else {
+                    Text("Is this \(person.name)? Tap any that aren't, then confirm.")
+                        .font(Theme.label(19, relativeTo: .headline))
+                    LazyVGrid(columns: columns, spacing: 10) {
+                        ForEach(batch, id: \.face.vec) { f in
+                            let k = Library.faceKey(f.photo, f.face)
+                            let no = notThem.contains(k)
+                            Button { if no { notThem.remove(k) } else { notThem.insert(k) } } label: {
+                                FaceThumb(photo: f.photo, box: f.face.box, size: 96)
+                                    .opacity(no ? 0.35 : 1)
+                                    .overlay(alignment: .bottomTrailing) {
+                                        Image(systemName: no ? "xmark.circle.fill" : "checkmark.circle.fill")
+                                            .font(.title2).symbolRenderingMode(.palette)
+                                            .foregroundStyle(.white, no ? Color.gray : Theme.accent)
+                                    }
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(no ? "Not \(person.name)" : "\(person.name)")
+                            .accessibilityHint("Tap to change")
+                        }
+                    }
+                    Button { confirm() } label: {
+                        Text(notThem.isEmpty ? "Yes, all \(batch.count) are \(person.name)"
+                             : "Confirm \(batch.count - notThem.count) as \(person.name)")
+                            .frame(maxWidth: .infinity, minHeight: 48)
+                    }
+                    .buttonStyle(.borderedProminent).tint(Theme.accent)
+                    Text("The ones you marked × are remembered as not \(person.name).")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                NavigationLink("One at a time (with more choices)") { ReviewFacesView(person: person) }
+                    .frame(minHeight: 44)
+            }
+            .padding(16)
+        }
+        .background(Theme.background.ignoresSafeArea())
+        .navigationTitle(person.name).navigationBarTitleDisplayMode(.inline)
+        .onAppear { if batch.isEmpty { next() } }
+        .onChange(of: library.reviewFaces.count) { if batch.isEmpty { next() } }
+    }
+
+    private func next() {
+        batch = Array((library.reviewFaces[person.id] ?? []).prefix(24))
+        notThem = []
+    }
+
+    private func confirm() {
+        guard let p = library.people.first(where: { $0.id == person.id }) else { return }
+        let yes = batch.filter { !notThem.contains(Library.faceKey($0.photo, $0.face)) }
+        let no = batch.filter { notThem.contains(Library.faceKey($0.photo, $0.face)) }
+        library.applyReview(person: p, yes: yes, no: no)
+        named += yes.count; rounds += 1
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        // The next most likely faces (the learning adds more as it goes).
+        let done = Set(batch.map { Library.faceKey($0.photo, $0.face) })
+        batch = Array((library.reviewFaces[person.id] ?? []).filter { !done.contains(Library.faceKey($0.photo, $0.face)) }.prefix(24))
+        notThem = []
     }
 }
 
