@@ -141,6 +141,9 @@ struct Moment: Identifiable, Hashable {
     var learnedScore: Double? = nil
     /// The on-device value the moment was ranked by (balanced or old scale), for breaking ties.
     var rankRaw: Double = 0
+    /// Ranking by Claude or the learned score: the exact value behind the 1–10 (with your votes and thumbs), so
+    /// moments in the same bucket are in that order.
+    var rankKey: Double? = nil
     /// Ranking by Consolidated: how high this moment sits across the Claude, Learned and Apple rankings (higher is better).
     var consolidated: Double? = nil
     /// Your thumbs up (1) or down (-1) on this moment, 0 if none.

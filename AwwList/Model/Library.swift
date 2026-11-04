@@ -1167,11 +1167,19 @@ final class Library: ObservableObject {
 
     /// Learn my Likes' "Which is cuter?" answers, oldest first (they never leave the phone, except in the learning
     /// data you choose to send).
-    @Published private(set) var pairVotes: [PairVote] = [] { didSet { strengthsCache = nil } }
+    @Published private(set) var pairVotes: [PairVote] = [] { didSet { strengthsCache = nil; picksCache = nil } }
     /// The thumbs given before Learn my Likes switched to votes, kept as they were then: a weak starting hint.
     /// Thumbs given since don't feed the learning.
     private var legacyThumbs: [String: Int] = [:] { didSet { strengthsCache = nil } }
     private var strengthsCache: [String: Double]?
+    private var picksCache: [String: Double]?
+    /// Preferences from your votes alone (no thumbs), for moving photos on the list.
+    private var pickStrengths: [String: Double] {
+        if let c = picksCache { return c }
+        let s = Pairwise.strengths(pairVotes)
+        picksCache = s
+        return s
+    }
     /// Each photo's preference from your votes (Bradley-Terry strength; earlier thumbs are a weak start).
     var voteStrengths: [String: Double] {
         if let c = strengthsCache { return c }
@@ -1180,11 +1188,17 @@ final class Library: ObservableObject {
         return s
     }
     func recordVote(_ a: String, _ b: String, winner: String?) {
-        pairVotes.append(PairVote(a: a, b: b, winner: winner, date: Date())); rebuildSoon(); saveSoon()
+        pairVotes.append(PairVote(a: a, b: b, winner: winner, date: Date()))
+        if winner != nil { rebuildSoon() }   // a skip moves nothing
+        saveSoon()
     }
-    func undoVote() { if !pairVotes.isEmpty { pairVotes.removeLast(); rebuildSoon(); saveSoon() } }
+    func undoVote() {
+        guard let last = pairVotes.popLast() else { return }
+        if last.winner != nil { rebuildSoon() }
+        saveSoon()
+    }
     /// How far your votes move a moment on the list, in points (0 when you haven't voted on it).
-    func voteShift(_ m: Moment) -> Double { voteShift(m, voteStrengths) }
+    func voteShift(_ m: Moment) -> Double { voteShift(m, pickStrengths) }
     private func voteShift(_ m: Moment, _ strengths: [String: Double]) -> Double {
         guard !strengths.isEmpty, let st = strengths[m.best.id] ?? m.memberIDs.lazy.compactMap({ strengths[$0] }).first else { return 0 }
         return Pairwise.shift(st)
@@ -1576,8 +1590,19 @@ final class Library: ObservableObject {
         let claudeLed = useClaude || useLearned || (useConsolidated && (anyClaude || learned != nil))
         var filtered = 0
         var filteredIDs = Set<String>()
-        // Your Learn my Likes votes move a photo up or down every ranking right away (up to 2 points).
-        let strengths = voteStrengths
+        // Your Learn my Likes votes move a photo up or down every ranking right away (up to 2 points). Only real
+        // votes count here (old thumbs keep their own small nudge). Where this phone's own learning already learned
+        // from the votes, a voted photo's learned value starts from Claude's score so the votes aren't counted twice.
+        let strengths = pickStrengths
+        let ownLearning = learned != nil && !learnedIsBuiltIn
+        func learnedValue(_ m: Moment) -> Double? {
+            guard let l = m.learnedScore else { return nil }
+            let d = voteShift(m, strengths)
+            guard d != 0 else { return l }
+            if !ownLearning { return l + d }
+            return m.claudeScore.map { $0 + d } ?? l
+        }
+        let fallbackIDs = Set(fIdx.map { groups[$0].best.id })   // not yet re-read: Apple's score stays at most 6
         // Built up locally and published once at the end: changing the published list item by item made every
         // screen watching it re-filter thousands of moments thousands of times (the app froze and closed).
         var ms: [Moment] = all.compactMap { m in
@@ -1620,11 +1645,11 @@ final class Library: ObservableObject {
                 let appleOnly: Double = Double(min(m.apple, 6))
                 var v: Double = appleOnly
                 if useClaude {
-                    if let c = m.claudeScore { v = c } else if let l = m.learnedScore { v = min(l, 8) }
-                } else if let l = m.learnedScore {
+                    if let c = m.claudeScore { v = c + voteShift(m, strengths) } else if let l = learnedValue(m) { v = min(l, 8) }
+                } else if let l = learnedValue(m) {
                     v = l
                 }
-                return v + voteShift(m, strengths) + Library.thumbNudge(reaction(m)) + m.rankRaw * 0.001   // your votes, and thumbs: +0.25 up, −0.5 down
+                return v + Library.thumbNudge(reaction(m)) + m.rankRaw * 0.001   // your thumbs: +0.25 up, −0.5 down
             }
             let cal = Scorer.calibrate(vals.map { $0 / 10 }, years: ms.map(\.year))
             for i in ms.indices {
@@ -1633,12 +1658,14 @@ final class Library: ObservableObject {
                 if useClaude { cap = m.claudeScore != nil ? 10 : (m.learnedScore != nil ? 8 : 6) }
                 else { cap = m.learnedScore != nil ? 10 : 6 }
                 ms[i].score = min(cal[i], cap)
+                ms[i].rankKey = vals[i]
             }
         } else if !strengths.isEmpty && !useConsolidated {
             // Apple's ranking: your votes move its 1–10 score directly.
             for i in ms.indices {
                 let d = voteShift(ms[i], strengths)
-                if d != 0 { ms[i].score = max(1, min(10, Int((Double(ms[i].score) + d).rounded(.toNearestOrAwayFromZero)))) }
+                let cap = fallbackIDs.contains(ms[i].best.id) ? 6 : 10
+                if d != 0 { ms[i].score = max(1, min(max(cap, ms[i].score), Int((Double(ms[i].score) + d).rounded(.toNearestOrAwayFromZero)))) }
             }
         }
         // Consolidated: each year's top 100 by Claude, by the learned score and by Apple, combined into one list.
@@ -1655,7 +1682,8 @@ final class Library: ObservableObject {
             let list = ms
             let byApple: (Int) -> Double? = { i in list[i].apple > 0 ? Double(list[i].apple) + vs[i] : nil }
             let byClaude: (Int) -> Double? = { i in list[i].claudeScore.map { c in c + vs[i] } }
-            let byLearned: (Int) -> Double? = { i in list[i].learnedScore.map { l in l + vs[i] } }
+            let learnedVals = list.map { learnedValue($0) }
+            let byLearned: (Int) -> Double? = { i in learnedVals[i] }
             let rankers = [byApple, byClaude, byLearned]
             var fused = Array(repeating: 0.0, count: ms.count)
             var inTop = Array(repeating: false, count: ms.count)
@@ -1742,6 +1770,7 @@ final class Library: ObservableObject {
     /// Higher score first; then higher raw score; then the earlier photo.
     nonisolated static func ranked(_ a: Moment, _ b: Moment) -> Bool {
         if a.score != b.score { return a.score > b.score }
+        if let ka = a.rankKey, let kb = b.rankKey, ka != kb { return ka > kb }
         if let fa = a.consolidated, let fb = b.consolidated, fa != fb { return fa > fb }
         // Your thumbs count (+0.25 up, −0.5 down) on Claude's and the learned score, and settle remaining ties.
         let ca = a.claudeScore.map { $0 + Library.thumbNudge(a.reaction) } ?? 0, cb = b.claudeScore.map { $0 + Library.thumbNudge(b.reaction) } ?? 0

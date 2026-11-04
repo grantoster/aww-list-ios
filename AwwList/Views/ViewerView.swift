@@ -185,7 +185,7 @@ struct ViewerView: View {
     private func whyHere(_ m: Moment) -> String {
         var parts: [String] = []
         if moments.indices.contains(index) && moments.count > 1 { parts.append("No. \(index + 1) of \(moments.count) here") }
-        func one(_ v: Double) -> String { v == v.rounded() ? String(Int(v)) : String(format: "%.1f", v) }
+        func one(_ v: Double) -> String { let t = (v * 10).rounded(.toNearestOrAwayFromZero) / 10; return t == t.rounded() ? String(Int(t)) : String(format: "%.1f", t) }
         switch library.rankBy {
         case "claude" where library.claudeScored == 0:
             parts.append("ranked by Apple's score (Claude hasn't scored any photos yet)")
@@ -199,8 +199,11 @@ struct ViewerView: View {
         }
         let d = library.voteShift(m)
         if abs(d) >= 0.05 {
+            // Apple's ranking moves whole points, so no number there.
+            let appleView = library.rankBy == "apple" || (library.rankBy == "claude" && library.claudeScored == 0)
+                || (library.rankBy == "learned" && library.learned == nil)
             let pts = String(format: "%.1f", (abs(d) * 10).rounded(.toNearestOrAwayFromZero) / 10)
-            parts.append("your Learn my Likes votes moved it \(d > 0 ? "up" : "down") \(pts) point\(pts == "1.0" ? "" : "s")")
+            parts.append("your Learn my Likes votes moved it \(d > 0 ? "up" : "down")" + (appleView ? "" : " \(pts) point\(pts == "1.0" ? "" : "s")"))
         }
         let r = library.reaction(m)
         if r > 0 { parts.append("you gave it a thumbs up") } else if r < 0 { parts.append("you gave it a thumbs down") }
@@ -213,7 +216,7 @@ struct ViewerView: View {
     /// "Apple 7 · Claude 8.5" (or just Apple's when Claude hasn't seen it).
     private func bothScores(_ m: Moment) -> String {
         var s = m.apple > 0 ? "Apple \(m.apple)" : "Apple: set aside"
-        func one(_ v: Double) -> String { v == v.rounded() ? String(Int(v)) : String(format: "%.1f", v) }
+        func one(_ v: Double) -> String { let t = (v * 10).rounded(.toNearestOrAwayFromZero) / 10; return t == t.rounded() ? String(Int(t)) : String(format: "%.1f", t) }
         if let l = m.learnedScore { s += " · Learned " + one(l) }
         if let c = m.claudeScore { s += " · Claude " + one(c) }
         if let f = m.best.appleFlag, m.claudeScore == nil { s += " · Apple flagged: " + f.lowercased() }
