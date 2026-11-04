@@ -83,7 +83,7 @@ struct LikesView: View {
                 pair = library.nextPair(); started = true
             }
             // Learns once, when you leave (not after every tap).
-            .onDisappear { library.retrain() }
+            .onDisappear { library.finishVoting() }
         }
     }
 

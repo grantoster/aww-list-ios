@@ -467,3 +467,62 @@ enum People {
         return normalized(sum)
     }
 }
+
+/// Who's Who's last answer (which face is whom, and what to ask about), kept with a fingerprint of everything it
+/// depends on, so it's only worked out again when something changed. On this iPhone only; it holds face keys
+/// (photo id plus a hash), never face prints, and goes when Who's Who is turned off.
+struct PeopleCache: Codable {
+    var signature: UInt64
+    var matched: [String: UUID] = [:]
+    var learned: [String: UUID] = [:]
+    var review: [String: UUID] = [:]
+    var chance: [String: Float] = [:]
+
+    init(signature: UInt64, faceKeys: [String], matched: [Int: UUID], learned: [Int: UUID], review: [Int: (id: UUID, chance: Float)]) {
+        self.signature = signature
+        for (i, id) in matched where i < faceKeys.count { self.matched[faceKeys[i]] = id }
+        for (i, id) in learned where i < faceKeys.count { self.learned[faceKeys[i]] = id }
+        for (i, r) in review where i < faceKeys.count { self.review[faceKeys[i]] = r.id; chance[faceKeys[i]] = r.chance }
+    }
+
+    func indexed(_ faceKeys: [String]) -> (matched: [Int: UUID], learned: [Int: UUID], review: [Int: (id: UUID, chance: Float)]) {
+        var m: [Int: UUID] = [:], l: [Int: UUID] = [:], r: [Int: (id: UUID, chance: Float)] = [:]
+        for (i, k) in faceKeys.enumerated() {
+            if let id = matched[k] { m[i] = id }
+            if let id = learned[k] { l[i] = id }
+            if let id = review[k] { r[i] = (id, chance[k] ?? 0) }
+        }
+        return (m, l, r)
+    }
+
+    /// Order doesn't matter (each part is hashed alone and the hashes combined), so the same library always gives
+    /// the same fingerprint. Bump `version` when People.learn changes.
+    static let version = 1
+    static func signature(faceKeys: [String], dates: [Date], people: [Person], threshold: Float,
+                          rejected: [Int: Set<UUID>], ignored: Set<Int>, confirmed: [Int: UUID]) -> UInt64 {
+        func h(_ s: String) -> UInt64 { Learner.stableHash([s]) }
+        var acc: UInt64 = 0, n: UInt64 = 0
+        for (i, k) in faceKeys.enumerated() {
+            var part = k + "@" + String(Int(dates[i].timeIntervalSinceReferenceDate))
+            if let r = rejected[i] { part += "!" + r.map(\.uuidString).sorted().joined(separator: ",") }
+            if ignored.contains(i) { part += "~" }
+            if let c = confirmed[i] { part += "=" + c.uuidString }
+            acc &+= h(part); n &+= 1
+        }
+        let who = people.sorted { $0.id.uuidString < $1.id.uuidString }.map { p in
+            var e: UInt64 = 0
+            for x in p.examples ?? [] { var v: UInt64 = 14695981039346656037; for b in x { v = (v ^ UInt64(b)) &* 1099511628211 }; e &+= v }
+            return "\(p.id)|\(p.birthday?.timeIntervalSinceReferenceDate ?? 0)|\(p.count)|\(p.namedExamples ?? 0)|\(e)"
+        }
+        return Learner.stableHash(["v\(version)", "\(threshold)", "\(n)", "\(acc)"] + who)
+    }
+
+    static func read(_ u: URL) -> PeopleCache? {
+        guard let d = try? Data(contentsOf: u) else { return nil }
+        return try? PropertyListDecoder().decode(PeopleCache.self, from: d)
+    }
+    func write(_ u: URL) {
+        let e = PropertyListEncoder(); e.outputFormat = .binary
+        if let d = try? e.encode(self) { try? d.write(to: u, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]) }
+    }
+}

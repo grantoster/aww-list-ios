@@ -157,7 +157,9 @@ struct Moment: Identifiable, Hashable {
         if let c = best.claude?.caption, !c.isEmpty { return c.prefix(1).uppercased() + c.dropFirst() }
         return best.caption
     }
-    var year: Int { Calendar.current.component(.year, from: best.date) }
+    var year: Int { Moment.calendar.component(.year, from: best.date) }
+    /// One calendar for every moment (looking up Calendar.current each time was a big part of re-ranking).
+    static let calendar = Calendar.current
     /// Grown-ups recognized in the shot by Who's Who (named people who were 13 or older then; see Library.rebuild).
     var namedAdults = 0
     var shot: ShotKind {

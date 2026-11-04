@@ -1,4 +1,5 @@
 import Foundation
+import Accelerate
 
 /// What the app learned from Claude's scores: a ridge regression from each photo's on-device fingerprint
 /// (Apple's measurements plus a compact picture of the whole scene) to the score Claude gave it.
@@ -215,19 +216,18 @@ enum Learner {
         for r in x { for j in 0..<d { std[j] += (r[j] - mean[j]) * (r[j] - mean[j]) } }
         for j in 0..<d { std[j] = max((std[j] / n).squareRoot(), 1e-6) }
         let ybar = y.reduce(0, +) / n
-        var a = [Double](repeating: 0, count: d * d), rhs = [Double](repeating: 0, count: d)
-        var z = [Double](repeating: 0, count: d)
+        // The standardized rows as one matrix, then Zᵀ·Z and Zᵀ·y with Accelerate's matrix routines (the same sums
+        // as adding up each row, many times faster on a phone).
+        let rows = x.count
+        var z = [Double](repeating: 0, count: rows * d), yc = [Double](repeating: 0, count: rows)
         for (i, r) in x.enumerated() {
-            for j in 0..<d { z[j] = (r[j] - mean[j]) / std[j] }
-            let yi = y[i] - ybar
-            for j in 0..<d {
-                rhs[j] += z[j] * yi
-                let zj = z[j]
-                if zj == 0 { continue }
-                for k in j..<d { a[j * d + k] += zj * z[k] }
-            }
+            for j in 0..<d { z[i * d + j] = (r[j] - mean[j]) / std[j] }
+            yc[i] = y[i] - ybar
         }
-        for j in 0..<d { for k in 0..<j { a[j * d + k] = a[k * d + j] }; a[j * d + j] += lambda }
+        var a = [Double](repeating: 0, count: d * d), rhs = [Double](repeating: 0, count: d)
+        cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans, Int32(d), Int32(d), Int32(rows), 1, z, Int32(d), z, Int32(d), 0, &a, Int32(d))
+        cblas_dgemv(CblasRowMajor, CblasTrans, Int32(rows), Int32(d), 1, z, Int32(d), yc, 1, 0, &rhs, 1)
+        for j in 0..<d { a[j * d + j] += lambda }
         guard let w = solve(a, rhs, d) else { return nil }
         return Fit(mean: mean, std: std, w: w, bias: ybar)
     }

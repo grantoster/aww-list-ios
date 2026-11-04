@@ -143,6 +143,8 @@ final class Library: ObservableObject {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent(mode == .snap ? "awwsnap-scores.plist" : "scores.plist")
     }
+    /// Learn my Likes votes, also kept in a small file of their own: each vote saves just this (not the whole library).
+    private var votesURL: URL { url.deletingLastPathComponent().appendingPathComponent(mode == .snap ? "awwsnap-votes.json" : "votes.json") }
     private var legacyURL: URL { url.deletingLastPathComponent().appendingPathComponent(mode == .snap ? "awwsnap-scores.json" : "scores.json") }
     /// Which app this library is (Awwbum's or AwwSnap's); everything but Who's Who is its own.
     let mode: AppMode
@@ -1234,15 +1236,31 @@ final class Library: ObservableObject {
         strengthsCache = s
         return s
     }
+    /// Each vote saves only the small votes file; the list re-ranks (and the whole library saves) when you finish
+    /// voting (`finishVoting`), not after every tap.
     func recordVote(_ a: String, _ b: String, winner: String?) {
         pairVotes.append(PairVote(a: a, b: b, winner: winner, date: Date()))
-        if winner != nil { rebuildSoon() }   // a skip moves nothing
-        saveSoon()
+        votesChanged = votesChanged || winner != nil
+        saveVotes()
     }
     func undoVote() {
         guard let last = pairVotes.popLast() else { return }
-        if last.winner != nil { rebuildSoon() }
-        saveSoon()
+        votesChanged = votesChanged || last.winner != nil
+        saveVotes()
+    }
+    /// Leaving Learn my Likes: re-rank with the new votes, save, and learn from them.
+    func finishVoting() {
+        if votesChanged { votesChanged = false; rebuild(); saveSoon() }
+        retrain()
+    }
+    private var votesChanged = false
+    nonisolated private static let votesQueue = DispatchQueue(label: "votes-save", qos: .utility)
+    private func saveVotes() {
+        let votes = pairVotes, u = votesURL
+        Library.votesQueue.async {   // one at a time, in order
+            guard let d = try? JSONEncoder().encode(votes) else { return }
+            try? d.write(to: u, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        }
     }
     /// How far your votes move a moment on the list, in points (0 when you haven't voted on it).
     func voteShift(_ m: Moment) -> Double { voteShift(m, pickStrengths) }
@@ -1327,6 +1345,7 @@ final class Library: ObservableObject {
     /// Another app's library turned Who's Who off: its photos' face prints go too.
     func dropFacePrints() {
         for id in photos.keys where photos[id]?.faceRecords != nil { photos[id]?.faceRecords = nil; photos[id]?.facePrintsOff = true }
+        removePeopleCache()
         learnedWho = [:]; learnedFaces = []; whoCache = [:]; rebuild(); save()
     }
 
@@ -1340,6 +1359,11 @@ final class Library: ObservableObject {
         for i in people.indices {
             people[i].centroid = []; people[i].count = 0; people[i].examples = nil; people[i].namedExamples = nil
         }
+        removePeopleCache()
+    }
+    /// Who's Who's saved answers (see PeopleCache) go with the face prints.
+    private func removePeopleCache() {
+        try? FileManager.default.removeItem(at: url.deletingLastPathComponent().appendingPathComponent(mode == .snap ? "awwsnap-people.json" : "people.json"))
     }
 
     /// People named before the current recognizer get their average face back from the faces you tagged as them,
@@ -1377,6 +1401,7 @@ final class Library: ObservableObject {
         let snapshot = photos.values.filter { !notVisible.contains($0.id) }   // not photos that can't be seen now
         let named = people, t = threshold, rejected = notThem, ignoredKeys = ignoredFaces, confirmedKeys = confirmedFaces
         let namedIDs = Set(people.map(\.id))
+        let cacheURL = url.deletingLastPathComponent().appendingPathComponent(mode == .snap ? "awwsnap-people.json" : "people.json")
         learningPeople = true
         peopleTask = Task.detached(priority: .utility) {
             var faces: [[Float]] = [], owners: [String] = [], keys: [String] = [], faceKeys: [String] = []
@@ -1409,8 +1434,18 @@ final class Library: ObservableObject {
                 }
             }
             let remembered = backfill
-            let (matched, learned, review) = People.learn(faces, people: named, threshold: t, rejected: rej, owners: owners,
+            // The last answer is reused when nothing it depends on changed (the faces, the people and your answers):
+            // opening the app or switching apps doesn't work every face out again.
+            let sig = PeopleCache.signature(faceKeys: faceKeys, dates: dates, people: named, threshold: t,
+                                            rejected: rej, ignored: ign, confirmed: conf)
+            let matched: [Int: UUID], learned: [Int: UUID], review: [Int: (id: UUID, chance: Float)]
+            if let c = PeopleCache.read(cacheURL), c.signature == sig {
+                (matched, learned, review) = c.indexed(faceKeys)
+            } else {
+                (matched, learned, review) = People.learn(faces, people: named, threshold: t, rejected: rej, owners: owners,
                                                           ignored: ign, confirmed: conf, dates: dates)
+                if !Task.isCancelled { PeopleCache(signature: sig, faceKeys: faceKeys, matched: matched, learned: learned, review: review).write(cacheURL) }
+            }
             if Task.isCancelled { return }
             // Faces to ask about in Review faces: most likely first, at most 100 per person.
             var toReview: [UUID: [(photo: String, face: FaceRecord, chance: Float)]] = [:]
@@ -1583,8 +1618,11 @@ final class Library: ObservableObject {
         // Only a kid's birthday turns on "someone named without one is a grown-up" (a grown-up's birthday doesn't).
         let now = Date()
         let anyBirthday = named.contains { p in p.birthday.map { (gregorian.dateComponents([.year], from: $0, to: now).year ?? 99) < 18 } ?? false }
+        // Each birthday's 13th birthday, worked out once (not a calendar sum for every photo).
+        var thirteen: [Date: Date] = [:]
+        for b in Set(birthdays + named.compactMap(\.birthday)) { thirteen[b] = gregorian.date(byAdding: .year, value: 13, to: b) ?? b }
         func childAt(_ birth: Date, _ date: Date) -> Bool {
-            birth <= date && (gregorian.dateComponents([.year], from: birth, to: date).year ?? 0) < 13
+            birth <= date && date < (thirteen[birth] ?? gregorian.date(byAdding: .year, value: 13, to: birth) ?? birth)
         }
         func makeMoment(_ g: (best: PhotoScore, shots: Int, ids: [String]), _ s: Int, _ rr: Double = 0) -> Moment {
             let who: Set<UUID>
@@ -1611,8 +1649,8 @@ final class Library: ObservableObject {
             let known = named.filter { who.contains($0.id) }.compactMap(\.birthday).filter { childAt($0, date) }
             let bdays = Array(Set(birthdays + named.compactMap(\.birthday).filter { childAt($0, date) || $0 > date }))
             let ages: Set<AgeGroup> = known.isEmpty
-                ? AgeGroup.tags(date: date, birthdays: bdays, looksLikeBaby: g.best.age == .baby, faces: g.best.faces ?? 1)
-                : Set(known.map { AgeGroup.of(birth: $0, at: g.best.date) })
+                ? AgeGroup.tags(date: date, birthdays: bdays, looksLikeBaby: g.best.age == .baby, faces: g.best.faces ?? 1, calendar: gregorian)
+                : Set(known.map { AgeGroup.of(birth: $0, at: g.best.date, calendar: gregorian) })
             var m = Moment(best: g.best, shots: g.shots, memberIDs: g.ids, score: s, ages: ages, people: who)
             // A grown-up recognized in the photo makes it a Family & groups shot, never Kids together: someone named
             // who was 13 or older then, or, once your kids have birthdays, someone named without one.
@@ -1837,7 +1875,7 @@ final class Library: ObservableObject {
         leftOut = photoGroups(counts)
         flagged = photoGroups(flags)
         listedPhotos = shown.count
-        ms.sort(by: Library.ranked)
+        if useConsolidated { ms.sort(by: Library.ranked) } else { ms = everyMoment }   // already sorted just above
         claudeScored = everyMoment.reduce(0) { $0 + ($1.claudeScore != nil ? 1 : 0) }
         heldBackPhotos = seen.filter { $0.raw == nil && Scorer.heldBack.contains($0.excluded ?? "") && $0.version == Scorer.version(mode) }
             .sorted { $0.date > $1.date }
@@ -1985,6 +2023,8 @@ final class Library: ObservableObject {
         tasteSignature = s.tasteSignatureBits.map { UInt64(bitPattern: $0) }
         untaggedIgnored = Set(s.untaggedIgnored ?? [])
         pairVotes = s.pairVotes ?? []
+        // The votes file is saved after every vote, so it can be newer than the library (a vote just before closing).
+        if let d = try? Data(contentsOf: votesURL), let v = try? JSONDecoder().decode([PairVote].self, from: d) { pairVotes = v }
         // Saved before votes: the thumbs so far become the weak start (later thumbs don't feed the learning).
         legacyThumbs = s.legacyThumbs ?? (s.reactions ?? [:])
         ownModel = s.learned.flatMap { m -> LearnedModel? in
