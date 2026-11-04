@@ -336,6 +336,11 @@ final class ClaudeService: ObservableObject {
             try? d.write(to: u, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         } else { try? FileManager.default.removeItem(at: u) }
     }
+    /// The photos of an upload still unaccounted for, if any.
+    var pendingPhotos: Set<String>? {
+        guard let u = pendingURL, let d = try? Data(contentsOf: u), let p = try? JSONDecoder().decode(PendingSend.self, from: d) else { return nil }
+        return Set(p.map.values)
+    }
     /// Records a batch whose upload was cut off, if Anthropic made it; gives up on it after a day.
     private var adopting = false
     func adoptPendingSend(_ library: Library) async {
@@ -526,6 +531,12 @@ final class ClaudeService: ObservableObject {
         busy = true
         await adoptPendingSend(library)
         busy = false
+        // An earlier upload still unaccounted for (its batch not found yet): don't send until it is, so those
+        // photos are never paid for twice and its record isn't overwritten.
+        if pendingPhotos != nil {
+            status = "Checking on an earlier upload first; scoring picks up once it's found (or after a day)."
+            return
+        }
         // Only once the scan is finished: until then a bath photo near a candidate may not be checked yet.
         guard !scanner.isScanning else { status = "Checking your photos first; Claude scoring starts by itself when that finishes."; return }
         if scanner.needsScan {

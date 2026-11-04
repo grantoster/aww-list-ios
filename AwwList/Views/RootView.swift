@@ -279,7 +279,7 @@ struct BirthdaysSection: View {
         Section {
             ForEach($kids) { $kid in
                 DatePicker("Child \((kids.firstIndex { $0.id == kid.id } ?? 0) + 1)", selection: $kid.date,
-                           in: ...Date(), displayedComponents: .date)
+                           in: ...Date(), displayedComponents: .date).tint(Theme.accent)
             }
             .onDelete { kids.remove(atOffsets: $0) }
             Button("Add a child's birthday") {

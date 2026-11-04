@@ -128,9 +128,8 @@ struct WhoView: View {
                 if !reviewable.isEmpty {
                     Section {
                         ForEach(reviewable) { p in
-                            NavigationLink {
-                                ReviewGridView(person: p)
-                            } label: {
+                            // By value, so the screen stays open when this row goes away (all of their faces answered).
+                            NavigationLink(value: ReviewTarget(person: p)) {
                                 HStack(spacing: 12) {
                                     FaceThumb(photo: p.samplePhoto, box: p.sampleBox, size: 36)
                                     Text("Is this \(p.name)?")
@@ -143,7 +142,7 @@ struct WhoView: View {
                     } header: {
                         Text("Review faces")
                     } footer: {
-                        Text("One face at a time, most likely first. Every answer teaches the app, so it recognizes more on its own.")
+                        Text("Up to 24 faces at a time, most likely first. Every answer teaches the app, so it recognizes more on its own.")
                     }
                 }
                 if !library.people.isEmpty {
@@ -279,6 +278,7 @@ struct WhoView: View {
             .scrollContentBackground(.hidden)
             .background(Theme.background.ignoresSafeArea())
             .navigationTitle("Who's Who")
+            .navigationDestination(for: ReviewTarget.self) { t in ReviewGridView(person: t.person) }
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
             .sheet(item: $naming, onDismiss: regroup) { g in NameSheet(faces: g.faces) }
             .sheet(item: $checking, onDismiss: regroup) { s in QuickCheckSheet(suggestion: s) }
@@ -397,7 +397,7 @@ struct NameSheet: View {
                 Section {
                     Toggle("Add a birthday", isOn: $hasBirthday)
                     if hasBirthday {
-                        DatePicker("Birthday", selection: $birthday, in: ...Date(), displayedComponents: .date)
+                        DatePicker("Birthday", selection: $birthday, in: ...Date(), displayedComponents: .date).tint(Theme.accent)
                     }
                 } footer: {
                     Text("With a birthday, this person's photos are sorted into Baby, Toddler and Kid exactly. Once any of your kids has a birthday here, someone without one counts as a grown-up, so group photos with them are under Family & groups, not Kids together.")
@@ -496,7 +496,7 @@ struct PersonSheet: View {
                     if person.birthday != nil {
                         DatePicker("Born", selection: Binding(get: { person.birthday ?? Date() },
                                                               set: { person.birthday = Calendar.current.startOfDay(for: $0) }),
-                                   in: ...Date(), displayedComponents: .date)
+                                   in: ...Date(), displayedComponents: .date).tint(Theme.accent)
                     }
                 }
                 Section {
@@ -611,18 +611,23 @@ struct QuickCheckSheet: View {
     }
 }
 
-/// Review faces, many at a time: up to 24 of a person's likely faces in a grid, all marked yes. Tap the ones that
-/// aren't them, then confirm: the marked ones are named as them, the rest never count as them. Each round teaches
-/// the app, so the next round finds more. "One at a time" offers the slower view with more choices.
+/// Opens Review faces (the grid) for a person.
+struct ReviewTarget: Hashable { let person: Person }
+
+/// Review faces, many at a time: up to 24 of a person's likely faces in a grid. Tap once for yes, twice for no (or
+/// "Mark all"), then save: yeses are named as them, noes never count as them, the rest are asked again later. Each
+/// round teaches the app, so the next finds more. "One at a time" offers the slower view with more choices.
 struct ReviewGridView: View {
     let person: Person
     @EnvironmentObject var library: Library
-    @Environment(\.dismiss) private var dismiss
     @State private var batch: [(photo: String, face: FaceRecord)] = []
-    @State private var notThem = Set<String>()
+    /// Your answer per face (face key): true = them, false = not them; no entry = not answered (asked again later).
+    @State private var answers: [String: Bool] = [:]
     @State private var rounds = 0
     @State private var named = 0
     private let columns = [GridItem(.adaptive(minimum: 96), spacing: 10)]
+    private var yesCount: Int { answers.values.filter { $0 }.count }
+    private var noCount: Int { answers.values.filter { !$0 }.count }
 
     var body: some View {
         ScrollView {
@@ -632,36 +637,44 @@ struct ReviewGridView: View {
                                            systemImage: "checkmark.circle",
                                            description: Text(rounds == 0
                                                              ? "New faces to check show up as the app finds them."
-                                                             : "You confirmed \(named.formatted()) faces of \(person.name). The app is learning from them; more show up here as it finds them."))
+                                                             : "You confirmed \(named.formatted()) face\(named == 1 ? "" : "s") of \(person.name). The app is learning from them; more show up here as it finds them."))
                 } else {
-                    Text("Is this \(person.name)? Tap any that aren't, then confirm.")
-                        .font(Theme.label(19, relativeTo: .headline))
+                    Text("Is this \(person.name)? Tap once for yes (✓), twice for no (×). Faces you leave are asked about later.")
+                        .font(Theme.label(17, relativeTo: .headline))
+                    Button("Mark all as \(person.name)") {
+                        for f in batch { answers[Library.faceKey(f.photo, f.face)] = true }
+                    }
+                    .frame(minHeight: 44)
                     LazyVGrid(columns: columns, spacing: 10) {
-                        ForEach(batch, id: \.face.vec) { f in
-                            let k = Library.faceKey(f.photo, f.face)
-                            let no = notThem.contains(k)
-                            Button { if no { notThem.remove(k) } else { notThem.insert(k) } } label: {
+                        ForEach(batch.map { (k: Library.faceKey($0.photo, $0.face), f: $0) }, id: \.k) { item in
+                            let k = item.k, f = item.f
+                            let a = answers[k]
+                            Button {
+                                // unanswered → yes → no → unanswered
+                                answers[k] = a == nil ? true : (a == true ? false : nil)
+                            } label: {
                                 FaceThumb(photo: f.photo, box: f.face.box, size: 96)
-                                    .opacity(no ? 0.35 : 1)
+                                    .opacity(a == false ? 0.35 : 1)
                                     .overlay(alignment: .bottomTrailing) {
-                                        Image(systemName: no ? "xmark.circle.fill" : "checkmark.circle.fill")
-                                            .font(.title2).symbolRenderingMode(.palette)
-                                            .foregroundStyle(.white, no ? Color.gray : Theme.accent)
+                                        if let a {
+                                            Image(systemName: a ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                                .font(.title2).symbolRenderingMode(.palette)
+                                                .foregroundStyle(.white, a ? Theme.accent : Color.gray)
+                                        }
                                     }
                             }
                             .buttonStyle(.plain)
-                            .accessibilityLabel(no ? "Not \(person.name)" : "\(person.name)")
+                            .accessibilityLabel(a == nil ? "Not answered" : (a == true ? person.name : "Not \(person.name)"))
                             .accessibilityHint("Tap to change")
                         }
                     }
                     Button { confirm() } label: {
-                        Text(notThem.isEmpty ? "Yes, all \(batch.count) are \(person.name)"
-                             : "Confirm \(batch.count - notThem.count) as \(person.name)")
+                        Text(yesCount + noCount == 0 ? "Tap faces to answer"
+                             : "Save: \(yesCount.formatted()) yes, \(noCount.formatted()) no")
                             .frame(maxWidth: .infinity, minHeight: 48)
                     }
                     .buttonStyle(.borderedProminent).tint(Theme.accent)
-                    Text("The ones you marked × are remembered as not \(person.name).")
-                        .font(.footnote).foregroundStyle(.secondary)
+                    .disabled(yesCount + noCount == 0)
                 }
                 NavigationLink("One at a time (with more choices)") { ReviewFacesView(person: person) }
                     .frame(minHeight: 44)
@@ -671,25 +684,25 @@ struct ReviewGridView: View {
         .background(Theme.background.ignoresSafeArea())
         .navigationTitle(person.name).navigationBarTitleDisplayMode(.inline)
         .onAppear { if batch.isEmpty { next() } }
-        .onChange(of: library.reviewFaces.count) { if batch.isEmpty { next() } }
+        .onChange(of: library.reviewFaces[person.id]?.count ?? 0) { if batch.isEmpty { next() } }
     }
 
     private func next() {
         batch = Array((library.reviewFaces[person.id] ?? []).prefix(24))
-        notThem = []
+        answers = [:]
     }
 
     private func confirm() {
         guard let p = library.people.first(where: { $0.id == person.id }) else { return }
-        let yes = batch.filter { !notThem.contains(Library.faceKey($0.photo, $0.face)) }
-        let no = batch.filter { notThem.contains(Library.faceKey($0.photo, $0.face)) }
+        let yes = batch.filter { answers[Library.faceKey($0.photo, $0.face)] == true }
+        let no = batch.filter { answers[Library.faceKey($0.photo, $0.face)] == false }
         library.applyReview(person: p, yes: yes, no: no)
         named += yes.count; rounds += 1
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        // The next most likely faces (the learning adds more as it goes).
-        let done = Set(batch.map { Library.faceKey($0.photo, $0.face) })
+        // Answered faces leave; unanswered ones stay for later, after the next most likely.
+        let done = Set((yes + no).map { Library.faceKey($0.photo, $0.face) })
         batch = Array((library.reviewFaces[person.id] ?? []).filter { !done.contains(Library.faceKey($0.photo, $0.face)) }.prefix(24))
-        notThem = []
+        answers = [:]
     }
 }
 

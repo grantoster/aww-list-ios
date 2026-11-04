@@ -363,6 +363,12 @@ final class Library: ObservableObject {
     }
 
     /// New results from the scanner. The list is re-ranked at most every 30 seconds while scanning.
+    /// The other app's library, if it's open (Awwbum's always is; AwwSnap's once it's been used this time).
+    private var otherLibrary: Library? {
+        let o: Library? = mode == .snap ? Shared.library : (Shared.snapOpened ? Shared.snapLibrary : nil)
+        return o?.ready == true ? o : nil
+    }
+
     func add(_ new: [PhotoScore]) {
         guard !new.isEmpty else { return }
         // A photo whose faces couldn't be read this time keeps its earlier face prints (and is read again later).
@@ -370,6 +376,13 @@ final class Library: ObservableObject {
             var p = p
             if Library.faceConsent, p.faceRecords == nil, p.facePrintsOff != true,
                let old = photos[p.id]?.faceRecords { p.faceRecords = old }
+            // The other app already read this photo's faces with the same recognizer: use its face prints, so your
+            // tags and answers about these faces match in both apps (and the faces aren't read twice).
+            if Library.faceConsent, p.faceRecords != nil, p.faceVersion == FaceID.version,
+               let other = otherLibrary, let o = other.photos[p.id], o.faceVersion == FaceID.version,
+               let shared = o.faceRecords, !shared.isEmpty, shared.allSatisfy({ $0.vec.count == People.dim }) {
+                p.faceRecords = shared
+            }
             return p
         }
         for p in new {
@@ -404,7 +417,7 @@ final class Library: ObservableObject {
     }
 
     /// A photo's faces were read again (for example with the new face recognizer): what you said about each face —
-    /// your tags, "not them", set aside, skipped — moves to the same face in the new reading (matched by where it is).
+    /// your tags, "not them", set aside, skipped — carries over to the same face in the new reading (matched by where it is).
     private func carryOverFaces(_ photo: String, from old: [FaceRecord], to new: [FaceRecord]) {
         guard !old.isEmpty, !new.isEmpty else { return }
         func rect(_ b: [Float]) -> CGRect { b.count == 4 ? CGRect(x: CGFloat(b[0]), y: CGFloat(b[1]), width: CGFloat(b[2]), height: CGFloat(b[3])) : .null }
@@ -417,11 +430,12 @@ final class Library: ObservableObject {
             taken.insert(best.0)
             let nk = Library.faceKey(photo, new[best.0])
             guard nk != ok else { continue }
-            if let id = confirmedFaces.removeValue(forKey: ok) { confirmedFaces[nk] = id }
-            if let r = notThem.removeValue(forKey: ok) { notThem[nk, default: []].formUnion(r) }
-            if ignoredFaces.remove(ok) != nil { ignoredFaces.insert(nk) }
-            if skippedFaces.remove(ok) != nil { skippedFaces.insert(nk) }
-            if let id = faceOwner.removeValue(forKey: ok) { faceOwner[nk] = id }
+            // Copied, not moved: the other app may still have the old reading of this photo (Who's Who is shared).
+            if let id = confirmedFaces[ok] { confirmedFaces[nk] = id }
+            if let r = notThem[ok] { notThem[nk, default: []].formUnion(r) }
+            if ignoredFaces.contains(ok) { ignoredFaces.insert(nk) }
+            if skippedFaces.contains(ok) { skippedFaces.insert(nk) }
+            if let id = faceOwner[ok] { faceOwner[nk] = id }
         }
     }
 
@@ -1292,7 +1306,7 @@ final class Library: ObservableObject {
     private func votesAlreadyLearned(_ m: Moment, _ strengths: [String: Double]) -> Bool {
         let id = strengths[m.best.id] != nil ? m.best.id : m.memberIDs.first { strengths[$0] != nil }
         guard let id, let now = strengths[id], let then = votesLearned[id] else { return false }
-        return abs(now - then) < 1e-9
+        return abs(now - then) < 0.0005   // the precision the learning's change check uses
     }
     private func voteShift(_ m: Moment, _ strengths: [String: Double]) -> Double {
         guard !strengths.isEmpty, let st = strengths[m.best.id] ?? m.memberIDs.lazy.compactMap({ strengths[$0] }).first else { return 0 }
