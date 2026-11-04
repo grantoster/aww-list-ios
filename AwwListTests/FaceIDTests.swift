@@ -172,3 +172,37 @@ final class PairwiseTests: XCTestCase {
         XCTAssertEqual(Set(appearances.keys), ["1", "1b", "2", "3"])
     }
 }
+
+final class SnapScorerTests: XCTestCase {
+    private func photo(turn: Double?, light: Double?, top: Double = 0.75) -> Signals {
+        var f = FaceSignal(area: 0.06, quality: 0.6, smile: true, eyesClosed: false)
+        f.child = 0.05
+        f.box = [0.4, top - 0.2, 0.2, 0.2]
+        f.turn = turn; f.light = light
+        var s = Signals(); s.faces = [f]; s.sharpness = 1
+        return s
+    }
+
+    func testProfilePhotoMeasurements() {
+        // Looking at the camera in good light beats looking away in a shadow.
+        let good = SnapScorer.value(photo(turn: 0, light: 0.9))!, away = SnapScorer.value(photo(turn: 0.8, light: 0.3))!
+        XCTAssertGreaterThan(good, away)
+        // Measurements a photo doesn't have are left out, not counted as zero.
+        let unmeasured = SnapScorer.value(photo(turn: nil, light: nil))!
+        XCTAssertGreaterThan(unmeasured, away)
+        XCTAssertTrue((0...1).contains(good) && (0...1).contains(unmeasured))
+        // A head cut off at the top frames worse than one with room above it.
+        var cut = FaceSignal(); cut.box = [0.4, 0.8, 0.2, 0.2]
+        var room = FaceSignal(); room.box = [0.4, 0.55, 0.2, 0.2]
+        XCTAssertLessThan(SnapScorer.framing(cut)!, SnapScorer.framing(room)!)
+        XCTAssertEqual(SnapScorer.framing(room)!, 1, accuracy: 1e-9)
+        // No grown-up: no score.
+        var kid = photo(turn: 0, light: 1); kid.faces[0].child = 0.9; kid.childConfidence = 0.9
+        XCTAssertNil(SnapScorer.value(kid))
+    }
+
+    func testSnapVersionIsSeparate() {
+        XCTAssertEqual(Scorer.version(.aww), Scorer.version)
+        XCTAssertNotEqual(Scorer.version(.snap), Scorer.version)
+    }
+}
