@@ -1118,7 +1118,7 @@ struct BrandSwitch: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(mode.title).accessibilityAddTraits(.isHeader)
-        .accessibilityHint("Offers to switch to \(mode.other.title)")
+        .accessibilityHint(mode == .snap ? "Offers to switch back to Awwbum" : "")
         .confirmationDialog("Would you like to switch to \(mode.other.title)?", isPresented: $asking, titleVisibility: .visible) {
             Button("Switch to \(mode.other.title)") { ModeSwitch.shared.switchTo(mode.other) }
             Button("Stay in \(mode.title)", role: .cancel) {}
