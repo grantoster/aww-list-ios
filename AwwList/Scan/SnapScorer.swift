@@ -32,16 +32,45 @@ enum SnapScorer {
         reason == "Swimwear" || reason == "Shirtless" ? value(s) : nil
     }
 
-    private static func value(_ s: Signals) -> Double? {
+    /// Bumped when the measurements or the scoring change, so AwwSnap reads its photos again.
+    static let version = 2
+
+    /// 0...1 light on a face from its exposure and evenness (both 0...1).
+    static func lightScore(exposure: Double, even: Double) -> Double { max(0, min(1, 0.6 * exposure + 0.4 * even)) }
+
+    /// 0...1 framing of the main face: not cut off at the top, some room above the head, not jammed to an edge.
+    static func framing(_ f: FaceSignal) -> Double? {
+        guard f.box.count == 4 else { return nil }
+        let top = f.box[1] + f.box[3], cx = f.box[0] + f.box[2] / 2
+        let room = 1 - top                                            // space above the head
+        let head = room < 0.01 ? 0 : room < 0.04 ? 0.6 : room <= 0.35 ? 1 : max(0.3, 1 - (room - 0.35) * 2)
+        let side = cx < 0.08 || cx > 0.92 ? 0.3 : cx < 0.15 || cx > 0.85 ? 0.7 : 1
+        return head * side
+    }
+
+    /// How great the grown-ups look in the photo, for picking the best shots (a dating profile, say). Only
+    /// things about the photo: a real smile, eyes open, looking at the camera, light on the face, the face big and
+    /// clear enough, framing and posture. Never anyone's features, body or looks. Measurements a photo doesn't
+    /// have (older reads, faces too small) are left out and the rest count in their place.
+    static func value(_ s: Signals) -> Double? {
         let a = adults(s)
         guard !a.isEmpty else { return nil }
         let fs = a.map { s.faces[$0] }, n = Double(fs.count)
-        let smile = Double(fs.filter(\.smile).count) / n             // a genuine smile counts most
-        let eyes = Double(fs.filter { !$0.eyesClosed }.count) / n    // eyes open
-        let quality = fs.map(\.quality).reduce(0, +) / n             // Apple's face capture quality (light, angle, focus)
-        let presence = min(1, (fs.map(\.area).max() ?? 0) / 0.08)     // a face big enough to see well
-        var raw = 0.40 * smile + 0.15 * eyes + 0.25 * min(1, max(0, quality)) + 0.20 * presence
-        if s.faces.count > 6 { raw *= 0.85 }                         // crowds aren't portraits
+        let main = fs.max { $0.area < $1.area }!
+        func avg(_ v: [Double]) -> Double? { v.isEmpty ? nil : v.reduce(0, +) / Double(v.count) }
+        var parts: [(w: Double, v: Double)] = [
+            (0.30, Double(fs.filter(\.smile).count) / n),                       // a genuine smile counts most
+            (0.10, Double(fs.filter { !$0.eyesClosed }.count) / n),             // eyes open
+            (0.15, min(1, max(0, fs.map(\.quality).reduce(0, +) / n))),        // Apple's face capture quality
+            (0.10, min(1, main.area / 0.08)),                                    // a face big enough to see well
+        ]
+        if let t = avg(fs.compactMap(\.turn)) { parts.append((0.12, max(0, 1 - t * 1.5))) }   // looking at the camera
+        if let l = avg(fs.compactMap(\.light)) { parts.append((0.10, l)) }                     // light on the face
+        if let f = framing(main) { parts.append((0.08, f)) }                                     // framing
+        if let u = s.upright { parts.append((0.05, u)) }                                         // posture
+        var raw = parts.map { $0.w * $0.v }.reduce(0, +) / parts.map(\.w).reduce(0, +)
+        // Clearly about one or two people: a crowd isn't a portrait.
+        if s.faces.count > 6 { raw *= 0.85 } else if a.count >= 3 { raw *= 0.92 }
         raw *= 0.4 + 0.6 * min(1, max(0, s.sharpness))               // blur caps how good a photo can be
         return max(0, min(1, raw))
     }

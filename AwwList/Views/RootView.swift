@@ -229,21 +229,36 @@ struct SettingsView: View {
                         Text("Apple's check wasn't sure about these, so they stay on the list with a flag. Claude makes the final call on the ones it sees; possible swimwear and shirtless photos are sent to Claude only if you turn that on.")
                     }
                 }
-                Section("How scores work") {
-                    Text("Shots less than a minute apart (two at most) count as one moment, and only its best shot is ranked.")
-                        .font(.footnote)
-                    Text("Each photo gets points for the main child's expression (25%: a laugh beats a smile, and a sleeping baby counts too), eyes open and looking at the camera (10%), photo quality from Apple's quality score and sharpness (12%), how big the child is in the frame (10%), how clearly a child is the subject (10%), action and play (5%), a special moment or outing like a birthday cake, costume, snow or the zoo (5%), pure \"aww\" like a sleeping baby (5%), pure joy like a real laugh or arms up (5%), candid moments caught mid-action or looking away (5%), the best smile, grin or mischief, a big grin or a cheeky smirk (5%), and unposed fun, kids clearly having fun and not posing for the camera, messy or not (3%). A second person earns nothing extra, and crowds count a little less.")
-                        .font(.footnote)
-                    Text("Those points become 1–10 by rank across your whole library: about 1 in 20 moments a year is a 9 or 10 (the top 1% are 10s), the next 10% are 8s and the next 15% are 7s. Every year counts equally, so a huge year can't crowd out the others, and a photo needs real quality for a high score, not just being the best of a weak bunch.")
-                        .font(.footnote)
-                    Text("Photos are analyzed with Apple's on-device Vision framework. Nothing is uploaded unless you score with Claude.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
+                HowScoresSection()
             }
             .scrollContentBackground(.hidden)
             .background(Theme.background.ignoresSafeArea())
             .navigationTitle("Settings")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+        }
+    }
+}
+
+/// Settings: how the on-device score works (Awwbum's kid points, or AwwSnap's grown-up photo points).
+struct HowScoresSection: View {
+    @EnvironmentObject var library: Library
+    var body: some View {
+        Section("How scores work") {
+            Text("Shots less than a minute apart (two at most) count as one moment, and only its best shot is ranked.")
+                .font(.footnote)
+            if library.mode == .snap {
+                Text("AwwSnap helps you find the photos where you and the other grown-ups look your best, for a dating profile, a profile picture or a frame. It scores the photo, never the person: no one's looks, features or body are rated. On the phone, each photo gets points for the grown-ups' real smiles (30%), looking at the camera (12%), Apple's face quality reading (15%), eyes open (10%), a face big enough to see well (10%), good, even light on the face (10%), framing with room above the head (8%) and posture (5%). Blur lowers the score, and crowds count a little less.")
+                    .font(.footnote)
+                Text("Claude, if you use it, looks for the same things plus a natural pose, being put together for the occasion and a moment or setting that shows personality. Your \"Which is the better photo?\" votes in Learn my Likes then teach AwwSnap your own eye.")
+                    .font(.footnote)
+            } else {
+            Text("Each photo gets points for the main child's expression (25%: a laugh beats a smile, and a sleeping baby counts too), eyes open and looking at the camera (10%), photo quality from Apple's quality score and sharpness (12%), how big the child is in the frame (10%), how clearly a child is the subject (10%), action and play (5%), a special moment or outing like a birthday cake, costume, snow or the zoo (5%), pure \"aww\" like a sleeping baby (5%), pure joy like a real laugh or arms up (5%), candid moments caught mid-action or looking away (5%), the best smile, grin or mischief, a big grin or a cheeky smirk (5%), and unposed fun, kids clearly having fun and not posing for the camera, messy or not (3%). A second person earns nothing extra, and crowds count a little less.")
+                .font(.footnote)
+            }
+            Text("Those points become 1–10 by rank across your whole library: about 1 in 20 moments a year is a 9 or 10 (the top 1% are 10s), the next 10% are 8s and the next 15% are 7s. Every year counts equally, so a huge year can't crowd out the others, and a photo needs real quality for a high score, not just being the best of a weak bunch.")
+                .font(.footnote)
+            Text("Photos are analyzed with Apple's on-device Vision framework. Nothing is uploaded unless you score with Claude.")
+                .font(.footnote).foregroundStyle(.secondary)
         }
     }
 }
@@ -504,7 +519,7 @@ struct LearnedSection: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             let shareable = library.shareableLearningCount, votesShared = library.shareableVoteCount
-            if shareable + votesShared > 0 {
+            if library.mode == .aww && shareable + votesShared > 0 {   // AwwSnap's learning is never sent anywhere
                 Button(preparingShare ? "Getting it ready…" : "Send my learning data to Grant") { askShare = true }
                     .disabled(preparingShare)
                     .confirmationDialog("Send your learning data?", isPresented: $askShare, titleVisibility: .visible) {

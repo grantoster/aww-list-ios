@@ -73,7 +73,8 @@ final class Analyzer {
     }
 
     /// Nil when Vision failed, so the caller stores nothing and the photo is tried again on the next scan.
-    func analyze(_ image: CGImage, orientation: CGImagePropertyOrientation) -> Signals? {
+    /// `portrait`: also measure, for AwwSnap, where each larger face looks, the light on it, and posture.
+    func analyze(_ image: CGImage, orientation: CGImagePropertyOrientation, portrait: Bool = false) -> Signals? {
         var s = Signals()
 
         let classify = VNClassifyImageRequest()
@@ -167,6 +168,7 @@ final class Analyzer {
             subjectBox = CGRect(x: sf.box[0], y: sf.box[1], width: sf.box[2], height: sf.box[3])
         }
         s.sharpness = sharpness(ci, box: subjectBox)
+        if portrait { measurePortrait(&s, handler: handler, faces: faceObs, ci: ci) }
         // A bathroom scene or a faint tub/shower label plus any bare chest (babies included: this is about baths,
         // not the diaper rule) counts as a possible bath photo.
         let anyBare = s.faces.contains { $0.bareTorso >= Scorer.bareTorsoLimit }
@@ -183,6 +185,71 @@ final class Analyzer {
         guard (try? VNImageRequestHandler(cgImage: image, orientation: orientation, options: [:]).perform([req])) != nil,
               let fp = req.results?.first, fp.elementType == .float else { return [] }
         return fp.data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+    }
+
+    /// AwwSnap's extra measurements: for the (up to 4) largest faces big enough to read, how far the head is
+    /// turned from the camera and how well and evenly the face is lit; and the biggest person's posture.
+    private func measurePortrait(_ s: inout Signals, handler: VNImageRequestHandler, faces: [VNFaceObservation], ci: CIImage) {
+        let big = faces.indices.filter { faces[$0].boundingBox.height >= 0.06 }
+            .sorted { faces[$0].boundingBox.width * faces[$0].boundingBox.height > faces[$1].boundingBox.width * faces[$1].boundingBox.height }
+            .prefix(4)
+        if !big.isEmpty {
+            let lm = VNDetectFaceLandmarksRequest()
+            lm.inputFaceObservations = big.map { VNFaceObservation(boundingBox: faces[$0].boundingBox) }
+            try? handler.perform([lm])
+            let found = lm.results ?? []
+            for (k, i) in big.enumerated() where i < s.faces.count {
+                if k < found.count, let l = found[k].landmarks {
+                    let shape = Self.faceShape(l)
+                    if shape.count == 6 { s.faces[i].turn = shape[4] }
+                }
+                s.faces[i].light = faceLight(ci, faces[i].boundingBox)
+            }
+        }
+        let pose = VNDetectHumanBodyPoseRequest()
+        try? handler.perform([pose])
+        var best: (size: Double, upright: Double)? = nil
+        for o in pose.results ?? [] {
+            guard let b = try? o.recognizedPoints(.all) else { continue }
+            func pt(_ j: VNHumanBodyPoseObservation.JointName) -> CGPoint? {
+                guard let p = b[j], p.confidence > 0.3 else { return nil }
+                return p.location
+            }
+            guard let ls = pt(.leftShoulder), let rs = pt(.rightShoulder) else { continue }
+            let width = Double(hypot(ls.x - rs.x, ls.y - rs.y))
+            guard width > 0.02 else { continue }
+            // Shoulders level, and the head (nose, or the neck point) well above the shoulder line.
+            let level = 1 - min(1, abs(atan2(Double(ls.y - rs.y), Double(abs(ls.x - rs.x)) + 1e-6)) / (Double.pi / 6))
+            let mid = (ls.y + rs.y) / 2
+            let head = pt(.nose) ?? pt(.neck)
+            let up = head.map { min(1, max(0, Double($0.y - mid) / width / 0.6)) } ?? 0.5
+            let u = 0.5 * level + 0.5 * up
+            if width > (best?.size ?? 0) { best = (width, u) }
+        }
+        s.upright = best?.upright
+    }
+
+    /// 0...1: how well and evenly a face is lit, from the average brightness of its left and right halves.
+    private func faceLight(_ ci: CIImage, _ box: CGRect) -> Double? {
+        let e = ci.extent
+        let r = CGRect(x: e.minX + box.minX * e.width, y: e.minY + box.minY * e.height,
+                       width: box.width * e.width, height: box.height * e.height).intersection(e)
+        guard !r.isNull, r.width >= 16, r.height >= 16 else { return nil }
+        func luma(_ rect: CGRect) -> Double? {
+            guard let f = CIFilter(name: "CIAreaAverage", parameters: [kCIInputImageKey: ci, kCIInputExtentKey: CIVector(cgRect: rect)]),
+                  let out = f.outputImage else { return nil }
+            var px = [UInt8](repeating: 0, count: 4)
+            ciContext.render(out, toBitmap: &px, rowBytes: 4, bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+                             format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
+            return (0.299 * Double(px[0]) + 0.587 * Double(px[1]) + 0.114 * Double(px[2])) / 255
+        }
+        let half = r.width / 2
+        guard let l = luma(CGRect(x: r.minX, y: r.minY, width: half, height: r.height)),
+              let rr = luma(CGRect(x: r.minX + half, y: r.minY, width: half, height: r.height)) else { return nil }
+        let mean = (l + rr) / 2
+        let exposure = max(0, 1 - abs(mean - 0.55) / 0.4)          // neither dark nor blown out
+        let even = max(0, 1 - abs(l - rr) / max(0.05, mean) / 0.6)  // not half in shadow
+        return SnapScorer.lightScore(exposure: exposure, even: even)
     }
 
     /// Face fingerprints for Who's Who: the face-identity model's print of each of the (up to 4) largest faces.

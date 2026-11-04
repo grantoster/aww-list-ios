@@ -66,7 +66,7 @@ final class PhotoScanner: ObservableObject {
         // Without the face recognizer (it failed to load), face prints can't be made: don't re-read photos for them.
         let faceModel = FaceID.available
         let known = Set(library.photos.values.filter {
-            $0.version == Scorer.version && !(retryUnavailable && $0.excluded == Scorer.unavailable)
+            $0.version == Scorer.version(mode) && !(retryUnavailable && $0.excluded == Scorer.unavailable)
                 && ($0.raw == nil || !faceModel || ($0.faceRecords.map { $0.allSatisfy { $0.vec.count == People.dim } } ?? false)
                     || (!facesAllowed && $0.facePrintsOff == true))   // Who's Who off: no face prints needed
                 // listed photos from before what's in them was kept (for the Setting filter)
@@ -364,13 +364,13 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
         // the 10 minutes around it, retried about once a day) rather than as checked.
         if Scorer.needsShirtlessRecheck(old) {
             return .done(PhotoScore(id: old.id, date: old.date, raw: nil, excluded: Scorer.unavailable, age: nil,
-                                    caption: "", version: Scorer.version))
+                                    caption: "", version: Scorer.version(mode)))
         }
         old.flagVersion = 7
         if old.noPairBonus == nil { old.noPairBonus = false }   // couldn't be re-scored: the bonus is taken off when ranking
         old.mainFaces = old.mainFaces ?? old.faces   // couldn't be re-read: keep what's known, don't retry every scan
         old.adults = old.adults ?? 0
-        old.version = Scorer.version   // its held-back or flagged reason stands; just don't keep re-reading it
+        old.version = Scorer.version(mode)   // its held-back or flagged reason stands; just don't keep re-reading it
         if old.faceRecords == nil { old.facePrintsOff = true }   // can't be read now: no face prints, don't retry every scan
         if UserDefaults.standard.bool(forKey: "faceConsent") { old.faceVersion = FaceID.version }   // likewise: not re-read every scan for more faces
         if old.scenes == nil { old.scenes = [] }   // and not for what's in it
@@ -407,14 +407,14 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
                 if let kept = keepOld() { return kept }
                 if ranked.contains(asset.localIdentifier) { return .done(nil) }
                 return .done(PhotoScore(id: asset.localIdentifier, date: asset.creationDate ?? .distantPast, raw: nil,
-                                        excluded: Scorer.unavailable, age: nil, caption: "", version: Scorer.version))
+                                        excluded: Scorer.unavailable, age: nil, caption: "", version: Scorer.version(mode)))
             }
             // Vision couldn't read it: remember that too, same retry rules.
-            guard let measured = analyzer.analyze(cg, orientation: CGImagePropertyOrientation(img.imageOrientation)) else {
+            guard let measured = analyzer.analyze(cg, orientation: CGImagePropertyOrientation(img.imageOrientation), portrait: mode == .snap) else {
                 if let kept = keepOld() { return kept }
                 if ranked.contains(asset.localIdentifier) { return .done(nil) }
                 return .done(PhotoScore(id: asset.localIdentifier, date: asset.creationDate ?? .distantPast, raw: nil,
-                                        excluded: Scorer.unavailable, age: nil, caption: "", version: Scorer.version))
+                                        excluded: Scorer.unavailable, age: nil, caption: "", version: Scorer.version(mode)))
             }
             signals = measured
             if mode == .snap ? snapListed(measured) : (Scorer.score(measured).raw != nil || Scorer.softScore(measured) != nil || Scorer.poolScore(measured) != nil) {
@@ -434,7 +434,7 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
         // (No fallback to the modification date: that's the edit or import date, which would misfile them.)
         guard let date = asset.creationDate else {
             return .done(PhotoScore(id: asset.localIdentifier, date: .distantPast, raw: nil, excluded: "No date",
-                                    age: nil, caption: "", version: Scorer.version))
+                                    age: nil, caption: "", version: Scorer.version(mode)))
         }
         var (raw, excluded) = score(signals)
         var flaggedScore: Double? = nil
@@ -446,7 +446,7 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
         let age: AgeGroup? = raw == nil || mode == .snap ? nil : (signals.babyConfidence > 0.5 ? .baby : .kid)
         var p = PhotoScore(id: asset.localIdentifier, date: date,
                            raw: raw, excluded: excluded, age: age, caption: Scorer.caption(signals, date: date),
-                           version: Scorer.version, faces: signals.faces.count,
+                           version: Scorer.version(mode), faces: signals.faces.count,
                            faceRecords: (raw != nil || flaggedScore != nil || (mode == .snap && snapListed(signals))) && UserDefaults.standard.bool(forKey: "faceConsent") ? records : nil)
         if (raw != nil || flaggedScore != nil) && !UserDefaults.standard.bool(forKey: "faceConsent") { p.facePrintsOff = true }
         if (raw != nil || (mode == .snap && snapListed(signals))) && UserDefaults.standard.bool(forKey: "faceConsent") && records != nil { p.faceVersion = FaceID.version }

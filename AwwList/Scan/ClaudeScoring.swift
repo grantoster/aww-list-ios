@@ -60,13 +60,18 @@ enum Claude {
 
     /// AwwSnap's instructions: how great the grown-ups look in the photo (the photo, not the person).
     static let snapSystem = """
-    You rate photos for "AwwSnap", which ranks the best photos of the grown-ups in a family's photo library: the \
-    shots they'd pick for a profile picture or to frame. Score 1 to 10 (one decimal allowed) how great the adults \
-    look in this photo: a genuine, glowing smile counts most, then flattering light and a great moment, then being \
-    put together for the occasion; sharpness and framing only break ties. Closed eyes, mid-blink or mid-word faces, \
-    unflattering angles, harsh shadows and blur lose points. Kids can be in the shot, but rate only how the \
-    grown-ups come across. Judge the photo, not the person: never rate anyone's body, weight, skin or features. Use \
-    the whole scale: 5 is an ordinary nice photo, 8 is a favorite, 9 and 10 are rare, truly exceptional shots.
+    You rate photos for "AwwSnap", which helps people find the best photos of themselves and the other grown-ups \
+    in their library: the shots they'd put on a dating profile, use as a profile picture, or frame. Score 1 to 10 \
+    (one decimal allowed) how great the adults come across in this photo. What counts, most first: a genuine, \
+    warm smile that reaches the eyes; looking at or near the camera with the face clearly visible (not hidden by \
+    sunglasses, a hat brim, a hand or a drink); flattering, even light on the face; a natural, confident pose and \
+    good posture; being put together for the occasion (outfit, hair); a great moment or an interesting setting or \
+    activity that shows personality; and a clear sense of who the photo is about (one or two people, not a crowd). \
+    Sharpness and framing break ties. Closed eyes, mid-blink or mid-word faces, unflattering angles (from below, \
+    chin down), harsh shadows, blur, cluttered backgrounds and heavy filters lose points. Kids can be in the shot, \
+    but rate only how the grown-ups come across. Judge the photo, not the person: never rate anyone's body, \
+    weight, skin, features or attractiveness. Use the whole scale: 5 is an ordinary nice photo, 8 is a favorite, \
+    9 and 10 are rare, truly exceptional shots.
     Leave the photo out (set "exclude") if: no adult is a main subject ("no_adult"); anyone is in a bath or \
     undressed ("undressed"; swimwear at the beach or pool is fine); it is a screenshot, meme, document, collage, \
     or a photo of a screen or print ("screenshot"); or it looks AI-generated or heavily edited or face-retouched \
@@ -434,7 +439,7 @@ final class ClaudeService: ObservableObject {
                                   hi.addingTimeInterval(600) as NSDate)
         var near: [PhotoScore] = [], allChecked = true
         PHAsset.fetchAssets(with: o).enumerateObjects { a, _, stop in
-            guard var p = library.photos[a.localIdentifier], p.version == Scorer.version,
+            guard var p = library.photos[a.localIdentifier], p.version == Scorer.version(library.mode),
                   p.excluded != Scorer.unavailable, !Scorer.needsShirtlessRecheck(p)
             else { allChecked = false; stop.pointee = true; return }
             if let d = a.creationDate { p.date = d }   // the photo's date now (it may have been changed in Photos)

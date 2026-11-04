@@ -11,6 +11,9 @@ struct FaceSignal: Equatable {
     var child: Double? = nil      // child/baby label confidence on this person's own head-and-shoulders, when measured
     var childTight = false        // measured on the face box alone (another face was touching): reads lower
     var box: [Double] = []        // normalized x, y, width, height on the upright photo (bottom-left origin)
+    // AwwSnap only (measured on the larger faces):
+    var turn: Double? = nil       // 0 = looking at the camera, 1 = side-on (nose off the middle of the eyes)
+    var light: Double? = nil      // 0...1: a well and evenly lit face (not dark, blown out or half in shadow)
 }
 
 /// Everything the analyzer measured on one photo. Pure data, so scoring can be unit tested.
@@ -33,6 +36,7 @@ struct Signals: Equatable {
     var content: [Float] = []            // what's in the photo: every classifier label, hashed into Learner.contentDims
     var poseAndFocus: [Double] = []      // 0...1 each: bodies, arms up, body size, whole body, reach; focus found, size, off-center, count
     var privacyHint = false              // even a faint bath/undressed sign: listed, but never sent to Claude
+    var upright: Double? = nil           // AwwSnap: 0...1, the biggest person's shoulders level and head up (posture)
 
     /// The main subject: among the faces that are part of the shot, the largest with a clear kid reading (0.3 or
     /// more); failing that, the highest face-only reading of 0.15 or more; failing that, the largest face.
@@ -98,6 +102,9 @@ struct Signals: Equatable {
 
 enum Scorer {
     /// Bump when scoring changes; photos scored by an older version are analyzed again.
+    /// The version a photo's result is stored with in each app: AwwSnap adds its own measurements, so its
+    /// photos are read again when SnapScorer changes (Awwbum's aren't).
+    static func version(_ mode: AppMode) -> Int { mode == .snap ? version * 100 + SnapScorer.version : version }
     static let version = 11   // 11: richer fingerprint for the learned score (photo quality, face shape and crop); 10: bath check rebuilt
     /// Exclusion reason for a photo whose image couldn't be loaded (offline iCloud photo).
     static let unavailable = "Unavailable"

@@ -644,6 +644,7 @@ final class Library: ObservableObject {
     /// read back). No photos, photo ids, captions, names, face prints, places or dates. Bath and undressed photos
     /// are left out. Built off the main thread; nil if there's nothing to share or the file can't be written.
     func writeLearningData() async -> URL? {
+        guard mode == .aww else { return nil }   // AwwSnap's photos and votes never leave the phone
         // Claude-scored photos, plus the photos in your Learn my Likes votes (so the shared model can learn from them).
         let picked = pairVotes.filter { $0.winner != nil }
         func ok(_ id: String) -> Bool {
@@ -1474,7 +1475,7 @@ final class Library: ObservableObject {
         // Photos outside a Limited Access selection are kept but left out of the list (see notVisible).
         let seen = notVisible.isEmpty ? Array(photos.values) : photos.values.filter { !notVisible.contains($0.id) }
         let manual = manualAdds
-        let groups = Scorer.moments(from: seen, hidden: hidden, version: Scorer.version, putBack: pb, manual: manual)
+        let groups = Scorer.moments(from: seen, hidden: hidden, version: Scorer.version(mode), putBack: pb, manual: manual)
         let cal = Calendar.current
         // Photos with a current set of saved measurements are ranked by the balanced score; the rest (until they're
         // re-read) by the old one, against each other only, since the two scales don't line up.
@@ -1548,7 +1549,7 @@ final class Library: ObservableObject {
         neverSend = forbidden
         // Photos with faces but no child label: not listed, but offered to Claude too (Apple's labels miss kids).
         let listedIDs = Set(groups.flatMap(\.ids))
-        let poolOnly = Scorer.moments(from: seen, hidden: hidden, version: Scorer.version,
+        let poolOnly = Scorer.moments(from: seen, hidden: hidden, version: Scorer.version(mode),
                                       putBack: pb, includePoolOnly: true)
             .filter { g in Scorer.poolOnly.contains(g.best.excluded ?? "") && !g.ids.contains(where: listedIDs.contains) }
             .map { makeMoment($0, 0, balancedValue($0.best, putBack: pb, includePoolOnly: true) ?? Scorer.rankValue($0.best, putBack: pb, includePoolOnly: true) ?? 0) }
@@ -1561,7 +1562,7 @@ final class Library: ObservableObject {
         // (8 with a learned score) so they can't outrank the ones it looked at. Ranking by Claude or by the learned
         // score, moments Claude hasn't seen are also left off when the learned filter (learned from Claude's own
         // removals) expects Claude would remove them. Ranking by Apple shows Apple's view, flags and all.
-        let anyClaude = photos.values.contains { $0.claude != nil && $0.claude?.exclude == nil && $0.version == Scorer.version }
+        let anyClaude = photos.values.contains { $0.claude != nil && $0.claude?.exclude == nil && $0.version == Scorer.version(mode) }
         let useConsolidated = rankBy == "consolidated"
         let useClaude = anyClaude && rankBy == "claude"
         let useLearned = learned != nil && rankBy == "learned"
@@ -1677,7 +1678,7 @@ final class Library: ObservableObject {
             let why: String
             if notVisible.contains(p.id) { why = "Not in your Limited Access selection" }
             else if hidden.contains(p.id) { why = "Removed by you" }
-            else if p.version != Scorer.version
+            else if p.version != Scorer.version(mode)
                         || (p.excluded == "No child" && p.soft == nil && (p.faces ?? 0) > 0 && (p.flagVersion ?? 0) < 3)
                         || Scorer.needsShirtlessRecheck(p) {
                 why = "Waiting to be checked again"
@@ -1708,7 +1709,7 @@ final class Library: ObservableObject {
         listedPhotos = shown.count
         ms.sort(by: Library.ranked)
         claudeScored = everyMoment.reduce(0) { $0 + ($1.claudeScore != nil ? 1 : 0) }
-        heldBackPhotos = seen.filter { $0.raw == nil && Scorer.heldBack.contains($0.excluded ?? "") && $0.version == Scorer.version }
+        heldBackPhotos = seen.filter { $0.raw == nil && Scorer.heldBack.contains($0.excluded ?? "") && $0.version == Scorer.version(mode) }
             .sorted { $0.date > $1.date }
         learnableCount = photos.values.reduce(0) { n, p in
             n + (p.claude != nil && p.claude?.exclude == nil && p.feat?.count == Learner.featureCount ? 1 : 0)
