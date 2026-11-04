@@ -135,7 +135,7 @@ final class PhotoScanner: ObservableObject {
                 alive.insert(a.localIdentifier)
                 if !known.contains(a.localIdentifier) { todo.append(a) }
                 else if let r = lastRead[a.localIdentifier],
-                        Library.editedSinceRead(r, a.modificationDate, adjusted: a.hasAdjustments) { todo.append(a) }
+                        Library.editedSinceRead(r, a.modificationDate, adjusted: r == nil && a.hasAdjustments) { todo.append(a) }
                 else if needPlace.contains(a.localIdentifier) {
                     let c = a.location?.coordinate
                     places[a.localIdentifier] = c.flatMap { CLLocationCoordinate2DIsValid($0) && ($0.latitude != 0 || $0.longitude != 0) ? $0 : nil }

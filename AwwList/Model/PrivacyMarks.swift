@@ -16,6 +16,7 @@ final class PrivacyMarks: @unchecked Sendable {
     /// False while the saved marks couldn't be read (the phone locked since it started, say): until they're read,
     /// nothing counts as clear, and nothing is written over them.
     private var loaded = false
+    private var lastTry = Date.distantPast
     private let url: URL? = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
         .appendingPathComponent("privacy-marks.json")
 
@@ -23,7 +24,8 @@ final class PrivacyMarks: @unchecked Sendable {
 
     /// Reads the saved marks (merged with any noted since), if not read yet. Call with the lock held.
     private func loadIfNeeded() {
-        guard !loaded else { return }
+        guard !loaded, Date().timeIntervalSince(lastTry) > 5 else { return }   // tried just now: wait a little
+        lastTry = Date()
         guard let url, FileManager.default.fileExists(atPath: url.path) else { loaded = true; return }   // none yet
         guard let d = try? Data(contentsOf: url), let m = try? JSONDecoder().decode([Mark].self, from: d) else { return }
         known.formUnion(m); marks = known.sorted { $0.t < $1.t }; loaded = true
