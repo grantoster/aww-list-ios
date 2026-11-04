@@ -300,3 +300,24 @@ final class AuditFixTests: XCTestCase {
         XCTAssertEqual(back!.weights[r.lowerBound - 1], 0.1, accuracy: 1e-6)   // the rest is untouched
     }
 }
+
+final class PersonFocusTests: XCTestCase {
+    func testPersonScoreFavorsTheirOwnLook() {
+        let box: [Float] = [0.3, 0.3, 0.25, 0.25]   // a good-sized face
+        let smiling = FaceRecord(box: box, vec: Data(), look: [1, 1, 0.8, 0.05])
+        let blinking = FaceRecord(box: box, vec: Data(), look: [0, 0, 0.3, 0.6])
+        // In a great group photo (9) with eyes shut, they rank below a solo photo (6) where they're beaming.
+        XCTAssertGreaterThan(Library.personScore(face: smiling, photoScore: 6), Library.personScore(face: blinking, photoScore: 9))
+        // Always 1–10; a face read before looks were kept counts as middling.
+        let old = FaceRecord(box: box, vec: Data())
+        let v = Library.personScore(face: old, photoScore: 5)
+        XCTAssertTrue((1...10).contains(v))
+        XCTAssertEqual(Library.personScore(face: smiling, photoScore: 10), 10, accuracy: 0.5)
+    }
+
+    func testOldFaceRecordsStillDecode() throws {
+        let json = #"{"box":[0.1,0.2,0.3,0.4],"vec":""}"#.data(using: .utf8)!
+        let r = try JSONDecoder().decode(FaceRecord.self, from: json)
+        XCTAssertNil(r.look)
+    }
+}

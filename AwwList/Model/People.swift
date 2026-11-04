@@ -7,6 +7,10 @@ struct FaceRecord: Codable, Hashable {
     var box: [Float]
     /// 512 signed bytes: the face-identity model's print of the face (see FaceID).
     var vec: Data
+    /// How this person looks in the shot, for ranking their best photos: smiling (0/1), eyes open (0/1), Apple's
+    /// face quality (0...1), and how far the head is turned from the camera (0...1; −1 if unknown). Nil on faces
+    /// read before it was kept. Deleted with the face print.
+    var look: [Float]? = nil
 }
 
 /// Someone the user has named in Who's Who.

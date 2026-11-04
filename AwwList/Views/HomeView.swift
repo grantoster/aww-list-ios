@@ -59,6 +59,8 @@ struct HomeView: View {
     @AppStorage(AppMode.current.key("groupSimilar")) private var groupSimilar = true
     /// Give each named child a fair share of the top spots (Settings → Home list).
     @AppStorage(AppMode.current.key("balanceKids")) private var balanceKids = false
+    /// With someone picked: rank by how they look in each photo (true) or by the whole photo.
+    @AppStorage(AppMode.current.key("personFocus")) private var personFocus = true
     private var top: [Moment] { Array(pool.prefix(shown)) }
     private var balancing: Bool { balanceKids && person == nil }
     private func inPlace(_ p: PhotoScore, _ choice: String) -> Bool {
@@ -88,10 +90,22 @@ struct HomeView: View {
         }
     }
     /// The Home list settings, watched together (one change handler keeps the body quick to type-check).
-    private var listSettings: String { "\(groupSimilar)|\(balanceKids)|\(scene ?? "")|\(place ?? "")" }
+    private var listSettings: String { "\(groupSimilar)|\(balanceKids)|\(personFocus)|\(scene ?? "")|\(place ?? "")" }
     private var filtersOn: Bool { age != nil || shot != nil || person != nil || scene != nil || place != nil }
     private var sceneTitle: String { scene.flatMap { id in sceneMenu.first { $0.kind.id == id }?.kind.name } ?? "Any setting" }
     private var placeTitle: String { place.flatMap { id in placeMenu.first { $0.id == id }?.name } ?? "Anywhere" }
+
+    /// One person's photos ranked by how they look in each (see Library.personScore), with that as the score shown.
+    /// Photos where their face isn't known yet keep their place by the photo's own score.
+    static func focused(_ list: [Moment], on person: UUID, _ library: Library) -> [Moment] {
+        let scored = list.enumerated().map { (n, m) -> (m: Moment, v: Double, n: Int) in
+            var m = m
+            let v = library.personScore(m, person) ?? Double(m.score)
+            m.score = max(1, min(10, Int(v.rounded(.toNearestOrAwayFromZero))))
+            return (m, v, n)
+        }
+        return scored.sorted { $0.v != $1.v ? $0.v > $1.v : $0.n < $1.n }.map(\.m)
+    }
 
     private func refreshLists(_ moments: [Moment]? = nil) {
         let all = moments ?? library.moments
@@ -107,7 +121,11 @@ struct HomeView: View {
         }
         let folded = groupSimilar ? SimilarShots.fold(filtered) : filtered
         // Not when one person is picked: then every photo is theirs anyway.
-        pool = balancing ? KidBalance.order(folded, kids: KidBalance.kids(library.people)) : folded
+        if let person, personFocus {
+            pool = Self.focused(folded, on: person, library)
+        } else {
+            pool = balancing ? KidBalance.order(folded, kids: KidBalance.kids(library.people)) : folded
+        }
         sceneMenu = Surroundings.menu(all)
         placeMenu = placeChoices(all)
         // A choice that's gone (a removed place, a learned kind that dropped off) stops filtering.
@@ -294,6 +312,13 @@ struct HomeView: View {
                         Picker("Who", selection: $person) {
                             Text("Everyone").tag(UUID?.none)
                             ForEach(peopleOrder) { p in Text(p.name).tag(UUID?.some(p.id)) }
+                        }
+                        if let p = person, let name = library.people.first(where: { $0.id == p })?.name {
+                            Divider()
+                            Picker("Rank", selection: $personFocus) {
+                                Text("Best of \(name)").tag(true)
+                                Text("Best whole photo").tag(false)
+                            }
                         }
                         Divider()
                         Button("Who's Who…") { showWho = true }

@@ -14,7 +14,7 @@ enum FaceID {
     static let dims = 512
     /// Bumped when faces are found differently, so listed photos are read again: 2 = up to 8 faces, down to about
     /// 1/300 of the photo (was 4 faces of at least 1/170).
-    static let version = 2
+    static let version = 3   // 3: how each face looks (smile, eyes, quality, head turn), for ranking a person's best photos
     static let maxFaces = 8, minArea = 0.003
 
     /// The standard ArcFace layout (pixels, top-left origin): left eye, right eye, left and right mouth corners
@@ -153,7 +153,10 @@ enum FaceID {
                 .flatMap { overlap($0.boundingBox, b) > 0.5 ? $0.landmarks : nil }
             guard let pb = aligned(ci, box: f.box, landmarks: lm, context: context) else { continue }   // too small to read
             guard let v = embedding(pb) else { return nil }
-            out.append(FaceRecord(box: f.box.map { Float($0) }, vec: pack(v)))
+            let shape = lm.map { Analyzer.faceShape($0) } ?? []
+            let turn: Float = shape.count == 6 ? Float(shape[4]) : -1
+            out.append(FaceRecord(box: f.box.map { Float($0) }, vec: pack(v),
+                                  look: [f.smile ? 1 : 0, f.eyesClosed ? 0 : 1, Float(min(1, max(0, f.quality))), turn]))
         }
         return out
     }

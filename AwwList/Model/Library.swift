@@ -1010,6 +1010,27 @@ final class Library: ObservableObject {
         set { Shared.who.dirty = true; Shared.who.ignoredFaces = newValue }
     }
 
+    /// Ranking one person's photos by how they look in each (Home, with someone picked): 60% this person's own
+    /// face (a smile 40%, eyes open 20%, Apple's face quality 15%, looking at the camera 10%, how big their face is
+    /// 15%) and 40% the photo's own score. Nil when the photo has no face known to be them.
+    func personScore(_ m: Moment, _ person: UUID) -> Double? {
+        guard let recs = m.best.faceRecords,
+              let f = recs.first(where: { faceOwner[Library.faceKey(m.best.id, $0)] == person }) else { return nil }
+        return Library.personScore(face: f, photoScore: m.score)
+    }
+    nonisolated static func personScore(face f: FaceRecord, photoScore: Int) -> Double {
+        let area = f.box.count == 4 ? Double(f.box[2] * f.box[3]) : 0
+        var own = 0.15 * min(1, area / 0.05)
+        if let l = f.look, l.count >= 4 {
+            let turn = Double(l[3])
+            own += 0.40 * Double(l[0]) + 0.20 * Double(l[1]) + 0.15 * min(1, max(0, Double(l[2])))
+                + 0.10 * (turn >= 0 ? max(0, 1 - 1.5 * turn) : 0.6)
+        } else {
+            own += 0.85 * 0.5   // not measured yet (read again soon): middling
+        }
+        return max(1, min(10, 10 * (0.6 * own) + 0.4 * Double(photoScore)))
+    }
+
     /// A face's lasting key: its photo and where it sits in it (stays the same when the photo is read again).
     nonisolated static func faceKey(_ photo: String, _ f: FaceRecord) -> String {
         var h: UInt64 = 14695981039346656037   // FNV-1a over the face print, so the key survives small box changes
