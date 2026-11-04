@@ -1600,7 +1600,10 @@ final class Library: ObservableObject {
             let d = voteShift(m, strengths)
             guard d != 0 else { return l }
             if !ownLearning { return l + d }
-            return m.claudeScore.map { $0 + d } ?? l
+            if let c = m.claudeScore { return c + d }
+            // The same unmoved starting point the learning used for it: the built-in learning, or Apple's score.
+            if let b = builtIn.model, let f = m.best.feat, let x = Learner.decode(f) { return Learner.predict(b, x) + d }
+            return Double(m.apple) + d
         }
         let fallbackIDs = Set(fIdx.map { groups[$0].best.id })   // not yet re-read: Apple's score stays at most 6
         // Built up locally and published once at the end: changing the published list item by item made every
@@ -1643,7 +1646,7 @@ final class Library: ObservableObject {
                 // A sliver of Apple's raw score breaks ties between equal (rounded) values, so a big tie at a bucket
                 // edge can't all land in the higher bucket; Apple-only moments sit at 6 or below in both views.
                 let appleOnly: Double = Double(min(m.apple, 6))
-                var v: Double = appleOnly
+                var v: Double = appleOnly + voteShift(m, strengths)
                 if useClaude {
                     if let c = m.claudeScore { v = c + voteShift(m, strengths) } else if let l = learnedValue(m) { v = min(l, 8) }
                 } else if let l = learnedValue(m) {
