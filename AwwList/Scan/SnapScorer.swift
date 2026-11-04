@@ -3,19 +3,21 @@ import Foundation
 /// AwwSnap's on-device score: how great the grown-ups look in a photo (kids can be in it too). It's a starting
 /// point; Claude's scores (and what AwwSnap learns from them) refine it. It scores the photo, never the person.
 enum SnapScorer {
-    /// The main faces that are grown-ups: Apple's own adult check when it can tell; otherwise a face whose own
-    /// child reading is low, or, unmeasured, a face in a photo with no child reading at all.
+    /// The main faces that are grown-ups: `Signals.isAdult` when it can tell; otherwise a face whose own child
+    /// reading is clearly low, or, unmeasured and at least 4% of the photo's height, one in a photo with no child
+    /// reading at all.
     static func adults(_ s: Signals) -> [Int] {
         let main = s.mainFaceIndices.isEmpty ? Array(s.faces.indices) : s.mainFaceIndices
         return main.filter { i in
             let f = s.faces[i]
             guard f.box.count == 4, f.box[3] >= 0.025 else { return false }   // too small to judge
-            if s.isAdult(i) == true { return true }
-            // This person's own reading beats the whole photo's (which a child anywhere in it, or a youthful
-            // grown-up, can set off).
-            if let c = f.child { return c < 0.3 }
-            if let a = s.isAdult(i) { return a }
-            return s.childConfidence < 0.3 && s.babyConfidence < 0.3
+            if let a = s.isAdult(i) { return a }     // Apple's comparison with a clear kid beside it decides first
+            // Otherwise this person's own reading beats the whole photo's (which a child anywhere in it, or a
+            // youthful grown-up, can set off). Smaller faces, and readings squeezed by a touching face, need a
+            // clearly low reading.
+            let big = f.box[3] >= 0.04
+            if let c = f.child { return !f.childTight && c < (big ? 0.25 : 0.2) }
+            return big && s.childConfidence < 0.3 && s.babyConfidence < 0.3
         }
     }
 

@@ -156,7 +156,7 @@ final class Analyzer {
                 face.childTight = measured?.tight ?? false
             }
             // Shirtless check on every face big enough to measure: about 30 px tall, or the main face(s) of the photo.
-            if box.height >= 0.04 || box.width * box.height >= largest * 0.25 {
+            if box.height >= 0.04 || box.width * box.height >= largest * 0.25 || (portrait && box.height >= 0.025) {
                 face.bareTorso = bareTorso(ci, face: box)
                 // A bare chest is fine only on a baby: ask the classifier about this person alone.
                 if face.bareTorso >= Scorer.bareTorsoLimit {
@@ -168,6 +168,11 @@ final class Analyzer {
         // Sharpness of the main subject (the child's face when one reads as a child).
         if let sf = s.subject, sf.box.count == 4 {
             subjectBox = CGRect(x: sf.box[0], y: sf.box[1], width: sf.box[2], height: sf.box[3])
+        }
+        // AwwSnap: sharpness is the grown-up's face (the largest one), not a child's.
+        if portrait, let a = SnapScorer.adults(s).max(by: { s.faces[$0].area < s.faces[$1].area }), s.faces[a].box.count == 4 {
+            let b = s.faces[a].box
+            subjectBox = CGRect(x: b[0], y: b[1], width: b[2], height: b[3])
         }
         s.sharpness = sharpness(ci, box: subjectBox)
         if portrait { measurePortrait(&s, handler: handler, faces: faceObs, ci: ci) }

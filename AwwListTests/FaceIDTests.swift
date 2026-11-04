@@ -236,5 +236,23 @@ final class SnapAdultTests: XCTestCase {
         // Too small to judge (under 2.5% of the height).
         s.faces[0].child = 0.1; s.faces[0].box = [0.45, 0.5, 0.03, 0.02]
         XCTAssertTrue(SnapScorer.adults(s).isEmpty)
+        // A small face needs a clearly low reading: 0.22 is a grown-up at 4% tall, not at 3%.
+        s.faces[0].box = [0.45, 0.5, 0.05, 0.03]; s.faces[0].child = 0.22
+        XCTAssertTrue(SnapScorer.adults(s).isEmpty)
+        s.faces[0].box = [0.45, 0.5, 0.06, 0.05]
+        XCTAssertEqual(SnapScorer.adults(s), [0])
+    }
+
+    func testKidsStayKids() {
+        // Siblings of similar size, cheek to cheek: the bigger one's low face-only reading isn't a grown-up.
+        var sib = Signals()
+        sib.faces = [FaceSignal(area: 0.08, box: [0.1, 0.4, 0.28, 0.28]), FaceSignal(area: 0.065, box: [0.4, 0.4, 0.25, 0.25])]
+        sib.faces[0].child = 0.2; sib.faces[0].childTight = true; sib.faces[1].child = 0.4
+        XCTAssertTrue(SnapScorer.adults(sib).isEmpty)
+        // Two kids who read a bit low: nobody is a grown-up.
+        var lone = Signals()
+        lone.faces = [FaceSignal(area: 0.1, box: [0.1, 0.3, 0.3, 0.33]), FaceSignal(area: 0.06, box: [0.6, 0.3, 0.25, 0.25])]
+        lone.faces[0].child = 0.25; lone.faces[1].child = 0.28
+        XCTAssertTrue(SnapScorer.adults(lone).isEmpty)
     }
 }
