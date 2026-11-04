@@ -454,11 +454,14 @@ final class Library: ObservableObject {
             let nk = Library.faceKey(photo, new[best.0])
             guard nk != ok else { continue }
             // Copied, not moved: the other app may still have the old reading of this photo (Who's Who is shared).
+            // Only into an answer that isn't there yet: a newer answer on the new reading always wins.
+            let answered = confirmedFaces[nk] != nil || notThem[nk] != nil || ignoredFaces.contains(nk)
+            guard !answered else { continue }
             if let id = confirmedFaces[ok] { confirmedFaces[nk] = id }
             if let r = notThem[ok] { notThem[nk, default: []].formUnion(r) }
             if ignoredFaces.contains(ok) { ignoredFaces.insert(nk) }
             if skippedFaces.contains(ok) { skippedFaces.insert(nk) }
-            if let id = faceOwner[ok] { faceOwner[nk] = id }
+            if let id = faceOwner[ok], faceOwner[nk] == nil { faceOwner[nk] = id }
         }
     }
 
@@ -1156,7 +1159,9 @@ final class Library: ObservableObject {
     /// it can't come back when the other app reads the photo again.
     private func clearOtherCopies(_ photo: String, _ person: UUID) {
         let prefix = photo + "|"
-        for (k, id) in confirmedFaces where id == person && k.hasPrefix(prefix) { confirmedFaces[k] = nil }
+        // Not the photo's other faces as they are now (a real tag on another face stays).
+        let current = Set((photos[photo]?.faceRecords ?? []).map { Library.faceKey(photo, $0) })
+        for (k, id) in confirmedFaces where id == person && k.hasPrefix(prefix) && !current.contains(k) { confirmedFaces[k] = nil }
     }
 
     func untagFace(_ photo: String, _ face: FaceRecord, from person: Person) {

@@ -664,7 +664,7 @@ struct ReviewGridView: View {
                                     }
                             }
                             .buttonStyle(.plain)
-                            .accessibilityLabel("Face \(person.name) might be")
+                            .accessibilityLabel("Might be \(person.name)")
                             .accessibilityValue(a == nil ? "Not answered" : (a == true ? "Yes, \(person.name)" : "No, not \(person.name)"))
                             .accessibilityHint("Tap for yes; tap again for no; a third tap clears it")
                         }

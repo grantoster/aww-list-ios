@@ -365,7 +365,7 @@ final class ClaudeService: ObservableObject {
     }
     /// Like recentBatch, and whether Anthropic's list could be read at all (so "not there" can be told from "couldn't check").
     private func findBatch(count: Int, since: Date, until: Date, known: Set<String>) async -> (id: String?, checked: Bool) {
-        guard let r = try? request(URL(string: "https://api.anthropic.com/v1/messages/batches?limit=10")!),
+        guard let r = try? request(URL(string: "https://api.anthropic.com/v1/messages/batches?limit=100")!),
               let (data, code) = try? await fetch(r), code == 200,
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let list = obj["data"] as? [[String: Any]] else { return (nil, false) }
@@ -690,6 +690,7 @@ final class ClaudeService: ObservableObject {
                 var id: String?
                 var aborted = false
                 setPending(PendingSend(map: map, count: reqs.count, started: started, model: model, recheck: recheck))
+                var droppedOnce = false
                 for attempt in 1...3 where id == nil {
                     // Before a retry (which can come minutes later), check again: new photos may have arrived.
                     if attempt > 1 && (stopRequested || scanner.isScanning || scanner.needsScan
@@ -704,10 +705,12 @@ final class ClaudeService: ObservableObject {
                         } else if (code == 429 || code >= 500) && attempt < 3 {
                             try await Task.sleep(nanoseconds: UInt64(attempt * 3) * 1_000_000_000)
                         } else {
-                            if (400..<500).contains(code) { setPending(nil) }   // refused outright: no batch was made
+                            // Refused outright on the first try: no batch was made (after a dropped connection one might have been).
+                            if (400..<500).contains(code) && !droppedOnce { setPending(nil) }
                             throw ClaudeError.http(code, code == 429 || code >= 500 ? "Claude is busy; try again in a few minutes." : "")
                         }
                     } catch where Self.transient(error) {
+                        droppedOnce = true
                         status = "Connection dropped; checking and retrying…"
                         if let existing = await recentBatch(count: reqs.count, since: started, known: Set(library.claudeBatches.map(\.id))) { id = existing; break }
                         if attempt == 3 { throw error }
