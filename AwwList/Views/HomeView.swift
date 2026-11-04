@@ -26,6 +26,7 @@ struct HomeView: View {
     @State private var viewer: ViewerState?
     @State private var showSettings = false
     @State private var showSearch = false
+    @State private var showLikes = false
     /// How many of the ranked photos are showing: the top 30, then 30 more each time "See more" is tapped.
     @State private var shown = 30
     /// Picking photos to send: hold any photo to start, then tap more. Best-photo ids, in the order picked.
@@ -324,7 +325,8 @@ struct HomeView: View {
                         Divider()
                         Button("Who's Who…") { showWho = true }
                     } label: {
-                        DropChip(title: person.flatMap { id in library.people.first { $0.id == id }?.name } ?? "Everyone",
+                        DropChip(title: person.flatMap { id in library.people.first { $0.id == id }?.name }
+                                    .map { personFocus ? "Best of \($0)" : $0 } ?? "Everyone",
                                  on: person != nil)
                     }
                 }
@@ -387,7 +389,15 @@ struct HomeView: View {
 
     private var topSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(scopeTitle + " top 30").font(Theme.display(26)).lineLimit(1).minimumScaleFactor(0.7)
+            Text(scopeTitle + (focusPerson.map { ": best of \($0.name)" } ?? " top \(min(30, pool.count))")).font(Theme.display(26)).lineLimit(1).minimumScaleFactor(0.7)
+            // Learn my Likes, where you'll see it (it also lives in Settings).
+            Button { showLikes = true } label: {
+                Label(AppMode.current == .snap ? "Which is the better photo? Teach it your eye" : "Which is cuter? Teach it your taste",
+                      systemImage: "rectangle.split.2x1")
+                    .font(Theme.label(15)).foregroundStyle(Theme.grapeInk)
+            }
+            .frame(minHeight: 44, alignment: .leading)
+            .fullScreenCover(isPresented: $showLikes) { LikesView() }
             ViewThatFits(in: .horizontal) {
                 HStack {
                     Text("\(pool.count.formatted()) moments").font(Theme.label(15)).foregroundStyle(.secondary)

@@ -33,7 +33,9 @@ struct RootView: View {
             }
         }
         // Existing installs (photos already checked) aren't asked again; a reinstall is (the key survives in the keychain).
-        .fullScreenCover(isPresented: Binding(get: { library.ready && !askedForKey && !library.hadSavedData },
+        // After the welcome and photo access, never before them.
+        .fullScreenCover(isPresented: Binding(get: { library.ready && !askedForKey && !library.hadSavedData
+                                                     && (status == .authorized || status == .limited) },
                                               set: { if !$0 { askedForKey = true } })) {
             KeySetupView(hadKey: hadKey) { askedForKey = true }
         }
@@ -49,10 +51,8 @@ struct RootView: View {
             }
         }
         .onChange(of: phase) {
-            if phase == .inactive && scanner.isScanning {
-                // Leaving the app mid-scan: ask iOS to keep it going (it must be asked while still on screen).
-                BackgroundScan.continueInBackground()
-            }
+            // Leaving mid-scan doesn't ask iOS to keep going by itself: only your tap on "Keep scanning in the
+            // background" does (Apple's rule for these tasks). Otherwise it picks up overnight or when you're back.
             if phase == .active {
                 BackgroundScan.appBecameActive()
                 status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
@@ -169,12 +169,8 @@ struct SettingsView: View {
                     }
                     Button(scanner.isScanning ? "Scanning…" : "Rescan, including photos that couldn't load") { scanner.start(library: library, retryUnavailable: true) }
                         .disabled(scanner.isScanning)
-                    if BackgroundScan.canContinueInBackground && library.mode == .aww {   // background scans are Awwbum's
-                        Toggle("Keep scanning when I leave the app", isOn: Binding(
-                            get: { UserDefaults.standard.bool(forKey: BackgroundScan.autoKey) },
-                            set: { UserDefaults.standard.set($0, forKey: BackgroundScan.autoKey); keepTick += 1 }))
-                            .id(keepTick)
-                    }
+                    // (Keeping a scan going after you leave is asked for each time, with the button on Home while it scans:
+                    // Apple asks apps to start that only when you tap, never by themselves.)
                 }
                 Section {
                     Toggle("Fold similar shots together", isOn: $groupSimilar)
@@ -733,7 +729,8 @@ struct KeySetupView: View {
     @EnvironmentObject var library: Library
     @AppStorage(AppMode.current.key("autoClaude")) private var autoClaude = false
     @State private var key = ""
-    @State private var scoreAll = true
+    @State private var scoreAll = false   // off unless you choose it (it costs money)
+    @State private var photoCount: Int?
     @State private var failed = false
     let onDone: () -> Void
 
@@ -754,6 +751,10 @@ struct KeySetupView: View {
                 }
                 Toggle("Score every photo with Claude when the first scan finishes", isOn: $scoreAll)
                     .font(.subheadline)
+                if let n = photoCount, n > 0 {
+                    Text("Your library has \(n.formatted()) photos. Scoring all of them would cost roughly \(Claude.dollars(micros: Claude.costMicros(photos: n, model: library.claudeModel, fast: Claude.fast))) (an estimate; only photos that pass the on-device checks are sent, so usually less).")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
                 Text("Estimated cost with \(Claude.models.first { $0.id == library.claudeModel }?.name ?? "the chosen model"): about \(Claude.dollars(micros: Claude.costMicros(photos: 1_000, model: library.claudeModel, fast: Claude.fast))) per 1,000 photos (an estimate; your Anthropic bill shows the actual). Photos are sent at most 768 pixels on the long side, without location or file details. You can change all of this in Settings.")
                     .font(.footnote).foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 10) {
@@ -782,6 +783,12 @@ struct KeySetupView: View {
             .padding(24)
         }
         .background(Theme.background.ignoresSafeArea())
+        .task {
+            // How many photos there are (a quick count, not a scan; the Hidden album isn't included).
+            let o = PHFetchOptions()
+            o.includeHiddenAssets = false
+            photoCount = PHAsset.fetchAssets(with: .image, options: o).count
+        }
     }
 }
 

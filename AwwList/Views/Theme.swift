@@ -7,7 +7,15 @@ enum Theme {
     /// Awwbum is grape purple; AwwSnap (the hidden second app) is light red. Read when the screens are built, so
     /// switching apps (which rebuilds them) changes the colors everywhere.
     private static var snap: Bool { AppMode.current == .snap }
-    static var accent: Color { snap ? snapRed : Color("AccentColor") }   // grape #7B5CF0 / red #D6334A (white text passes 4.5:1)
+    /// Buttons, links and tinted text: a little darker in light mode and lighter in dark mode than the brand color,
+    /// so text in it is easy to read on the page in both (at least 4.5:1 on the background).
+    static var accent: Color { snap ? snapAccent : awwAccent }
+    private static let awwAccent = Color(UIColor { $0.userInterfaceStyle == .dark
+        ? UIColor(red: 0x8F / 255, green: 0x78 / 255, blue: 0xFF / 255, alpha: 1)
+        : UIColor(red: 0x6A / 255, green: 0x48 / 255, blue: 0xE8 / 255, alpha: 1) })
+    private static let snapAccent = Color(UIColor { $0.userInterfaceStyle == .dark
+        ? UIColor(red: 0xF0 / 255, green: 0x62 / 255, blue: 0x72 / 255, alpha: 1)
+        : UIColor(red: 0xC4 / 255, green: 0x2A / 255, blue: 0x40 / 255, alpha: 1) })
     static var grape: Color { snap ? snapRed : Color(red: 0x7B / 255, green: 0x5C / 255, blue: 0xF0 / 255) }
     static let snapRed = Color(red: 0xD6 / 255, green: 0x33 / 255, blue: 0x4A / 255)
     static let sunny = Color(red: 0xFF / 255, green: 0xD2 / 255, blue: 0x3F / 255)
