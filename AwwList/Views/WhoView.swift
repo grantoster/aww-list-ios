@@ -410,7 +410,10 @@ struct NameSheet: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
                         if !faces.isEmpty {
-                            library.name(faces, as: name, birthday: hasBirthday ? Calendar.current.startOfDay(for: birthday) : nil)
+                            // A birthday left at today (the picker's starting day) isn't a real one: it would hide them
+                            // in every older photo.
+                            let b = Calendar.current.startOfDay(for: birthday)
+                            library.name(faces, as: name, birthday: hasBirthday && b != Calendar.current.startOfDay(for: Date()) ? b : nil)
                             // The faces you took out of the group aren't this person, so they're never learned as them.
                             let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
                             if let p = library.people.first(where: { $0.name.caseInsensitiveCompare(n) == .orderedSame }) {
@@ -631,6 +634,7 @@ struct ReviewFacesView: View {
     }
 
     var body: some View {
+        ScrollView {   // scrolls on a small phone, so Undo and Skip stay reachable
         VStack(spacing: 18) {
             if index < queue.count {
                 let f = queue[index]
@@ -685,6 +689,7 @@ struct ReviewFacesView: View {
             }
         }
         .padding(16)
+        }
         .frame(maxHeight: .infinity, alignment: .top)
         .background(Theme.background.ignoresSafeArea())
         .navigationTitle(person.name).navigationBarTitleDisplayMode(.inline)
@@ -1023,6 +1028,7 @@ struct DoubleCheckView: View {
     private var stored: Person? { library.people.first { $0.id == person.id } }
 
     var body: some View {
+        ScrollView {   // scrolls on a small phone, so Undo and Skip stay reachable
         VStack(spacing: 18) {
             if let queue {
                 if index < queue.count {
@@ -1060,6 +1066,7 @@ struct DoubleCheckView: View {
             }
         }
         .padding(16)
+        }
         .frame(maxHeight: .infinity, alignment: .top)
         .background(Theme.background.ignoresSafeArea())
         .navigationTitle("Double-check").navigationBarTitleDisplayMode(.inline)
