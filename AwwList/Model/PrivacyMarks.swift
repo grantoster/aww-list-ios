@@ -13,13 +13,20 @@ final class PrivacyMarks: @unchecked Sendable {
     private let lock = NSLock()
     private var marks: [Mark] = []          // sorted by time
     private var known = Set<Mark>()
+    /// False while the saved marks couldn't be read (the phone locked since it started, say): until they're read,
+    /// nothing counts as clear, and nothing is written over them.
+    private var loaded = false
     private let url: URL? = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
         .appendingPathComponent("privacy-marks.json")
 
-    init() {
-        if let url, let d = try? Data(contentsOf: url), let m = try? JSONDecoder().decode([Mark].self, from: d) {
-            known = Set(m); marks = known.sorted { $0.t < $1.t }
-        }
+    init() { lock.lock(); loadIfNeeded(); lock.unlock() }
+
+    /// Reads the saved marks (merged with any noted since), if not read yet. Call with the lock held.
+    private func loadIfNeeded() {
+        guard !loaded else { return }
+        guard let url, FileManager.default.fileExists(atPath: url.path) else { loaded = true; return }   // none yet
+        guard let d = try? Data(contentsOf: url), let m = try? JSONDecoder().decode([Mark].self, from: d) else { return }
+        known.formUnion(m); marks = known.sorted { $0.t < $1.t }; loaded = true
     }
 
     /// The mark a photo leaves, if any (the same reasons as Scorer.neverSend).
@@ -38,18 +45,20 @@ final class PrivacyMarks: @unchecked Sendable {
     func add(_ photos: [PhotoScore], removed: [String: String], gone: Bool = false) {
         let new = photos.compactMap { p -> Mark? in
             guard let k = Self.kind(p, removed: removed[p.id], unreadable: gone) else { return nil }
-            return Mark(t: p.date.timeIntervalSinceReferenceDate.rounded(), kind: k)
+            return Mark(t: p.date.timeIntervalSinceReferenceDate, kind: k)
         }
         lock.lock()
+        loadIfNeeded()
         let fresh = new.filter { !known.contains($0) }
         guard !fresh.isEmpty else { lock.unlock(); return }
         known.formUnion(fresh)
         marks = known.sorted { $0.t < $1.t }
-        let all = marks
+        let all = marks, canWrite = loaded
         lock.unlock()
-        guard let url else { return }
+        guard let url, canWrite else { return }   // never written over marks that couldn't be read yet
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if let d = try? JSONEncoder().encode(all) { try? d.write(to: url, options: [.atomic, .completeFileProtection]) }
+        // Readable after the first unlock (like the library), so a background scan of a locked phone still sees them.
+        if let d = try? JSONEncoder().encode(all) { try? d.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]) }
     }
 
     /// Whether a photo taken at `date` is near a marked one: 10 minutes for bath, undressed and holds; for swimwear
@@ -57,6 +66,8 @@ final class PrivacyMarks: @unchecked Sendable {
     func blocks(_ date: Date, allowSwimShirtless: Bool) -> Bool {
         let t = date.timeIntervalSinceReferenceDate
         lock.lock(); defer { lock.unlock() }
+        loadIfNeeded()
+        guard loaded else { return true }   // can't tell yet: treated as near one
         // First mark at or after t − 600 (binary search), then the few within reach.
         var lo = 0, hi = marks.count
         while lo < hi { let mid = (lo + hi) / 2; if marks[mid].t < t - 600 { lo = mid + 1 } else { hi = mid } }

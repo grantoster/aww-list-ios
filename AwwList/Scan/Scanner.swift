@@ -8,8 +8,11 @@ import CoreLocation
 @MainActor
 final class PhotoScanner: ObservableObject {
     /// Which app's photos this scans (Awwbum's or AwwSnap's; each keeps its own list).
-    /// Photos a scan found missing in bulk (removed only if the next scan misses them too).
-    var suspectGone = Set<String>()
+    /// Photos a scan found missing in bulk: removed only if the next scan (even after a relaunch) misses them too.
+    var suspectGone: Set<String> {
+        get { Set(UserDefaults.standard.stringArray(forKey: mode.key("suspectGone")) ?? []) }
+        set { UserDefaults.standard.set(newValue.isEmpty ? nil : Array(newValue), forKey: mode.key("suspectGone")) }
+    }
     let mode: AppMode
     init(mode: AppMode = .aww) { self.mode = mode }
     @Published private(set) var isScanning = false
@@ -107,7 +110,8 @@ final class PhotoScanner: ObservableObject {
                 || (facesAllowed && faceModel && p.raw != nil && (p.faces ?? 0) > 0 && p.faceVersion != FaceID.version)
                 || ((p.raw != nil || p.soft != nil) && p.scenes == nil)
                 // AwwSnap's photos read again for its newer measurements: one that can't be loaded keeps its old result.
-                || p.version != Scorer.version(self.mode)
+                // (Not Awwbum's: there a newer scorer can change the privacy checks, so an unread photo stays unchecked.)
+                || (self.mode == .snap && p.version != Scorer.version(self.mode))
         }
         let flag = cancelFlag
         let changes = self.changes
@@ -115,7 +119,7 @@ final class PhotoScanner: ObservableObject {
         let mode = self.mode
         let needPlace = Set(library.photos.values.filter { $0.locChecked != true && ($0.raw != nil || $0.soft != nil) }.map(\.id))
         // When each photo was last read, so one edited in Photos since then is read again (an edit can change what's in it).
-        let lastRead = library.photos.mapValues { $0.readAt ?? $0.date.addingTimeInterval(Library.editSlack) }
+        let lastRead: [String: Date?] = library.photos.mapValues { $0.readAt }
         queue.async {
             let opts = PHFetchOptions()
             opts.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
@@ -130,7 +134,8 @@ final class PhotoScanner: ObservableObject {
             assets.enumerateObjects { a, _, _ in
                 alive.insert(a.localIdentifier)
                 if !known.contains(a.localIdentifier) { todo.append(a) }
-                else if let r = lastRead[a.localIdentifier], let md = a.modificationDate, md > r.addingTimeInterval(5) { todo.append(a) }
+                else if let r = lastRead[a.localIdentifier],
+                        Library.editedSinceRead(r, a.modificationDate, adjusted: a.hasAdjustments) { todo.append(a) }
                 else if needPlace.contains(a.localIdentifier) {
                     let c = a.location?.coordinate
                     places[a.localIdentifier] = c.flatMap { CLLocationCoordinate2DIsValid($0) && ($0.latitude != 0 || $0.longitude != 0) ? $0 : nil }

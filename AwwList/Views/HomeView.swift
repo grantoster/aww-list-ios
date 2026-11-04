@@ -446,10 +446,10 @@ struct HomeView: View {
         }
     }
 
-    /// The list without photos that are never sent (possible bath or undressed photos and the ones around them,
-    /// held-back photos, and swimwear or shirtless unless allowed): Copy, Share and collages take from this.
+    /// The list without possible bath or undressed photos, privacy holds and the photos around them: Copy, Share
+    /// and collages take from this.
     /// Picking photos yourself, or sharing one from the viewer, is still up to you.
-    private var bulkPool: [Moment] { pool.filter { !$0.memberIDs.contains(where: library.neverSend.contains) } }
+    private var bulkPool: [Moment] { let no = library.neverShare; return pool.filter { !$0.memberIDs.contains(where: no.contains) } }
 
     /// The current list's top 10 or top 20 (this year or overall, with your filters) as one picture to share. Made on the
     /// phone and handed to the share sheet; nothing is saved to Photos.

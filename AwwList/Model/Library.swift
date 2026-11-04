@@ -1473,13 +1473,15 @@ final class Library: ObservableObject {
     }
 
     /// Drops scores for photos that were deleted from the library (ids found by the scanner).
-    /// Records from before `readAt`: a photo modified more than this after it was taken counts as edited.
-    nonisolated static let editSlack: TimeInterval = 120
     /// Whether a photo was changed in Photos since it was read (so it must be read again before it's sent).
-    nonisolated static func editedSinceRead(_ p: PhotoScore, _ modified: Date?) -> Bool {
-        guard let md = modified else { return false }
-        return md > (p.readAt ?? p.date.addingTimeInterval(editSlack)).addingTimeInterval(5)
+    /// For a record from before read times were kept, any edit in Photos counts (it may have come after).
+    nonisolated static func editedSinceRead(_ readAt: Date?, _ modified: Date?, adjusted: Bool) -> Bool {
+        if let r = readAt { return (modified ?? .distantPast) > r.addingTimeInterval(5) }
+        return adjusted
     }
+
+    /// Photos Home's Copy, Share and collages leave out (see rebuild).
+    @Published private(set) var neverShare = Set<String>()
 
     func remove(_ ids: Set<String>) {
         guard !ids.isEmpty else { return }
@@ -1595,6 +1597,10 @@ final class Library: ObservableObject {
             forbidden.insert(p.id)
         }
         neverSend = forbidden
+        // For sharing from Home: possible bath or undressed photos, holds and the photos around them (swimwear stays).
+        var noShare = Scorer.neverSend(Array(photos.values), allowSwimShirtless: true, removed: claudeRemoved)
+        for p in photos.values where !noShare.contains(p.id) && marks.blocks(p.date, allowSwimShirtless: true) { noShare.insert(p.id) }
+        neverShare = noShare
         // Photos with faces but no child label: not listed, but offered to Claude too (Apple's labels miss kids).
         let listedIDs = Set(groups.flatMap(\.ids))
         let poolOnly = Scorer.moments(from: seen, hidden: hidden, version: Scorer.version(mode),
@@ -1621,11 +1627,14 @@ final class Library: ObservableObject {
         // Your Learn my Likes votes move a photo up or down every ranking right away (up to 2 points). Only real
         // votes count here (old thumbs keep their own small nudge).
         let strengths = pickStrengths
+        let ownLearning = learned != nil && !learnedIsBuiltIn
         func learnedValue(_ m: Moment) -> Double? {
             guard let l = m.learnedScore else { return nil }
             let d = voteShift(m, strengths)
-            // Always from the photo's own learned score, so a vote only ever moves it the way you voted.
-            return l + d
+            // Always from the photo's own learned score, so a vote only ever moves it the way you voted. Once this
+            // phone's own learning has learned from the votes it already carries about half of the move, so only
+            // the other half is added (keeping the total near the 2-point limit).
+            return l + (ownLearning ? d / 2 : d)
         }
         let fallbackIDs = Set(fIdx.map { groups[$0].best.id })   // not yet re-read: Apple's score stays at most 6
         // Built up locally and published once at the end: changing the published list item by item made every
@@ -1688,8 +1697,9 @@ final class Library: ObservableObject {
         } else if !useConsolidated {
             // Apple's ranking: your votes move its 1–10 score directly.
             for i in ms.indices {
-                ms[i].rankKey = ms[i].rankRaw   // Apple's own order within a score (not Claude's or the learned one)
                 let d = strengths.isEmpty ? 0 : voteShift(ms[i], strengths)
+                // Apple's own order within a score (not Claude's or the learned one), nudged by your thumbs and votes.
+                ms[i].rankKey = ms[i].rankRaw + (Library.thumbNudge(reaction(ms[i])) + d) / 10
                 let cap = fallbackIDs.contains(ms[i].best.id) ? 6 : 10
                 if d != 0 { ms[i].score = max(1, min(max(cap, ms[i].score), Int((Double(ms[i].score) + d).rounded(.toNearestOrAwayFromZero)))) }
             }
@@ -1701,15 +1711,17 @@ final class Library: ObservableObject {
         everyMoment = ms.sorted(by: Library.ranked)
         var outsideTop = Set<String>()
         if useConsolidated {
-            // Each ranking uses only its own scores (no filling in from the others, which would count the same
-            // opinion twice); moments it didn't score sit at its middle.
+            // Each ranking leads with its own scores; see the stand-ins below for moments it didn't score.
             // Your votes move a photo within each ranking.
             let vs = ms.map { voteShift($0, strengths) }
             let list = ms
-            let byApple: (Int) -> Double? = { i in list[i].apple > 0 ? Double(list[i].apple) + vs[i] : nil }
-            let byClaude: (Int) -> Double? = { i in list[i].claudeScore.map { c in c + vs[i] } }
+            // A moment a ranking didn't score gets a capped stand-in from the others (learned at most 8, Apple at most
+            // 6), so being scored isn't a bonus by itself: a low Claude score ranks below a promising unseen moment.
             let learnedVals = list.map { learnedValue($0) }
-            let byLearned: (Int) -> Double? = { i in learnedVals[i] }
+            let appleVals = list.map { Double(min($0.apple, 6)) }
+            let byApple: (Int) -> Double? = { i in list[i].apple > 0 ? Double(list[i].apple) + vs[i] : nil }
+            let byClaude: (Int) -> Double? = { i in list[i].claudeScore.map { c in c + vs[i] } ?? learnedVals[i].map { min($0, 8) } ?? appleVals[i] + vs[i] }
+            let byLearned: (Int) -> Double? = { i in learnedVals[i] ?? appleVals[i] + vs[i] }
             let rankers = [byApple, byClaude, byLearned]
             var fused = Array(repeating: 0.0, count: ms.count)
             var inTop = Array(repeating: false, count: ms.count)
@@ -1717,13 +1729,6 @@ final class Library: ObservableObject {
                 for f in rankers {
                     var vals: [Int: Double] = [:]
                     for i in idx { if let v = f(i) { vals[i] = v } }
-                    // Moments a ranking didn't score sit at its middle (just below), so being scored at all isn't a
-                    // bonus: a low Claude score ranks below the ones Claude never saw.
-                    let present = vals.values.sorted()
-                    if !present.isEmpty {
-                        let mid = present[present.count / 2] - 1e-6
-                        for i in idx where vals[i] == nil { vals[i] = mid }
-                    }
                     let order = vals.keys.sorted { a, b in
                         let va = vals[a]!, vb = vals[b]!
                         if va != vb { return va > vb }

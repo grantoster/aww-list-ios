@@ -437,7 +437,9 @@ final class ClaudeService: ObservableObject {
         // Edited in Photos since it was checked: not sent until it's checked again (an edit can change what's in it).
         var edited = false
         live.enumerateObjects { a, _, stop in
-            if let p = library.photos[a.localIdentifier], Library.editedSinceRead(p, a.modificationDate) { edited = true; stop.pointee = true }
+            if let p = library.photos[a.localIdentifier], Library.editedSinceRead(p.readAt, a.modificationDate, adjusted: a.hasAdjustments) {
+                edited = true; stop.pointee = true
+            }
         }
         if edited { return false }
         let o = PHFetchOptions()
@@ -448,7 +450,8 @@ final class ClaudeService: ObservableObject {
         var near: [PhotoScore] = [], allChecked = true
         PHAsset.fetchAssets(with: o).enumerateObjects { a, _, stop in
             guard var p = library.photos[a.localIdentifier], p.version == Scorer.version(library.mode),
-                  p.excluded != Scorer.unavailable, !Scorer.needsShirtlessRecheck(p)
+                  p.excluded != Scorer.unavailable, !Scorer.needsShirtlessRecheck(p),
+                  !Library.editedSinceRead(p.readAt, a.modificationDate, adjusted: a.hasAdjustments)   // a neighbor edited since: unchecked
             else { allChecked = false; stop.pointee = true; return }
             if let d = a.creationDate { p.date = d }   // the photo's date now (it may have been changed in Photos)
             near.append(p)

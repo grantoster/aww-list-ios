@@ -15,7 +15,7 @@ struct SearchView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     if query.trimmingCharacters(in: .whitespaces).isEmpty {
-                        ContentUnavailableView("Search your awws", systemImage: "magnifyingglass",
+                        ContentUnavailableView(AppMode.current == .snap ? "Search your photos" : "Search your awws", systemImage: "magnifyingglass",
                                                description: Text("Try \"beach\", \"birthday cake\", \"laughing\" or a name from Who's Who."))
                             .padding(.top, 40)
                     } else if results.isEmpty {

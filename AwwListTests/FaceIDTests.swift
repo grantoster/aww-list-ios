@@ -279,13 +279,13 @@ final class AuditFixTests: XCTestCase {
     }
 
     func testEditedSinceRead() {
-        var p = PhotoScore(id: "e", date: Date(timeIntervalSinceReferenceDate: 0), raw: 0.5, excluded: nil, age: nil, caption: "")
-        p.readAt = Date(timeIntervalSinceReferenceDate: 1_000)
-        XCTAssertFalse(Library.editedSinceRead(p, Date(timeIntervalSinceReferenceDate: 1_003)))
-        XCTAssertTrue(Library.editedSinceRead(p, Date(timeIntervalSinceReferenceDate: 2_000)))
-        XCTAssertFalse(Library.editedSinceRead(p, nil))
-        p.readAt = nil   // an older record: modified well after it was taken counts as edited
-        XCTAssertTrue(Library.editedSinceRead(p, Date(timeIntervalSinceReferenceDate: 1_000)))
+        let read = Date(timeIntervalSinceReferenceDate: 1_000)
+        XCTAssertFalse(Library.editedSinceRead(read, Date(timeIntervalSinceReferenceDate: 1_003), adjusted: true))
+        XCTAssertTrue(Library.editedSinceRead(read, Date(timeIntervalSinceReferenceDate: 2_000), adjusted: false))
+        XCTAssertFalse(Library.editedSinceRead(read, nil, adjusted: false))
+        // An older record (no read time): any edit in Photos counts, a plain photo doesn't.
+        XCTAssertTrue(Library.editedSinceRead(nil, Date(timeIntervalSinceReferenceDate: 9_000), adjusted: true))
+        XCTAssertFalse(Library.editedSinceRead(nil, Date(timeIntervalSinceReferenceDate: 9_000), adjusted: false))
     }
 
     func testCopiedLearningLeavesOutFacePictures() {

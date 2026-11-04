@@ -547,7 +547,7 @@ struct LearnedSection: View {
         } header: {
             Text("Learned score")
         } footer: {
-            Text("The app studies Claude's scores alongside what it measures on the phone (smiles, closeness, face size, sharpness and the scene), then predicts a Claude-style score for every photo, privately and for free. It also learns which photos Claude takes off the list, so removals follow Claude's judgment instead of Apple's. Both are checked on a fifth of Claude's verdicts it didn't learn from. Your Learn my Likes votes move the photos you voted on up or down every ranking (up to 2 points) and the score the learning aims for, ahead of Claude's where the two disagree (votes stay on this iPhone). With Rank by Claude, Claude's own score and removals win where they exist, and photos Claude hasn't seen use the learned score; with Rank by Learned, every photo uses the learned score.")
+            Text("The app studies Claude's scores alongside what it measures on the phone (smiles, closeness, face size, sharpness and the scene), then predicts a Claude-style score for every photo, privately and for free. It also learns which photos Claude takes off the list, so removals follow Claude's judgment instead of Apple's. Both are checked on a fifth of Claude's verdicts it didn't learn from. Your Learn my Likes votes move the photos you voted on up or down every ranking (up to 2 points) and the score the learning aims for, ahead of Claude's where the two disagree (votes stay on this iPhone). Claude's removals apply in every ranking. With Rank by Claude, Claude's own score wins where it exists and photos Claude hasn't seen use the learned score; with Rank by Learned, every photo uses the learned score.")
         }
     }
 }
@@ -766,7 +766,7 @@ struct LoadingView: View {
     var body: some View {
         VStack(spacing: 16) {
             Theme.logoImage.resizable().scaledToFit().frame(width: 96, height: 96).accessibilityHidden(true)
-            ProgressView("Opening your awws…")
+            ProgressView(AppMode.current == .snap ? "Opening your photos…" : "Opening your awws…")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.background.ignoresSafeArea())
