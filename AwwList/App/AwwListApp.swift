@@ -37,7 +37,7 @@ struct AwwListApp: App {
                 .environmentObject(Shared.scanner(m))
                 .environmentObject(Shared.claude(m))
                 .environmentObject(plus)
-                .tint(Theme.accent)
+                .tint(Theme.grapeInk)   // text and icons: readable in light and dark (filled buttons use Theme.accent)
                 .id(m)   // a fresh set of screens (and colors) for the other app
         }
     }

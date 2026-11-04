@@ -798,6 +798,7 @@ final class Library: ObservableObject {
         // Learn my Likes: your "Which is cuter?" votes (earlier thumbs count only as a weak start) give each photo
         // a preference; it moves the target the learning aims for, and outweighs Claude where they disagree.
         let strengths = voteStrengths
+        let picksNow = pickStrengths   // remembered once the learning has learned from them
         // Photos Claude hasn't scored are anchored on something your votes never moved: the built-in learning,
         // or else the on-device score (so retraining can't keep pushing them further).
         let anchorModel = builtIn.model
@@ -877,6 +878,7 @@ final class Library: ObservableObject {
                 // rather than lost.
                 if claudeChanged {
                     self.trainedSignature = signature
+                    if model != nil { self.votesLearned = picksNow }   // kept learning (below) hasn't seen the new votes
                     self.ownModel = model ?? (keepIfShort ? self.ownModel : nil)
                     self.ownFilter = filter ?? (keepIfShort ? self.ownFilter : nil)
                 }
@@ -1272,7 +1274,16 @@ final class Library: ObservableObject {
         let d = voteShift(m)
         let ownLearning = learned != nil && !learnedIsBuiltIn
         let viaLearned = rankBy == "learned" || (rankBy == "claude" && m.claudeScore == nil && m.learnedScore != nil)
-        return ownLearning && viaLearned && m.learnedScore != nil ? 0 : d
+        return ownLearning && viaLearned && m.learnedScore != nil && votesAlreadyLearned(m, pickStrengths) ? 0 : d
+    }
+    /// The votes (per photo) this phone's own learning was last trained with.
+    private var votesLearned: [String: Double] = [:]
+    /// Whether this phone's own learning was trained with this photo's votes as they are now (then it already
+    /// carries their move; until then, the list adds it).
+    private func votesAlreadyLearned(_ m: Moment, _ strengths: [String: Double]) -> Bool {
+        let id = strengths[m.best.id] != nil ? m.best.id : m.memberIDs.first { strengths[$0] != nil }
+        guard let id, let now = strengths[id], let then = votesLearned[id] else { return false }
+        return abs(now - then) < 1e-9
     }
     private func voteShift(_ m: Moment, _ strengths: [String: Double]) -> Double {
         guard !strengths.isEmpty, let st = strengths[m.best.id] ?? m.memberIDs.lazy.compactMap({ strengths[$0] }).first else { return 0 }
@@ -1718,7 +1729,7 @@ final class Library: ObservableObject {
             // Always from the photo's own learned score, so a vote only ever moves it the way you voted. Once this
             // phone's own learning has learned from the votes it already carries the move (it aims further than
             // the list moves), so nothing more is added.
-            return ownLearning ? l : l + d
+            return ownLearning && votesAlreadyLearned(m, strengths) ? l : l + d
         }
         let fallbackIDs = Set(fIdx.map { groups[$0].best.id })   // not yet re-read: Apple's score stays at most 6
         // Built up locally and published once at the end: changing the published list item by item made every

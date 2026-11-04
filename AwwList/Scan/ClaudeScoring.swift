@@ -24,6 +24,8 @@ struct ClaudeBatch: Codable, Hashable {
     var sent: Date
     /// A consistency-check batch: photos Claude already scored, sent again for a second score.
     var recheck: Bool? = nil
+    /// Picked up after a send was cut off (matched by size and time, so it could be a different batch).
+    var adopted: Bool? = nil
 }
 
 /// Optional final scoring by Claude, with your own Anthropic API key (stored in the iPhone's Keychain).
@@ -342,7 +344,7 @@ final class ClaudeService: ObservableObject {
         guard let u = pendingURL, let d = try? Data(contentsOf: u), let p = try? JSONDecoder().decode(PendingSend.self, from: d) else { return }
         if let id = await recentBatch(count: p.count, since: p.started, until: p.started.addingTimeInterval(15 * 60),
                                       known: Set(library.claudeBatches.map(\.id))) {
-            library.addClaudeBatch(ClaudeBatch(id: id, model: p.model, photos: p.map, sent: p.started, recheck: p.recheck ? true : nil))
+            library.addClaudeBatch(ClaudeBatch(id: id, model: p.model, photos: p.map, sent: p.started, recheck: p.recheck ? true : nil, adopted: true))
             setPending(nil)
         } else if Date().timeIntervalSince(p.started) > 86_400 {
             setPending(nil)   // never made (it would be listed by now): the photos can simply be sent again
@@ -618,8 +620,10 @@ final class ClaudeService: ObservableObject {
                 // The last check before anything leaves the phone: every photo taken within 10 minutes must be
                 // checked, and none may be (or be near) a possible bath photo.
                 if scanner.isScanning || scanner.needsScan { paused = true; break }
-                let cleared = Set(chunk.filter { Self.sendable($0, library) }.map(\.best.id))
-                held.formUnion(chunk.map(\.best.id).filter { !cleared.contains($0) })
+                // Never a photo already with Claude (a batch picked up meanwhile, say): it's paid for once.
+                let already = recheck ? Set<String>() : (library.claudeSent[model] ?? []).union(library.claudeBatches.flatMap { $0.photos.values })
+                let cleared = Set(chunk.filter { !already.contains($0.best.id) && Self.sendable($0, library) }.map(\.best.id))
+                held.formUnion(chunk.map(\.best.id).filter { !cleared.contains($0) && !already.contains($0) })
                 if stopRequested { break }
                 if fast {
                     var jobs: [(moment: Moment, req: URLRequest)] = []
@@ -922,7 +926,7 @@ final class ClaudeService: ObservableObject {
                     // out to be another one): not counted as sent, so they're offered again.
                     let answered = Set(verdicts.keys).union(failed)
                     let missing = Array(Set(b.photos.values).subtracting(answered))
-                    if !missing.isEmpty { library.unsend(model: b.model, missing) }
+                    if b.adopted == true && !missing.isEmpty { library.unsend(model: b.model, missing) }
                 }
                 library.removeClaudeBatch(b.id)
                 if UIApplication.shared.applicationState != .active && !verdicts.isEmpty && b.recheck != true {

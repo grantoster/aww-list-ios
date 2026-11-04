@@ -94,7 +94,7 @@ struct WhoView: View {
                     } label: {
                         Text("Turn on Who's Who").font(Theme.label(19, relativeTo: .headline)).frame(maxWidth: .infinity, minHeight: 52)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.borderedProminent).tint(Theme.accent)
                     Button("Not now") { dismiss() }.frame(maxWidth: .infinity)
                 }
                 .padding(24)
@@ -212,7 +212,7 @@ struct WhoView: View {
                                         }
                                         library.declinedChecks.insert(s.id)
                                     }
-                                    .buttonStyle(.borderedProminent)
+                                    .buttonStyle(.borderedProminent).tint(Theme.accent)
                                 }
                             }
                             .padding(.vertical, 4)
@@ -649,7 +649,7 @@ struct ReviewFacesView: View {
                     Button { answer(false) } label: { Text("No").frame(maxWidth: .infinity, minHeight: 44) }
                         .buttonStyle(.bordered)
                     Button { answer(true) } label: { Text("Yes").frame(maxWidth: .infinity, minHeight: 44) }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(.borderedProminent).tint(Theme.accent)
                 }
                 // Not them, but you know who it is: tag it as that person instead.
                 Menu {
@@ -948,7 +948,7 @@ struct UntaggedPhotosView: View {
                     Text(chosen.isEmpty ? "Pick photos to ignore" : "Ignore \(chosen.count) photo\(chosen.count == 1 ? "" : "s")")
                         .font(.headline).frame(maxWidth: .infinity, minHeight: 50)
                 }
-                .buttonStyle(.borderedProminent).disabled(chosen.isEmpty)
+                .buttonStyle(.borderedProminent).tint(Theme.accent).disabled(chosen.isEmpty)
                 .padding(.horizontal, 16).padding(.bottom, 8)
             } else if !lastIgnored.isEmpty {
                 HStack {
@@ -1045,7 +1045,7 @@ struct DoubleCheckView: View {
                         Button { answer(.no) } label: { Text("No").frame(maxWidth: .infinity, minHeight: 44) }
                             .buttonStyle(.bordered)
                         Button { answer(.yes(nil)) } label: { Text("Yes").frame(maxWidth: .infinity, minHeight: 44) }
-                            .buttonStyle(.borderedProminent)
+                            .buttonStyle(.borderedProminent).tint(Theme.accent)
                     }
                     HStack {
                         Button("Undo") { undo() }.disabled(history.isEmpty)

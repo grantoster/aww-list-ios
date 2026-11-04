@@ -114,7 +114,7 @@ struct WelcomeView: View {
             Button(action: onStart) {
                 Text("Find my awws").font(Theme.label(19, relativeTo: .headline)).frame(maxWidth: .infinity, minHeight: 52)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.borderedProminent).tint(Theme.accent)
             Text("For the full list, allow access to all photos.").font(.caption).foregroundStyle(.secondary)
         }
         .padding(24)
@@ -134,7 +134,7 @@ struct DeniedView: View {
         } actions: {
             Button("Open Settings") {
                 if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
-            }.buttonStyle(.borderedProminent)
+            }.buttonStyle(.borderedProminent).tint(Theme.accent)
         }
     }
 }
@@ -701,7 +701,7 @@ struct PhotoGroupView: View {
                     Button(picked.isEmpty ? verb : (action == .takeOff ? "Take \(picked.count) off" : "Add \(picked.count) back")) {
                         apply(Array(picked))
                     }
-                    .buttonStyle(.borderedProminent).disabled(picked.isEmpty)
+                    .buttonStyle(.borderedProminent).tint(Theme.accent).disabled(picked.isEmpty)
                 }
             }
         }
@@ -776,7 +776,7 @@ struct KeySetupView: View {
                 } label: {
                     Text(hadKey ? "Continue" : "Save key").font(Theme.label(19, relativeTo: .headline)).frame(maxWidth: .infinity, minHeight: 52)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.borderedProminent).tint(Theme.accent)
                 .disabled(!hadKey && key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 Button("Not now") { onDone() }
             }

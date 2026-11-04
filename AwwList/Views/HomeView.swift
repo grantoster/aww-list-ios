@@ -191,7 +191,7 @@ struct HomeView: View {
                 } description: {
                     Text("Photos can tell a baby from an older child, but not a toddler from a kid. With birthdays, each photo is sorted by how old your kids were that day.")
                 } actions: {
-                    Button("Add birthdays") { showSettings = true }.buttonStyle(.borderedProminent)
+                    Button("Add birthdays") { showSettings = true }.buttonStyle(.borderedProminent).tint(Theme.accent)
                 }
                 .padding(.top, 24)
             } else if rankChoice == "claude" && library.claudeScored == 0 {
@@ -563,7 +563,7 @@ struct HomeView: View {
                       systemImage: "square.and.arrow.up")
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.borderedProminent).tint(Theme.accent)
         }
         .controlSize(.large)
         .disabled(picked.isEmpty || preparing || favoriting)
@@ -860,7 +860,7 @@ struct EmptyListView: View {
             } description: {
                 Text("No moments match these filters.")
             } actions: {
-                Button("Clear filters", action: clear).buttonStyle(.borderedProminent)
+                Button("Clear filters", action: clear).buttonStyle(.borderedProminent).tint(Theme.accent)
             }
         } else if scanner.isScanning {
             ContentUnavailableView(AppMode.current == .snap ? "Finding your best shots" : "Finding your awws", systemImage: "heart.circle",
@@ -908,7 +908,7 @@ struct ClaudeNotRunView: View {
                  ? "\(pending.formatted()) photos are with Claude. Scores usually come back within an hour and show up here. Meanwhile, rank by \(library.learned != nil ? "Learned or Apple" : "Apple") from the menu above."
                  : "Score your photos with Claude in Settings, or rank by \(library.learned != nil ? "Learned or Apple" : "Apple") from the menu above.")
         } actions: {
-            if pending == 0 { Button("Score with Claude") { openSettings() }.buttonStyle(.borderedProminent) }
+            if pending == 0 { Button("Score with Claude") { openSettings() }.buttonStyle(.borderedProminent).tint(Theme.accent) }
         }
     }
 }
