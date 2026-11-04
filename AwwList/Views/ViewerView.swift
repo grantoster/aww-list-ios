@@ -78,13 +78,13 @@ struct ViewerView: View {
                 var n = now; n.similar = moments[index].similar; return n
             } ?? moments[index]
             VStack(alignment: .leading, spacing: 6) {
+                if let p = focus {   // its own line, so the score row keeps room on a small phone
+                    Text("Best of \(p.name) · photo \(m.score)").font(.footnote).foregroundStyle(.white.opacity(0.8))
+                }
                 HStack(alignment: .firstTextBaseline) {
                     let shown = focus.map { p in max(1, min(10, Int(library.personScore(m, p.id).rounded(.toNearestOrAwayFromZero)))) } ?? m.score
                     Text("\(shown)").font(Theme.display(38)).foregroundStyle(shown >= 9 ? Theme.sunny : Color.white)
                     Text("/10").foregroundStyle(.white.opacity(0.7))
-                    if let p = focus {
-                        Text("Best of \(p.name) · photo \(m.score)").font(.footnote).foregroundStyle(.white.opacity(0.8))
-                    }
                     Spacer()
                     // Your own vote: nudges it among similar scores; teaches the app when Claude scored it.
                     let r = library.reaction(m)
@@ -205,6 +205,11 @@ struct ViewerView: View {
         case "learned": parts.append(m.learnedScore.map { "ranked by the learned score (\(one($0)))" } ?? "ranked by Apple's score")
         case "consolidated": parts.append("high in more than one ranking (Consolidated)")
         default: parts.append("ranked by Apple's score")
+        }
+        // Ranked around a person: what the photo itself is ranked by reads as the photo's part.
+        if focus != nil, parts.count >= 2 {
+            let i = parts.count - 1
+            if parts[i].hasPrefix("ranked by ") { parts[i] = "photo: " + parts[i].dropFirst("ranked by ".count) }
         }
         let d = library.voteShift(m)
         if abs(d) >= 0.05 {
