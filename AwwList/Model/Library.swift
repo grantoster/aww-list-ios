@@ -502,7 +502,9 @@ final class Library: ObservableObject {
         save()
     }
     func addClaudeBatch(_ b: ClaudeBatch) {
+        guard !claudeBatches.contains(where: { $0.id == b.id }) else { return }   // never recorded twice
         claudeBatches.append(b)
+        BackgroundScan.scheduleResultsCheck()   // so the scores can be collected even if you've left the app
         claudeSent[b.model, default: []].formUnion(b.photos.values)
         for id in b.photos.values where claudeSentYear[id] == nil {
             if let d = photos[id]?.date { claudeSentYear[id] = Calendar.current.component(.year, from: d) }
@@ -1264,13 +1266,13 @@ final class Library: ObservableObject {
     }
     /// How far your votes move a moment on the list, in points (0 when you haven't voted on it).
     func voteShift(_ m: Moment) -> Double { voteShift(m, pickStrengths) }
-    /// The part of that move the current ranking adds (half where it comes from this phone's own learning, which
-    /// has already learned the other half), for "Why it's here".
+    /// The part of that move the current ranking adds (none where it comes from this phone's own learning, which
+    /// has learned the vote itself), for "Why it's here".
     func appliedVoteShift(_ m: Moment) -> Double {
         let d = voteShift(m)
         let ownLearning = learned != nil && !learnedIsBuiltIn
         let viaLearned = rankBy == "learned" || (rankBy == "claude" && m.claudeScore == nil && m.learnedScore != nil)
-        return ownLearning && viaLearned && m.learnedScore != nil ? d / 2 : d
+        return ownLearning && viaLearned && m.learnedScore != nil ? 0 : d
     }
     private func voteShift(_ m: Moment, _ strengths: [String: Double]) -> Double {
         guard !strengths.isEmpty, let st = strengths[m.best.id] ?? m.memberIDs.lazy.compactMap({ strengths[$0] }).first else { return 0 }
@@ -1714,9 +1716,9 @@ final class Library: ObservableObject {
             guard let l = m.learnedScore else { return nil }
             let d = voteShift(m, strengths)
             // Always from the photo's own learned score, so a vote only ever moves it the way you voted. Once this
-            // phone's own learning has learned from the votes it already carries about half of the move, so only
-            // the other half is added (keeping the total near the 2-point limit).
-            return l + (ownLearning ? d / 2 : d)
+            // phone's own learning has learned from the votes it already carries the move (it aims further than
+            // the list moves), so nothing more is added.
+            return ownLearning ? l : l + d
         }
         let fallbackIDs = Set(fIdx.map { groups[$0].best.id })   // not yet re-read: Apple's score stays at most 6
         // Built up locally and published once at the end: changing the published list item by item made every

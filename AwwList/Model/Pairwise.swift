@@ -73,7 +73,7 @@ enum Pairwise {
     }
 
     /// How many photos' preference moved by at least `by` points between two sets of strengths.
-    static func moved(from old: [String: Double], to new: [String: Double], by: Double = 0.25) -> Int {
+    static func moved(from old: [String: Double], to new: [String: Double], by: Double = 0.1) -> Int {
         Set(old.keys).union(new.keys).filter { abs(pointsPerUnit * ((new[$0] ?? 0) - (old[$0] ?? 0))) >= by }.count
     }
 

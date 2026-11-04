@@ -522,6 +522,7 @@ struct PeopleCache: Codable {
         return try? PropertyListDecoder().decode(PeopleCache.self, from: d)
     }
     func write(_ u: URL) {
+        guard UserDefaults.standard.bool(forKey: "faceConsent") else { return }   // Who's Who was turned off meanwhile
         let e = PropertyListEncoder(); e.outputFormat = .binary
         if let d = try? e.encode(self) { try? d.write(to: u, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]) }
     }

@@ -335,9 +335,13 @@ final class ClaudeService: ObservableObject {
         } else { try? FileManager.default.removeItem(at: u) }
     }
     /// Records a batch whose upload was cut off, if Anthropic made it; gives up on it after a day.
+    private var adopting = false
     func adoptPendingSend(_ library: Library) async {
+        guard !adopting else { return }   // one check at a time (send and collect can both ask)
+        adopting = true; defer { adopting = false }
         guard let u = pendingURL, let d = try? Data(contentsOf: u), let p = try? JSONDecoder().decode(PendingSend.self, from: d) else { return }
-        if let id = await recentBatch(count: p.count, since: p.started, known: Set(library.claudeBatches.map(\.id))) {
+        if let id = await recentBatch(count: p.count, since: p.started, until: p.started.addingTimeInterval(15 * 60),
+                                      known: Set(library.claudeBatches.map(\.id))) {
             library.addClaudeBatch(ClaudeBatch(id: id, model: p.model, photos: p.map, sent: p.started, recheck: p.recheck ? true : nil))
             setPending(nil)
         } else if Date().timeIntervalSince(p.started) > 86_400 {
@@ -345,7 +349,8 @@ final class ClaudeService: ObservableObject {
         }
     }
 
-    private func recentBatch(count: Int, since: Date, known: Set<String>) async -> String? {
+    /// A batch made between `since` (less 2 minutes) and `until` with `count` requests that isn't recorded yet.
+    private func recentBatch(count: Int, since: Date, until: Date = .distantFuture, known: Set<String>) async -> String? {
         guard let r = try? request(URL(string: "https://api.anthropic.com/v1/messages/batches?limit=10")!),
               let (data, code) = try? await fetch(r), code == 200,
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -355,7 +360,7 @@ final class ClaudeService: ObservableObject {
         for b in list {
             guard let id = b["id"] as? String, let created = b["created_at"] as? String,
                   !known.contains(id),   // never one of the batches already recorded
-                  let when = iso.date(from: created) ?? iso2.date(from: created), when >= since.addingTimeInterval(-120),
+                  let when = iso.date(from: created) ?? iso2.date(from: created), when >= since.addingTimeInterval(-120), when <= until,
                   let counts = b["request_counts"] as? [String: Int] else { continue }
             if counts.values.reduce(0, +) == count { return id }
         }
@@ -514,7 +519,11 @@ final class ClaudeService: ObservableObject {
     func send(_ library: Library, recheck: Bool = false) async {
         lastOutcome = .notStarted   // stays so on the early returns below (a send already running sets its own when done)
         guard !busy else { return }
-        await adoptPendingSend(library)   // a batch cut off last time is recorded first, so its photos aren't sent twice
+        // A batch cut off last time is recorded first, so its photos aren't sent twice (busy meanwhile, so a second
+        // send can't start while this checks).
+        busy = true
+        await adoptPendingSend(library)
+        busy = false
         // Only once the scan is finished: until then a bath photo near a candidate may not be checked yet.
         guard !scanner.isScanning else { status = "Checking your photos first; Claude scoring starts by itself when that finishes."; return }
         if scanner.needsScan {
@@ -909,6 +918,11 @@ final class ClaudeService: ObservableObject {
                     library.applyClaude(verdicts)
                     library.noteClaudeFailures(failed)
                     library.unsend(model: b.model, failed)   // can be tried again (up to twice in all)
+                    // Photos with no line in the results at all (a batch picked up after a cut-off send that turned
+                    // out to be another one): not counted as sent, so they're offered again.
+                    let answered = Set(verdicts.keys).union(failed)
+                    let missing = Array(Set(b.photos.values).subtracting(answered))
+                    if !missing.isEmpty { library.unsend(model: b.model, missing) }
                 }
                 library.removeClaudeBatch(b.id)
                 if UIApplication.shared.applicationState != .active && !verdicts.isEmpty && b.recheck != true {

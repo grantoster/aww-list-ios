@@ -389,7 +389,7 @@ struct HomeView: View {
 
     private var topSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(scopeTitle + (focusPerson.map { ": best of \($0.name)" } ?? " top \(min(30, pool.count))")).font(Theme.display(26)).lineLimit(1).minimumScaleFactor(0.7)
+            Text(scopeTitle + (focusPerson.map { ": best of \($0.name)" } ?? (pool.isEmpty ? "" : " top \(min(30, pool.count))"))).font(Theme.display(26)).lineLimit(1).minimumScaleFactor(0.7)
             // Learn my Likes, where you'll see it (it also lives in Settings).
             Button { showLikes = true } label: {
                 Label(AppMode.current == .snap ? "Which is the better photo? Teach it your eye" : "Which is cuter? Teach it your taste",
@@ -784,7 +784,7 @@ struct ScanBanner: View {
             ProgressView(value: Double(scanner.done), total: Double(max(1, scanner.total))).controlSize(.mini)
             if expanded {
             Text(AppMode.current == .aww
-                 ? "If you leave, it keeps going in the background (iOS shows its progress), and otherwise picks up overnight while your phone charges, or when you come back."
+                 ? "If you leave, it picks up overnight while your phone charges, or when you come back. To keep it going right after you leave, tap Keep scanning in the background."
                  : "AwwSnap checks photos while it's open; it picks up where it left off when you come back.")
                 .font(.caption).foregroundStyle(.secondary)
             if BackgroundScan.canContinueInBackground && AppMode.current == .aww {
