@@ -156,7 +156,8 @@ enum FaceID {
             let shape = lm.map { Analyzer.faceShape($0) } ?? []
             let turn: Float = shape.count == 6 ? Float(shape[4]) : -1
             out.append(FaceRecord(box: f.box.map { Float($0) }, vec: pack(v),
-                                  look: [f.smile ? 1 : 0, f.eyesClosed ? 0 : 1, Float(min(1, max(0, f.quality))), turn]))
+                                  look: [f.expressionRead ? (f.smile ? 1 : 0) : -1, f.expressionRead ? (f.eyesClosed ? 0 : 1) : -1,
+                                         Float(min(1, max(0, f.quality))), turn]))
         }
         return out
     }

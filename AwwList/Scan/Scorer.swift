@@ -6,6 +6,7 @@ struct FaceSignal: Equatable {
     var quality: Double = 0       // Vision faceCaptureQuality; only compared within a burst
     var smile: Bool = false
     var eyesClosed: Bool = false
+    var expressionRead = false    // smile and eyes were actually read (the face was matched by the smile detector)
     var bareTorso: Double = 0     // 0...1, share of the chest below this face that matches its skin tone
     var baby: Double? = nil       // "baby" label confidence on this person's own face-and-chest crop, when measured
     var child: Double? = nil      // child/baby label confidence on this person's own head-and-shoulders, when measured

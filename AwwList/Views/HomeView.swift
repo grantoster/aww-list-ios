@@ -95,12 +95,15 @@ struct HomeView: View {
     private var sceneTitle: String { scene.flatMap { id in sceneMenu.first { $0.kind.id == id }?.kind.name } ?? "Any setting" }
     private var placeTitle: String { place.flatMap { id in placeMenu.first { $0.id == id }?.name } ?? "Anywhere" }
 
+    /// The person the list is ranked around, if any (for the viewer's score and "Why it's here").
+    private var focusPerson: Person? { personFocus ? person.flatMap { id in library.people.first { $0.id == id } } : nil }
+
     /// One person's photos ranked by how they look in each (see Library.personScore), with that as the score shown.
-    /// Photos where their face isn't known yet keep their place by the photo's own score.
+    /// Photos where their face isn't known yet count it as middling (see Library.personScore).
     static func focused(_ list: [Moment], on person: UUID, _ library: Library) -> [Moment] {
         let scored = list.enumerated().map { (n, m) -> (m: Moment, v: Double, n: Int) in
             var m = m
-            let v = library.personScore(m, person) ?? Double(m.score)
+            let v = library.personScore(m, person)
             m.score = max(1, min(10, Int(v.rounded(.toNearestOrAwayFromZero))))
             return (m, v, n)
         }
@@ -119,13 +122,11 @@ struct HomeView: View {
             if let person, !m.people.contains(person) { return false }
             return true
         }
-        let folded = groupSimilar ? SimilarShots.fold(filtered) : filtered
+        // Ranking one person: ranked first, so each group of look-alikes is headed by the shot where they look best.
+        let ranked = person.map { p in personFocus ? Self.focused(filtered, on: p, library) : filtered } ?? filtered
+        let folded = groupSimilar ? SimilarShots.fold(ranked) : ranked
         // Not when one person is picked: then every photo is theirs anyway.
-        if let person, personFocus {
-            pool = Self.focused(folded, on: person, library)
-        } else {
-            pool = balancing ? KidBalance.order(folded, kids: KidBalance.kids(library.people)) : folded
-        }
+        pool = balancing && person == nil ? KidBalance.order(folded, kids: KidBalance.kids(library.people)) : folded
         sceneMenu = Surroundings.menu(all)
         placeMenu = placeChoices(all)
         // A choice that's gone (a removed place, a learned kind that dropped off) stops filtering.
@@ -233,7 +234,7 @@ struct HomeView: View {
             .sheet(isPresented: $showSettings) { SettingsView() }
             .sheet(isPresented: $showWho) { WhoView() }
             .sheet(isPresented: $showSearch) { SearchView() }
-            .fullScreenCover(item: $viewer) { v in ViewerView(moments: v.list, index: v.index) }
+            .fullScreenCover(item: $viewer) { v in ViewerView(moments: v.list, index: v.index, focus: focusPerson) }
             .sheet(item: $collage) { c in ShareSheet(image: c.image).presentationDetents([.medium, .large]) }
             .onChange(of: filterKey) { shown = 30; if !preparing { endSelecting() }; refreshLists() }
             .onChange(of: listSettings) { shown = 30; if !preparing { endSelecting() }; refreshLists() }

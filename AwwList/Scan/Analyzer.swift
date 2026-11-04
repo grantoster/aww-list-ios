@@ -144,6 +144,7 @@ final class Analyzer {
             if let m = ciFaces.max(by: { iou($0.box, box) < iou($1.box, box) }), iou(m.box, box) > 0.3 {
                 face.smile = m.smile
                 face.eyesClosed = m.closed
+                face.expressionRead = true
             }
             // Is this person a child? (Checked for the four largest faces big enough to read.)
             // Only worth it with two or more faces and some sign of a child (otherwise it can't change the subject).

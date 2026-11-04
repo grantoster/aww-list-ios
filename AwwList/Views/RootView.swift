@@ -256,9 +256,9 @@ struct HowScoresSection: View {
             Text("Each photo gets points for the main child's expression (25%: a laugh beats a smile, and a sleeping baby counts too), eyes open and looking at the camera (10%), photo quality from Apple's quality score and sharpness (12%), how big the child is in the frame (10%), how clearly a child is the subject (10%), action and play (5%), a special moment or outing like a birthday cake, costume, snow or the zoo (5%), pure \"aww\" like a sleeping baby (5%), pure joy like a real laugh or arms up (5%), candid moments caught mid-action or looking away (5%), the best smile, grin or mischief, a big grin or a cheeky smirk (5%), and unposed fun, kids clearly having fun and not posing for the camera, messy or not (3%). A second person earns nothing extra, and crowds count a little less.")
                 .font(.footnote)
             }
-            Text("Pick someone on Home (Who) and their photos are ranked by how they look in each: their own smile, eyes open, face quality, looking at the camera and how big their face is (60%), plus the photo's score (40%). Choose \"Best whole photo\" in the same menu to rank by the whole photo instead.")
-                .font(.footnote)
             Text("Those points become 1–10 by rank across your whole library: about 1 in 20 moments a year is a 9 or 10 (the top 1% are 10s), the next 10% are 8s and the next 15% are 7s. Every year counts equally, so a huge year can't crowd out the others, and a photo needs real quality for a high score, not just being the best of a weak bunch.")
+                .font(.footnote)
+            Text("Pick someone on Home (Who) and their photos are ranked around them: their own expression and how clearly they're caught (smiling, eyes open, a sharp, well-lit face by Apple's face capture quality, facing the camera, and how big their face is) count 60%, and the photo's score 40%. That score isn't spread by rank. Choose \"Best whole photo\" in the same menu to rank by the whole photo instead.")
                 .font(.footnote)
             Text("Photos are analyzed with Apple's on-device Vision framework. Nothing is uploaded unless you score with Claude.")
                 .font(.footnote).foregroundStyle(.secondary)

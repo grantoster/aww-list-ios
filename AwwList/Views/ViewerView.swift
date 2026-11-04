@@ -5,6 +5,8 @@ import Photos
 struct ViewerView: View {
     let moments: [Moment]
     @State var index: Int
+    /// Home ranked around this person ("Best of …"): the score shown is theirs, with the photo's own beside it.
+    var focus: Person? = nil
     @EnvironmentObject var library: Library
     @Environment(\.dismiss) private var dismiss
     @State private var sharing: UIImage?
@@ -77,8 +79,12 @@ struct ViewerView: View {
             } ?? moments[index]
             VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("\(m.score)").font(Theme.display(38)).foregroundStyle(m.score >= 9 ? Theme.sunny : Color.white)
+                    let shown = focus.map { p in max(1, min(10, Int(library.personScore(m, p.id).rounded(.toNearestOrAwayFromZero)))) } ?? m.score
+                    Text("\(shown)").font(Theme.display(38)).foregroundStyle(shown >= 9 ? Theme.sunny : Color.white)
                     Text("/10").foregroundStyle(.white.opacity(0.7))
+                    if let p = focus {
+                        Text("Best of \(p.name) · photo \(m.score)").font(.footnote).foregroundStyle(.white.opacity(0.8))
+                    }
                     Spacer()
                     // Your own vote: nudges it among similar scores; teaches the app when Claude scored it.
                     let r = library.reaction(m)
@@ -185,6 +191,9 @@ struct ViewerView: View {
     private func whyHere(_ m: Moment) -> String {
         var parts: [String] = []
         if moments.indices.contains(index) && moments.count > 1 { parts.append("No. \(index + 1) of \(moments.count) here") }
+        if let p = focus {
+            parts.append("ranked by how \(p.name) comes across in it: their expression, eyes and how clearly they're caught (60%), plus the photo's own score of \(m.score) (40%)")
+        }
         func one(_ v: Double) -> String { let t = (v * 10).rounded(.toNearestOrAwayFromZero) / 10; return t == t.rounded() ? String(Int(t)) : String(format: "%.1f", t) }
         switch library.rankBy {
         case "claude" where library.claudeScored == 0:
