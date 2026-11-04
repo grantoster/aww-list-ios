@@ -1180,9 +1180,15 @@ final class Library: ObservableObject {
         return s
     }
     func recordVote(_ a: String, _ b: String, winner: String?) {
-        pairVotes.append(PairVote(a: a, b: b, winner: winner, date: Date())); saveSoon()
+        pairVotes.append(PairVote(a: a, b: b, winner: winner, date: Date())); rebuildSoon(); saveSoon()
     }
-    func undoVote() { if !pairVotes.isEmpty { pairVotes.removeLast(); saveSoon() } }
+    func undoVote() { if !pairVotes.isEmpty { pairVotes.removeLast(); rebuildSoon(); saveSoon() } }
+    /// How far your votes move a moment on the list, in points (0 when you haven't voted on it).
+    func voteShift(_ m: Moment) -> Double { voteShift(m, voteStrengths) }
+    private func voteShift(_ m: Moment, _ strengths: [String: Double]) -> Double {
+        guard !strengths.isEmpty, let st = strengths[m.best.id] ?? m.memberIDs.lazy.compactMap({ strengths[$0] }).first else { return 0 }
+        return Pairwise.shift(st)
+    }
     /// The next pair to ask about, from the photos on the list (best-ranked 400, kept and ranked as on Home).
     func nextPair() -> (Moment, Moment)? {
         let ms = Array(moments.prefix(400))
@@ -1570,6 +1576,8 @@ final class Library: ObservableObject {
         let claudeLed = useClaude || useLearned || (useConsolidated && (anyClaude || learned != nil))
         var filtered = 0
         var filteredIDs = Set<String>()
+        // Your Learn my Likes votes move a photo up or down every ranking right away (up to 2 points).
+        let strengths = voteStrengths
         // Built up locally and published once at the end: changing the published list item by item made every
         // screen watching it re-filter thousands of moments thousands of times (the app froze and closed).
         var ms: [Moment] = all.compactMap { m in
@@ -1616,7 +1624,7 @@ final class Library: ObservableObject {
                 } else if let l = m.learnedScore {
                     v = l
                 }
-                return v + Library.thumbNudge(reaction(m)) + m.rankRaw * 0.001   // your thumbs: +0.25 up, −0.5 down
+                return v + voteShift(m, strengths) + Library.thumbNudge(reaction(m)) + m.rankRaw * 0.001   // your votes, and thumbs: +0.25 up, −0.5 down
             }
             let cal = Scorer.calibrate(vals.map { $0 / 10 }, years: ms.map(\.year))
             for i in ms.indices {
@@ -1625,6 +1633,12 @@ final class Library: ObservableObject {
                 if useClaude { cap = m.claudeScore != nil ? 10 : (m.learnedScore != nil ? 8 : 6) }
                 else { cap = m.learnedScore != nil ? 10 : 6 }
                 ms[i].score = min(cal[i], cap)
+            }
+        } else if !strengths.isEmpty && !useConsolidated {
+            // Apple's ranking: your votes move its 1–10 score directly.
+            for i in ms.indices {
+                let d = voteShift(ms[i], strengths)
+                if d != 0 { ms[i].score = max(1, min(10, Int((Double(ms[i].score) + d).rounded(.toNearestOrAwayFromZero)))) }
             }
         }
         // Consolidated: each year's top 100 by Claude, by the learned score and by Apple, combined into one list.
@@ -1636,13 +1650,19 @@ final class Library: ObservableObject {
         if useConsolidated {
             // Each ranking covers only the moments it actually scored (no filling in from the others, which would
             // count the same opinion twice).
-            let rankers: [(Moment) -> Double?] = [{ $0.apple > 0 ? Double($0.apple) : nil }, { $0.claudeScore }, { $0.learnedScore }]
+            // Your votes move a photo within each ranking.
+            let vs = ms.map { voteShift($0, strengths) }
+            let list = ms
+            let byApple: (Int) -> Double? = { i in list[i].apple > 0 ? Double(list[i].apple) + vs[i] : nil }
+            let byClaude: (Int) -> Double? = { i in list[i].claudeScore.map { c in c + vs[i] } }
+            let byLearned: (Int) -> Double? = { i in list[i].learnedScore.map { l in l + vs[i] } }
+            let rankers = [byApple, byClaude, byLearned]
             var fused = Array(repeating: 0.0, count: ms.count)
             var inTop = Array(repeating: false, count: ms.count)
             for (_, idx) in Dictionary(grouping: ms.indices, by: { ms[$0].year }) {
                 for f in rankers {
                     var vals: [Int: Double] = [:]
-                    for i in idx { if let v = f(ms[i]) { vals[i] = v } }
+                    for i in idx { if let v = f(i) { vals[i] = v } }
                     let order = vals.keys.sorted { a, b in
                         let va = vals[a]!, vb = vals[b]!
                         if va != vb { return va > vb }

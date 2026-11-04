@@ -206,3 +206,17 @@ final class SnapScorerTests: XCTestCase {
         XCTAssertNotEqual(Scorer.version(.snap), Scorer.version)
     }
 }
+
+final class VoteShiftTests: XCTestCase {
+    func testVotesMoveRankingsByAtMostTwoPoints() {
+        let t = Date()
+        // One vote: about three quarters of a point each way.
+        let one = Pairwise.strengths([PairVote(a: "A", b: "B", winner: "A", date: t)])
+        XCTAssertEqual(Pairwise.shift(one["A"]!), 0.75, accuracy: 0.05)
+        XCTAssertEqual(Pairwise.shift(one["B"]!), -0.75, accuracy: 0.05)
+        // Picked over five different photos: capped at 2.
+        let five = Pairwise.strengths((0..<5).map { PairVote(a: "A", b: "B\($0)", winner: "A", date: t) })
+        XCTAssertEqual(Pairwise.shift(five["A"]!), Pairwise.maxShift, accuracy: 1e-9)
+        XCTAssertEqual(Pairwise.maxShift, 2)
+    }
+}

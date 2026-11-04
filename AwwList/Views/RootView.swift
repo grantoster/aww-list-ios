@@ -546,7 +546,7 @@ struct LearnedSection: View {
         } header: {
             Text("Learned score")
         } footer: {
-            Text("The app studies Claude's scores alongside what it measures on the phone (smiles, closeness, face size, sharpness and the scene), then predicts a Claude-style score for every photo, privately and for free. It also learns which photos Claude takes off the list, so removals follow Claude's judgment instead of Apple's. Both are checked on a fifth of Claude's verdicts it didn't learn from. Your Learn my Likes votes move the score it aims for, ahead of Claude's where the two disagree (votes stay on this iPhone). Claude's own score and removals always win where they exist; with Rank by Claude, photos Claude hasn't seen use the learned score.")
+            Text("The app studies Claude's scores alongside what it measures on the phone (smiles, closeness, face size, sharpness and the scene), then predicts a Claude-style score for every photo, privately and for free. It also learns which photos Claude takes off the list, so removals follow Claude's judgment instead of Apple's. Both are checked on a fifth of Claude's verdicts it didn't learn from. Your Learn my Likes votes move the photos you voted on up or down every ranking (up to 2 points) and the score the learning aims for, ahead of Claude's where the two disagree (votes stay on this iPhone). Claude's own score and removals always win where they exist; with Rank by Claude, photos Claude hasn't seen use the learned score.")
         }
     }
 }

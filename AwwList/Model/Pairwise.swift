@@ -16,9 +16,12 @@ enum Pairwise {
     static func key(_ a: String, _ b: String) -> String { a < b ? a + "|" + b : b + "|" + a }
 
     /// How far, in score points, one unit of Bradley-Terry strength (log odds) moves a photo.
-    static let pointsPerUnit = 1.5
+    static let pointsPerUnit = 1.0
     /// The most votes can move a photo from where Claude (or the learning) put it, in points.
-    static let maxShift = 3.0
+    static let maxShift = 2.0
+    /// How far your votes move a photo, in points (the same in every ranking): about ¾ of a point for one vote,
+    /// 1½ for three wins in a row, and never more than `maxShift`.
+    static func shift(_ strength: Double) -> Double { max(-maxShift, min(maxShift, pointsPerUnit * strength)) }
 
     /// Each photo's strength (log scale; 0 = average) from the votes, by Bradley-Terry's minorize-maximize steps.
     /// Every photo also plays `prior` imaginary games against an average photo, winning half, so one vote can't
@@ -62,7 +65,7 @@ enum Pairwise {
     /// The training target for a photo: where Claude (or the learning) put it, moved by your votes. With several
     /// votes the move is big enough that a photo you keep picking ends up above one Claude scored higher.
     static func target(anchor: Double, strength: Double) -> Double {
-        max(1, min(10, anchor + max(-maxShift, min(maxShift, pointsPerUnit * strength))))
+        max(1, min(10, anchor + shift(strength)))
     }
 
     /// How many photos' preference moved by at least `by` points between two sets of strengths.

@@ -197,6 +197,11 @@ struct ViewerView: View {
         case "consolidated": parts.append("high in more than one ranking (Consolidated)")
         default: parts.append("ranked by Apple's score")
         }
+        let d = library.voteShift(m)
+        if abs(d) >= 0.05 {
+            let pts = String(format: "%.1f", (abs(d) * 10).rounded(.toNearestOrAwayFromZero) / 10)
+            parts.append("your Learn my Likes votes moved it \(d > 0 ? "up" : "down") \(pts) point\(pts == "1.0" ? "" : "s")")
+        }
         let r = library.reaction(m)
         if r > 0 { parts.append("you gave it a thumbs up") } else if r < 0 { parts.append("you gave it a thumbs down") }
         if m.memberIDs.contains(where: library.addedBack.contains) { parts.append("you added it back") }
