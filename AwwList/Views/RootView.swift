@@ -255,7 +255,7 @@ struct HowScoresSection: View {
             if library.mode == .snap {
                 Text("AwwSnap helps you find the photos where you and the other grown-ups look your best, for a dating profile, a profile picture or a frame. It scores the photo, never the person: no one's looks, features or body are rated. On the phone, each photo gets points for the grown-ups' real smiles (30%), looking at the camera (12%), Apple's face quality reading (15%), eyes open (10%), a face big enough to see well (10%), even light on the face, not lost in shadow or glare (10%), framing with room above the head (8%) and posture (5%). Blur lowers the score, and crowds count a little less.")
                     .font(.footnote)
-                Text("Claude, if you use it, looks for the same things plus a natural pose, being dressed for the occasion and a moment or setting that shows personality. Claude leads the ranking. To steer it toward your own eye, write what you like in My taste below; your \"Which is the better photo?\" votes settle close calls.")
+                Text("Claude, if you use it, looks for the same things plus a natural pose, being dressed for the occasion and a moment or setting that shows personality. Claude leads the ranking. To steer it toward your own eye, write what you like in My taste (under Score with Claude); your \"Which is the better photo?\" votes settle close calls.")
                     .font(.footnote)
             } else {
             Text("Each photo gets points for the main child's expression (25%: a laugh beats a smile, and a sleeping baby counts too), eyes open and looking at the camera (10%), photo quality from Apple's quality score and sharpness (12%), how big the child is in the frame (10%), how clearly a child is the subject (10%), action and play (5%), a special moment or outing like a birthday cake, costume, snow or the zoo (5%), pure \"aww\" like a sleeping baby (5%), pure joy like a real laugh or arms up (5%), candid moments caught mid-action or looking away (5%), the best smile, grin or mischief, a big grin or a cheeky smirk (5%), and unposed fun, kids clearly having fun and not posing for the camera, messy or not (3%). A second person earns nothing extra, and crowds count a little less.")
@@ -320,7 +320,7 @@ struct ClaudeSection: View {
     @State private var askClear = false
     @State private var askRemoveKey = false
     @State private var askTop1000 = false
-    @State private var scopeBefore: Int?
+    @State private var top1000 = 0
     @EnvironmentObject var library: Library
     @EnvironmentObject var claude: ClaudeService
     @EnvironmentObject var scanner: PhotoScanner
@@ -409,26 +409,10 @@ struct ClaudeSection: View {
             }
             if library.claudeScope != 0 && library.claudeScope < 1000 && !claude.busy && !autoClaude {
                 Button("Score each year's top 1,000 with Claude…") {
-                    scopeBefore = library.claudeScope
-                    library.setClaude(scope: 1000)   // counts what that sends, for the question below
+                    top1000 = claude.candidates(library, scope: 1000).count   // counted without changing anything
                     askTop1000 = true
                 }
-                .disabled(!canScore)
-                .confirmationDialog("Score each year's top 1,000?", isPresented: $askTop1000, titleVisibility: .visible) {
-                    let m = library.claudeToSend
-                    Button(m == 0 ? "Keep Top 1,000 a year" : onPlus ? "Score \(m.formatted()) photos"
-                           : "Score \(m.formatted()) photos, about \(Claude.dollars(micros: Claude.costMicros(photos: m, model: library.claudeModel, fast: fast)))") {
-                        scopeBefore = nil
-                        if m > 0 { start() }
-                    }
-                    Button("Cancel", role: .cancel) { if let s = scopeBefore { library.setClaude(scope: s) }; scopeBefore = nil }
-                } message: {
-                    Text("Claude's score is what ranks your list, so more Claude scores mean less guessing further down. Photos Claude already scored aren't sent again. \(onPlus ? "" : "The cost is an estimate; your Anthropic bill shows the actual.")")
-                }
-                .onChange(of: askTop1000) { _, open in
-                    // Closed without choosing (tapped outside): back to what it was.
-                    if !open, let s = scopeBefore { library.setClaude(scope: s); scopeBefore = nil }
-                }
+                .disabled(!canScore || scanner.isScanning)
             }
             let rc = library.claudeRecheckable
             if library.claudeScored > 0 {
@@ -466,6 +450,19 @@ struct ClaudeSection: View {
             }
         } header: {
             Text("Score with Claude")
+                .confirmationDialog("Score each year's top 1,000?", isPresented: $askTop1000, titleVisibility: .visible) {
+                    if top1000 > 0 {
+                        Button(onPlus ? "Score \(top1000.formatted()) photos"
+                               : "Score \(top1000.formatted()) photos, about \(Claude.dollars(micros: Claude.costMicros(photos: top1000, model: library.claudeModel, fast: fast)))") {
+                            library.setClaude(scope: 1000)   // only once you say yes
+                            start()
+                        }
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text(top1000 == 0 ? "Each year's top 1,000 photos are already scored or being scored."
+                         : "Switches Photos to send to Top 1,000 a year. Claude's score is what ranks your list, so more Claude scores mean less guessing further down. Photos Claude already scored aren't sent again. \(onPlus ? "" : "The cost is an estimate; your Anthropic bill shows the actual.")")
+                }
         } footer: {
             if onPlus {
                 Text("With Awwbum Plus, photos are scored through Awwbum's server; nothing is charged to an Anthropic account. Claude decides what comes off the list. Photos flagged as possible bath or undressed, and every shot within 10 minutes of one, are never sent. Photos are sent at most 768 pixels on the long side, without location or file details. Anthropic's terms say it doesn't train on what's sent; it normally deletes it within 30 days, and can keep anything its safety checks flag for up to 2 years.")
@@ -504,19 +501,25 @@ struct TasteSection: View {
                     saved = Claude.tasteNote(library.mode); text = saved
                     library.recountClaude()
                 }
-                .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines) == saved)
+                .disabled(claude.busy || text.trimmingCharacters(in: .whitespacesAndNewlines) == saved)   // not mid-send
                 let n = library.claudeRescorable
-                if n > 0 && Claude.hasKey(library.mode) {
-                    Button("Re-score my top \(n.formatted()) with my taste…") { askRescore = true }
-                        .disabled(claude.busy || scanner.isScanning || text.trimmingCharacters(in: .whitespacesAndNewlines) != saved)
+                let tasteNow = Claude.tasteID(library.mode)
+                let begun = tasteNow != nil && library.photos.values.contains { $0.claude?.taste == tasteNow }
+                if n > 0 && tasteNow != nil && Claude.hasKey(library.mode) {
+                    Button("Re-score my \(begun ? "next" : "top") \(n.formatted()) with my taste…") { askRescore = true }
+                        .disabled(claude.busy || scanner.isScanning || scanner.needsScan || claude.pendingPhotos != nil
+                                  || text.trimmingCharacters(in: .whitespacesAndNewlines) != saved)
                         .confirmationDialog("Re-score your top \(n.formatted()) photos?", isPresented: $askRescore, titleVisibility: .visible) {
                             Button("Re-score, about \(Claude.dollars(micros: Claude.costMicros(photos: n, model: library.claudeModel, fast: fast)))") {
                                 Task { await claude.send(library, rescore: true) }
                             }
                             Button("Cancel", role: .cancel) {}
                         } message: {
-                            Text("Sends your best-ranked photos Claude already scored (up to \(ClaudeService.rescoreCount.formatted())) again, with your taste added, and the new scores replace the old ones. Same privacy rules as scoring. The cost is an estimate; your Anthropic bill shows the actual.")
+                            Text("Sends the photos Claude scored highest that weren't scored with this taste yet (up to \(ClaudeService.rescoreCount.formatted())) again, with your taste added, and the new scores replace the old ones. Same privacy rules as scoring. The cost is an estimate; your Anthropic bill shows the actual.")
                         }
+                }
+                if !claude.status.isEmpty {
+                    Text(claude.status).font(.footnote).foregroundStyle(.secondary)
                 }
             }
         } header: {
@@ -558,13 +561,20 @@ struct HowItsDoingSection: View {
         }
     }
     private func advice(_ s: Library.Standing) -> String {
+        if library.claudeScored == 0 {
+            return "Once Claude scores some photos, its score ranks the list and this shows how much of it rests on Claude."
+        }
+        if library.rankBy != "claude" {
+            return "You're ranking by \(library.rankBy == "learned" ? "the learned score" : library.rankBy == "apple" ? "Apple" : "Consolidated"). Rank by Claude (on Home) puts Claude's own score first."
+        }
+        let plus = library.mode == .aww && PlusStore.available && Shared.plus.isActive
         if s.top > 0 && s.topScored * 10 < s.top * 9 {
             return "Claude's score ranks the list; photos Claude hasn't seen use the learned score, which is a guess. Scoring more photos with Claude (below) puts more of your top photos on Claude's own verdict."
         }
-        if s.votes >= 20 && s.agree * 10 < s.votes * 6 {
+        if s.votes >= 20 && s.agree * 10 < s.votes * 6 && !plus {
             return "Your votes often pick the photo Claude scored lower. Writing what you like in My taste (below) tells Claude directly, then re-score your top photos."
         }
-        return "Claude's score ranks the list; photos Claude hasn't seen use the learned score. Votes only settle photos Claude scored about the same."
+        return "Claude's score ranks the list; photos Claude hasn't seen use the learned score. Votes only reorder photos Claude scored within half a point of each other."
     }
 }
 
@@ -686,7 +696,7 @@ struct LearnedSection: View {
         } header: {
             Text("Learned score")
         } footer: {
-            Text("The app studies Claude's scores alongside what it measures on the phone (smiles, closeness, face size, sharpness and the scene), then predicts a Claude-style score for every photo, privately and for free. It also learns which photos Claude takes off the list, so removals follow Claude's judgment instead of Apple's. Both are checked on a fifth of Claude's verdicts it didn't learn from. The learning learns Claude's scoring only. Your Learn my Likes votes only settle photos Claude scored about the same (a quarter point at most) with Rank by Claude, and move photos up to 2 points with the other rankings (votes stay on this iPhone). Claude's removals apply in every ranking. With Rank by Claude, Claude's own score wins where it exists and photos Claude hasn't seen use the learned score; with Rank by Learned, every photo uses the learned score.")
+            Text("The app studies Claude's scores alongside what it measures on the phone (smiles, closeness, face size, sharpness and the scene), then predicts a Claude-style score for every photo, privately and for free. It also learns which photos Claude takes off the list, so removals follow Claude's judgment instead of Apple's. Both are checked on a fifth of Claude's verdicts it didn't learn from. The learning learns Claude's scoring only. With Rank by Claude, your Learn my Likes votes move a photo Claude scored a quarter point at most; photos Claude hasn't seen, and every photo with the other rankings, move up to 2 points (votes stay on this iPhone). Claude's removals apply in every ranking. With Rank by Claude, Claude's own score wins where it exists and photos Claude hasn't seen use the learned score; with Rank by Learned, every photo uses the learned score.")
         }
     }
 }

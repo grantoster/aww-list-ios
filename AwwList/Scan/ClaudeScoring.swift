@@ -15,7 +15,7 @@ struct ClaudeVerdict: Codable, Hashable {
     var score2: Double? = nil
     var rechecked: Bool? = nil
     /// Which "My taste" note Claude scored it with (nil: none), so a re-score skips photos already scored with it.
-    var taste: UInt64? = nil
+    var taste: Int64? = nil
 }
 
 /// A batch sent to Claude that hasn't come back yet.
@@ -31,7 +31,7 @@ struct ClaudeBatch: Codable, Hashable {
     /// A re-score with your "My taste" note: the new scores replace the old ones.
     var rescore: Bool? = nil
     /// The "My taste" note the photos were sent with (nil: none).
-    var taste: UInt64? = nil
+    var taste: Int64? = nil
 }
 
 /// Optional final scoring by Claude, with your own Anthropic API key (stored in the iPhone's Keychain).
@@ -107,13 +107,15 @@ enum Claude {
     static let tasteLimit = 400
     static func tasteNote(_ mode: AppMode) -> String {
         let s = (UserDefaults.standard.string(forKey: mode.key("tasteNote")) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        return String(s.prefix(tasteLimit)).replacingOccurrences(of: "</taste>", with: "")
+        // No angle brackets, so the note can't close (or fake) its own markers.
+        return String(String(s.prefix(tasteLimit)).filter { $0 != "<" && $0 != ">" })
     }
     static func setTasteNote(_ s: String, _ mode: AppMode) {
         UserDefaults.standard.set(String(s.prefix(tasteLimit)), forKey: mode.key("tasteNote"))
     }
     /// Which note is in use (nil: none).
-    static func tasteID(_ mode: AppMode) -> UInt64? { let n = tasteNote(mode); return n.isEmpty ? nil : Learner.stableHash([n]) }
+    /// Signed, so the binary save format always reads it back.
+    static func tasteID(_ mode: AppMode) -> Int64? { let n = tasteNote(mode); return n.isEmpty ? nil : Int64(bitPattern: Learner.stableHash([n])) }
 
     /// Rough cost of one photo: a 768 px photo (~600–784 image tokens) plus the instructions (~400) in, and up to
     /// ~300 tokens out (the reply plus any brief thinking at low effort). Shown in Settings as an estimate.
@@ -220,8 +222,8 @@ enum Claude {
     static func costMicros(photos: Int, model: String, fast: Bool) -> Int { costMicros(photos: photos, model: model) * (fast ? 2 : 1) }
 
     /// One photo's request.
-    static func params(model: String, jpeg: Data, mode: AppMode = .aww) -> [String: Any] {
-        ["model": model, "max_tokens": 2000, "system": system(mode),
+    static func params(model: String, jpeg: Data, mode: AppMode = .aww, system sys: String? = nil) -> [String: Any] {
+        ["model": model, "max_tokens": 2000, "system": sys ?? system(mode),
          "output_config": ["effort": "low"],
          "messages": [["role": "user", "content": [
              ["type": "image", "source": ["type": "base64", "media_type": "image/jpeg", "data": jpeg.base64EncodedString()]],
@@ -358,7 +360,7 @@ final class ClaudeService: ObservableObject {
     /// Anthropic answers with the batch's id, the next run finds that batch (by its size and time) and records it,
     /// instead of sending (and paying for) the same photos again.
     struct PendingSend: Codable { var map: [String: String]; var count: Int; var started: Date; var model: String; var recheck: Bool
-        var rescore: Bool? = nil; var taste: UInt64? = nil }
+        var rescore: Bool? = nil; var taste: Int64? = nil }
     private var pendingURL: URL? {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
             .appendingPathComponent("\(mode.name)-claude-pending.json")
@@ -445,8 +447,8 @@ final class ClaudeService: ObservableObject {
     /// (for example by the learned score) never sends more than the chosen number. Within the budget, the best
     /// candidates go first: by the learned score once there is one, otherwise by Apple's.
     /// `refill`: slots freed by photos the final check held back go to the next-best candidates, not the spread.
-    func candidates(_ library: Library, skipping skip: Set<String> = [], refill: Bool = false) -> [Moment] {
-        let model = library.claudeModel, n = library.claudeScope
+    func candidates(_ library: Library, skipping skip: Set<String> = [], refill: Bool = false, scope: Int? = nil) -> [Moment] {
+        let model = library.claudeModel, n = scope ?? library.claudeScope
         let pending = Set(library.claudeBatches.flatMap { $0.photos.values }).union(inFlight)
         let sentToModel = library.claudeSent[model] ?? []
         func used(_ p: PhotoScore) -> Bool {
@@ -590,14 +592,16 @@ final class ClaudeService: ObservableObject {
         // An earlier upload still unaccounted for (its batch not found yet): don't send until it is, so those
         // photos are never paid for twice and its record isn't overwritten.
         if pendingPhotos != nil {
-            status = "Checking on an earlier upload first; scoring picks up once it's found (or after a day)."
+            status = rescore ? "Checking on an earlier upload first; tap Re-score again once it's found."
+                : "Checking on an earlier upload first; scoring picks up once it's found (or after a day)."
             return
         }
         // Only once the scan is finished: until then a bath photo near a candidate may not be checked yet.
-        guard !scanner.isScanning else { status = "Checking your photos first; Claude scoring starts by itself when that finishes."; return }
+        let later = rescore ? "tap Re-score again when that finishes." : "Claude scoring starts by itself when that finishes."
+        guard !scanner.isScanning else { status = "Checking your photos first; " + later; return }
         if scanner.needsScan {
             scanner.startIfNeeded(library: library)
-            status = "Checking new photos first; Claude scoring starts by itself when that finishes."
+            status = "Checking new photos first; " + later
             return
         }
         busy = true; defer { busy = false }
@@ -612,6 +616,7 @@ final class ClaudeService: ObservableObject {
         var lastPhotoError = ""
         let model = library.claudeModel
         let taste = viaPlus ? nil : Claude.tasteID(mode)   // the note these photos go out with (Plus uses its own instructions)
+        let systemNow = Claude.system(mode)   // fixed for the whole send, so every photo matches its taste tag
         // Fast mode: every group's results are recorded at once (never re-offered or re-billed, and saved soon);
         // the list is re-ranked every ~100 photos and at the end.
         func record(_ r: FastResult) {
@@ -620,7 +625,8 @@ final class ClaudeService: ObservableObject {
                 return
             }
             if rescore {
-                library.applyRescore(r.verdicts, taste: taste)
+                library.applyRescore(r.verdicts, taste: taste, refresh: false)
+                sinceRefresh += r.verdicts.count
                 if !r.verdicts.isEmpty { madeProgress = true }
                 return
             }
@@ -709,7 +715,7 @@ final class ClaudeService: ObservableObject {
                             guard let r = Shared.plus.scoreRequest(jpeg: jpeg, model: model) else { throw ClaudeError.notSubscribed }
                             jobs.append((m, r))
                         } else {
-                            let body = try JSONSerialization.data(withJSONObject: Claude.params(model: model, jpeg: jpeg, mode: mode),
+                            let body = try JSONSerialization.data(withJSONObject: Claude.params(model: model, jpeg: jpeg, mode: mode, system: systemNow),
                                                                   options: [.withoutEscapingSlashes])
                             jobs.append((m, try request(messagesURL, method: "POST", body: body)))
                         }
@@ -730,7 +736,7 @@ final class ClaudeService: ObservableObject {
                     guard let jpeg = jpegs[i] else { unloadedIDs.insert(m.best.id); held.insert(m.best.id); continue }
                     let cid = "p\(sent + i)_\(Int(Date().timeIntervalSince1970))"
                     map[cid] = m.best.id
-                    reqs.append(["custom_id": cid, "params": Claude.params(model: model, jpeg: jpeg, mode: mode)])
+                    reqs.append(["custom_id": cid, "params": Claude.params(model: model, jpeg: jpeg, mode: mode, system: systemNow)])
                 }
                 if reqs.isEmpty { continue }
                 status = "Sending \(reqs.count) photos to Claude…"

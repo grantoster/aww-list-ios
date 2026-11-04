@@ -603,7 +603,7 @@ final class Library: ObservableObject {
         let top = Array(moments.prefix(100))
         func claudeOf(_ id: String) -> Double? {
             guard let c = photos[id]?.claude, c.exclude == nil else { return nil }
-            return c.score2.map { (c.score + $0) / 2 } ?? c.score
+            return c.score   // the score the Claude ranking uses
         }
         var votes = 0, agree = 0, close = 0
         for v in pairVotes {
@@ -617,7 +617,7 @@ final class Library: ObservableObject {
         return Standing(top: top.count, topScored: top.filter { $0.claudeScore != nil }.count, votes: votes, agree: agree, closeVotes: close)
     }
     /// New scores from "Re-score with my taste": they replace the old ones (a removal on the new pass stands).
-    func applyRescore(_ verdicts: [String: ClaudeVerdict], taste: UInt64?) {
+    func applyRescore(_ verdicts: [String: ClaudeVerdict], taste: Int64?, refresh: Bool = true) {
         guard !verdicts.isEmpty else { return }
         for (id, v) in verdicts {
             guard photos[id]?.claude != nil else { continue }
@@ -625,7 +625,8 @@ final class Library: ObservableObject {
             photos[id]?.claude = n
             if let e = v.exclude { claudeRemoved[id] = e }
         }
-        recountClaude()
+        // Fast mode re-ranks every ~100 photos and at the end (like ordinary scoring), not after every group.
+        guard refresh else { if UIApplication.shared.applicationState == .background { flush() } else { saveSoon() }; return }
         rebuild(); saveNowIfAway()
         retrain()
     }
@@ -882,8 +883,6 @@ final class Library: ObservableObject {
         retrainBusy = true
         let gen = generation
         let known = trainedSignature, knownLikes = tasteSignature, hadTaste = taste != nil, mode = self.mode
-        // Learn my Likes: your "Which is cuter?" votes (earlier thumbs count only as a weak start) give each photo
-        // a preference; it moves the target the learning aims for, and outweighs Claude where they disagree.
         // Claude is the anchor: the learning learns Claude's scores only. Your votes move the list (see rebuild),
         // never what the learning aims for.
         let strengths: [String: Double] = [:]
@@ -1404,7 +1403,9 @@ final class Library: ObservableObject {
         let ms = Array(moments.prefix(400))
         let byID = Dictionary(ms.map { ($0.best.id, $0) }, uniquingKeysWith: { a, _ in a })
         let pool = ms.map { m in
-            Pairwise.Candidate(id: m.best.id, value: m.learnedScore ?? m.claudeScore ?? Double(m.score), date: m.best.date,
+            // Close calls by the score that ranks the list: Claude's own where it has one (votes settle those).
+            Pairwise.Candidate(id: m.best.id, value: rankBy == "claude" ? (m.claudeScore ?? m.learnedScore.map { min($0, 8) } ?? Double(m.score))
+                                                    : (m.learnedScore ?? m.claudeScore ?? Double(m.score)), date: m.best.date,
                                people: m.people, ages: m.ages, similar: Set(m.similar))
         }
         guard let pair = Pairwise.next(pool, votes: pairVotes, strengths: voteStrengths),
