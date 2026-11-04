@@ -65,12 +65,12 @@ enum Claude {
     (one decimal allowed) how great the adults come across in this photo. What counts, most first: a genuine, \
     warm smile that reaches the eyes; looking at or near the camera with the face clearly visible (not hidden by \
     sunglasses, a hat brim, a hand or a drink); flattering, even light on the face; a natural, confident pose and \
-    good posture; being put together for the occasion (outfit, hair); a great moment or an interesting setting or \
+    good posture; dressed for the occasion; a great moment or an interesting setting or \
     activity that shows personality; and a clear sense of who the photo is about (one or two people, not a crowd). \
     Sharpness and framing break ties. Closed eyes, mid-blink or mid-word faces, unflattering angles (from below, \
     chin down), harsh shadows, blur, cluttered backgrounds and heavy filters lose points. Kids can be in the shot, \
     but rate only how the grown-ups come across. Judge the photo, not the person: never rate anyone's body, \
-    weight, skin, features or attractiveness. Use the whole scale: 5 is an ordinary nice photo, 8 is a favorite, \
+    weight, skin, features, facial proportions, symmetry or attractiveness. Use the whole scale: 5 is an ordinary nice photo, 8 is a favorite, \
     9 and 10 are rare, truly exceptional shots.
     Leave the photo out (set "exclude") if: no adult is a main subject ("no_adult"); anyone is in a bath or \
     undressed ("undressed"; swimwear at the beach or pool is fine); it is a screenshot, meme, document, collage, \

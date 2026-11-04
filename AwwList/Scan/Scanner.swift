@@ -66,7 +66,7 @@ final class PhotoScanner: ObservableObject {
         // Without the face recognizer (it failed to load), face prints can't be made: don't re-read photos for them.
         let faceModel = FaceID.available
         let known = Set(library.photos.values.filter {
-            $0.version == Scorer.version(mode) && !(retryUnavailable && $0.excluded == Scorer.unavailable)
+            $0.version == Scorer.version(self.mode) && !(retryUnavailable && $0.excluded == Scorer.unavailable)
                 && ($0.raw == nil || !faceModel || ($0.faceRecords.map { $0.allSatisfy { $0.vec.count == People.dim } } ?? false)
                     || (!facesAllowed && $0.facePrintsOff == true))   // Who's Who off: no face prints needed
                 // listed photos from before what's in them was kept (for the Setting filter)
@@ -104,6 +104,8 @@ final class PhotoScanner: ObservableObject {
                 || ((p.raw != nil || p.soft != nil) && (p.faces ?? 0) >= 2 && (p.flagVersion ?? 0) < 7)
                 || (facesAllowed && faceModel && p.raw != nil && (p.faces ?? 0) > 0 && p.faceVersion != FaceID.version)
                 || ((p.raw != nil || p.soft != nil) && p.scenes == nil)
+                // AwwSnap's photos read again for its newer measurements: one that can't be loaded keeps its old result.
+                || (self.mode == .snap && p.version != Scorer.version(self.mode))
         }
         let flag = cancelFlag
         let changes = self.changes

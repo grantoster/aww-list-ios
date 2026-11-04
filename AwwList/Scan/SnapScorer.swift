@@ -36,7 +36,7 @@ enum SnapScorer {
     static let version = 2
 
     /// 0...1 light on a face from its exposure and evenness (both 0...1).
-    static func lightScore(exposure: Double, even: Double) -> Double { max(0, min(1, 0.6 * exposure + 0.4 * even)) }
+    static func lightScore(exposure: Double, even: Double) -> Double { max(0, min(1, 0.3 * exposure + 0.7 * even)) }
 
     /// 0...1 framing of the main face: not cut off at the top, some room above the head, not jammed to an edge.
     static func framing(_ f: FaceSignal) -> Double? {

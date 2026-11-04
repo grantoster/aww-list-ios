@@ -198,14 +198,25 @@ final class Analyzer {
             lm.inputFaceObservations = big.map { VNFaceObservation(boundingBox: faces[$0].boundingBox) }
             try? handler.perform([lm])
             let found = lm.results ?? []
-            for (k, i) in big.enumerated() where i < s.faces.count {
-                if k < found.count, let l = found[k].landmarks {
+            for i in big where i < s.faces.count {
+                // Each result matched to its face by position in the photo (not by order).
+                let b = faces[i].boundingBox
+                if let r = found.min(by: { hypot($0.boundingBox.midX - b.midX, $0.boundingBox.midY - b.midY)
+                                            < hypot($1.boundingBox.midX - b.midX, $1.boundingBox.midY - b.midY) }),
+                   hypot(r.boundingBox.midX - b.midX, r.boundingBox.midY - b.midY) < b.width * 0.25, let l = r.landmarks {
                     let shape = Self.faceShape(l)
                     if shape.count == 6 { s.faces[i].turn = shape[4] }
                 }
-                s.faces[i].light = faceLight(ci, faces[i].boundingBox)
+                s.faces[i].light = faceLight(ci, b)
             }
         }
+        // Posture only for a grown-up: the body whose head point falls in an adult's face box.
+        let adultBoxes = SnapScorer.adults(s).compactMap { i -> CGRect? in
+            let f = s.faces[i]
+            guard f.box.count == 4 else { return nil }
+            return CGRect(x: f.box[0], y: f.box[1], width: f.box[2], height: f.box[3]).insetBy(dx: -f.box[2] * 0.25, dy: -f.box[3] * 0.25)
+        }
+        guard !adultBoxes.isEmpty else { return }
         let pose = VNDetectHumanBodyPoseRequest()
         try? handler.perform([pose])
         var best: (size: Double, upright: Double)? = nil
@@ -222,6 +233,7 @@ final class Analyzer {
             let level = 1 - min(1, abs(atan2(Double(ls.y - rs.y), Double(abs(ls.x - rs.x)) + 1e-6)) / (Double.pi / 6))
             let mid = (ls.y + rs.y) / 2
             let head = pt(.nose) ?? pt(.neck)
+            guard let h = head, adultBoxes.contains(where: { $0.contains(h) }) else { continue }
             let up = head.map { min(1, max(0, Double($0.y - mid) / width / 0.6)) } ?? 0.5
             let u = 0.5 * level + 0.5 * up
             if width > (best?.size ?? 0) { best = (width, u) }
@@ -239,15 +251,17 @@ final class Analyzer {
             guard let f = CIFilter(name: "CIAreaAverage", parameters: [kCIInputImageKey: ci, kCIInputExtentKey: CIVector(cgRect: rect)]),
                   let out = f.outputImage else { return nil }
             var px = [UInt8](repeating: 0, count: 4)
-            ciContext.render(out, toBitmap: &px, rowBytes: 4, bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+            ciContext.render(out, toBitmap: &px, rowBytes: 4, bounds: out.extent,
                              format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
             return (0.299 * Double(px[0]) + 0.587 * Double(px[1]) + 0.114 * Double(px[2])) / 255
         }
         let half = r.width / 2
         guard let l = luma(CGRect(x: r.minX, y: r.minY, width: half, height: r.height)),
               let rr = luma(CGRect(x: r.minX + half, y: r.minY, width: half, height: r.height)) else { return nil }
+        // Never judged against a "right" brightness (faces differ in tone): only a face lost to near-black or
+        // blown-out white counts against the light, and how evenly the two sides are lit.
         let mean = (l + rr) / 2
-        let exposure = max(0, 1 - abs(mean - 0.55) / 0.4)          // neither dark nor blown out
+        let exposure = mean < 0.06 ? mean / 0.06 : mean > 0.94 ? max(0, (1 - mean) / 0.06) : 1
         let even = max(0, 1 - abs(l - rr) / max(0.05, mean) / 0.6)  // not half in shadow
         return SnapScorer.lightScore(exposure: exposure, even: even)
     }
