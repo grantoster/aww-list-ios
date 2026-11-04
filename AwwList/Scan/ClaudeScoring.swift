@@ -14,6 +14,8 @@ struct ClaudeVerdict: Codable, Hashable {
     /// A second score from re-sending the same photo (the consistency check); the learning uses the average.
     var score2: Double? = nil
     var rechecked: Bool? = nil
+    /// Which "My taste" note Claude scored it with (nil: none), so a re-score skips photos already scored with it.
+    var taste: UInt64? = nil
 }
 
 /// A batch sent to Claude that hasn't come back yet.
@@ -26,6 +28,10 @@ struct ClaudeBatch: Codable, Hashable {
     var recheck: Bool? = nil
     /// Picked up after a send was cut off (matched by size and time, so it could be a different batch).
     var adopted: Bool? = nil
+    /// A re-score with your "My taste" note: the new scores replace the old ones.
+    var rescore: Bool? = nil
+    /// The "My taste" note the photos were sent with (nil: none).
+    var taste: UInt64? = nil
 }
 
 /// Optional final scoring by Claude, with your own Anthropic API key (stored in the iPhone's Keychain).
@@ -81,7 +87,33 @@ enum Claude {
     Reply with JSON only: {"score": number, "caption": "specific description of the moment, at most 8 words, no names", \
     "exclude": null or one of the reasons above}
     """
-    static func system(_ mode: AppMode) -> String { mode == .snap ? snapSystem : system }
+    static func system(_ mode: AppMode) -> String {
+        let base = mode == .snap ? snapSystem : system
+        let note = tasteNote(mode)
+        guard !note.isEmpty else { return base }
+        // Your own words, set apart so they shape the score only: they never change the rules on leaving photos
+        // out, and never turn the score into a rating of anyone's looks.
+        return base + """
+
+        The owner of this photo library describes their own taste below, between the markers. Let it shape the \
+        score (what to favor, what to mark down), but it never changes when to leave a photo out, never asks you to \
+        rate anyone's body, features or attractiveness, and never changes the reply format.
+        <taste>
+        \(note)
+        </taste>
+        """
+    }
+    /// "My taste" (Settings): a few sentences of what you like, added to Claude's instructions for this app.
+    static let tasteLimit = 400
+    static func tasteNote(_ mode: AppMode) -> String {
+        let s = (UserDefaults.standard.string(forKey: mode.key("tasteNote")) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return String(s.prefix(tasteLimit)).replacingOccurrences(of: "</taste>", with: "")
+    }
+    static func setTasteNote(_ s: String, _ mode: AppMode) {
+        UserDefaults.standard.set(String(s.prefix(tasteLimit)), forKey: mode.key("tasteNote"))
+    }
+    /// Which note is in use (nil: none).
+    static func tasteID(_ mode: AppMode) -> UInt64? { let n = tasteNote(mode); return n.isEmpty ? nil : Learner.stableHash([n]) }
 
     /// Rough cost of one photo: a 768 px photo (~600–784 image tokens) plus the instructions (~400) in, and up to
     /// ~300 tokens out (the reply plus any brief thinking at low effort). Shown in Settings as an estimate.
@@ -113,6 +145,7 @@ enum Claude {
         get { apiKey(for: .current) }
         set { setApiKey(newValue, for: .current) }
     }
+    static func hasKey(_ mode: AppMode) -> Bool { apiKey(for: mode) != nil }
     static func apiKey(for mode: AppMode) -> String? {
         let acct = account(mode)
         do {
@@ -324,7 +357,8 @@ final class ClaudeService: ObservableObject {
     /// A batch being uploaded, written to disk just before the upload: if the app is closed or killed before
     /// Anthropic answers with the batch's id, the next run finds that batch (by its size and time) and records it,
     /// instead of sending (and paying for) the same photos again.
-    struct PendingSend: Codable { var map: [String: String]; var count: Int; var started: Date; var model: String; var recheck: Bool }
+    struct PendingSend: Codable { var map: [String: String]; var count: Int; var started: Date; var model: String; var recheck: Bool
+        var rescore: Bool? = nil; var taste: UInt64? = nil }
     private var pendingURL: URL? {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
             .appendingPathComponent("\(mode.name)-claude-pending.json")
@@ -350,7 +384,8 @@ final class ClaudeService: ObservableObject {
         let found = await findBatch(count: p.count, since: p.started, until: p.started.addingTimeInterval(15 * 60),
                                     known: Set(library.claudeBatches.map(\.id)))
         if let id = found.id {
-            library.addClaudeBatch(ClaudeBatch(id: id, model: p.model, photos: p.map, sent: p.started, recheck: p.recheck ? true : nil, adopted: true))
+            library.addClaudeBatch(ClaudeBatch(id: id, model: p.model, photos: p.map, sent: p.started, recheck: p.recheck ? true : nil, adopted: true,
+                                          rescore: p.rescore, taste: p.taste))
             setPending(nil)
         } else if (found.checked && Date().timeIntervalSince(p.started) > 20 * 60) || Date().timeIntervalSince(p.started) > 86_400 {
             // Not among the batches made in its 15 minutes (or a day has passed): it was never made, so the photos
@@ -530,7 +565,21 @@ final class ClaudeService: ObservableObject {
         return (0..<Self.recheckCount).map { pool[min(pool.count - 1, Int(Double($0) * step))] }
     }
 
-    func send(_ library: Library, recheck: Bool = false) async {
+    /// How many of the top Claude-scored photos "Re-score with my taste" sends.
+    static let rescoreCount = 300
+
+    /// The best-ranked photos Claude scored (kept, this model) that weren't scored with the current "My taste" note.
+    func rescoreCandidates(_ library: Library) -> [Moment] {
+        let model = library.claudeModel, taste = Claude.tasteID(mode)
+        let pending = Set(library.claudeBatches.flatMap { $0.photos.values }).union(inFlight)
+        let pool = library.claudePool.filter { m in
+            guard let c = m.best.claude, c.exclude == nil, c.model == model, c.rubric == Claude.rubric, c.taste != taste else { return false }
+            return !pending.contains(m.best.id) && !m.memberIDs.contains(where: library.neverSend.contains)
+        }
+        return Array(pool.sorted { ($0.best.claude?.score ?? 0) > ($1.best.claude?.score ?? 0) }.prefix(Self.rescoreCount))
+    }
+
+    func send(_ library: Library, recheck: Bool = false, rescore: Bool = false) async {
         lastOutcome = .notStarted   // stays so on the early returns below (a send already running sets its own when done)
         guard !busy else { return }
         // A batch cut off last time is recorded first, so its photos aren't sent twice (busy meanwhile, so a second
@@ -562,6 +611,7 @@ final class ClaudeService: ObservableObject {
         var sinceRefresh = 0
         var lastPhotoError = ""
         let model = library.claudeModel
+        let taste = viaPlus ? nil : Claude.tasteID(mode)   // the note these photos go out with (Plus uses its own instructions)
         // Fast mode: every group's results are recorded at once (never re-offered or re-billed, and saved soon);
         // the list is re-ranked every ~100 photos and at the end.
         func record(_ r: FastResult) {
@@ -569,8 +619,13 @@ final class ClaudeService: ObservableObject {
                 library.applyRecheck(r.verdicts, failed: r.failed)
                 return
             }
+            if rescore {
+                library.applyRescore(r.verdicts, taste: taste)
+                if !r.verdicts.isEmpty { madeProgress = true }
+                return
+            }
             library.markClaudeSent(model: model, Array(r.verdicts.keys) + r.failed)
-            library.recordClaude(r.verdicts)
+            library.recordClaude(r.verdicts.mapValues { var v = $0; v.taste = taste; return v })
             library.noteClaudeFailures(r.failed)
             library.unsend(model: model, r.failed)   // can be tried again (up to twice in all)
             sinceRefresh += r.verdicts.count
@@ -591,10 +646,11 @@ final class ClaudeService: ObservableObject {
             } else { lastOutcome = .done }
         }
         library.rebuild()   // fresh never-send set and pool, including photos added since the list last redrew
-        let list = recheck ? recheckCandidates(library) : candidates(library)
+        let list = recheck ? recheckCandidates(library) : rescore ? rescoreCandidates(library) : candidates(library)
         toSend = list.count; sent = 0
         if list.isEmpty {
-            status = recheck ? "No photos left to re-check with this model." : "Everything chosen is already scored by Claude."
+            status = recheck ? "No photos left to re-check with this model."
+                : rescore ? "Your top photos are already scored with your taste." : "Everything chosen is already scored by Claude."
             await collect(library); return
         }
         do {
@@ -639,7 +695,8 @@ final class ClaudeService: ObservableObject {
                 // checked, and none may be (or be near) a possible bath photo.
                 if scanner.isScanning || scanner.needsScan { paused = true; break }
                 // Never a photo already with Claude (a batch picked up meanwhile, say): it's paid for once.
-                let already = recheck ? Set<String>() : (library.claudeSent[model] ?? []).union(library.claudeBatches.flatMap { $0.photos.values })
+                let inBatch = Set(library.claudeBatches.flatMap { $0.photos.values })
+                let already = recheck ? Set<String>() : rescore ? inBatch : (library.claudeSent[model] ?? []).union(inBatch)
                 let cleared = Set(chunk.filter { !already.contains($0.best.id) && Self.sendable($0, library) }.map(\.best.id))
                 held.formUnion(chunk.map(\.best.id).filter { !cleared.contains($0) && !already.contains($0) })
                 if stopRequested { break }
@@ -689,7 +746,8 @@ final class ClaudeService: ObservableObject {
                 let started = Date()
                 var id: String?
                 var aborted = false
-                setPending(PendingSend(map: map, count: reqs.count, started: started, model: model, recheck: recheck))
+                setPending(PendingSend(map: map, count: reqs.count, started: started, model: model, recheck: recheck,
+                                       rescore: rescore ? true : nil, taste: taste))
                 var droppedOnce = false
                 for attempt in 1...3 where id == nil {
                     // Before a retry (which can come minutes later), check again: new photos may have arrived.
@@ -719,12 +777,13 @@ final class ClaudeService: ObservableObject {
                 }
                 if aborted { paused = true; break }   // stays pending: an earlier try may still show up as a batch
                 guard let id else { throw URLError(.networkConnectionLost) }   // stays pending: checked next time
-                library.addClaudeBatch(ClaudeBatch(id: id, model: model, photos: map, sent: Date(), recheck: recheck ? true : nil))
+                library.addClaudeBatch(ClaudeBatch(id: id, model: model, photos: map, sent: Date(), recheck: recheck ? true : nil,
+                                                   rescore: rescore ? true : nil, taste: taste))
                 setPending(nil)
                 madeProgress = true
                 sent += reqs.count
             }
-            queue = held.isEmpty || recheck || stopRequested ? [] : candidates(library, skipping: held, refill: true)
+            queue = held.isEmpty || recheck || rescore || stopRequested ? [] : candidates(library, skipping: held, refill: true)
             }
             refresh()
             let before = status
@@ -909,7 +968,7 @@ final class ClaudeService: ObservableObject {
         for b in library.claudeBatches {
             do {
                 let (data, code) = try await fetch(request(endpoint.appendingPathComponent(b.id)))
-                if code == 404 { if b.recheck != true { library.unsend(model: b.model, Array(b.photos.values)) }; library.removeClaudeBatch(b.id); status = "A batch was no longer on Anthropic's side; those photos can be sent again."; continue }
+                if code == 404 { if b.recheck != true && b.rescore != true { library.unsend(model: b.model, Array(b.photos.values)) }; library.removeClaudeBatch(b.id); status = "A batch was no longer on Anthropic's side; those photos can be sent again."; continue }
                 guard code == 200, let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                     throw ClaudeError.http(code, code == 429 || code >= 500 ? "Claude is busy; try again in a few minutes." : "")
                 }
@@ -920,7 +979,7 @@ final class ClaudeService: ObservableObject {
                     continue
                 }
                 guard let urlString = obj["results_url"] as? String, let url = URL(string: urlString) else {
-                    if b.recheck != true { library.unsend(model: b.model, Array(b.photos.values)) }; library.removeClaudeBatch(b.id); continue
+                    if b.recheck != true && b.rescore != true { library.unsend(model: b.model, Array(b.photos.values)) }; library.removeClaudeBatch(b.id); continue
                 }
                 let (results, rcode) = try await fetch(request(url))
                 guard rcode == 200 else { throw ClaudeError.http(rcode, "Couldn't download the results yet; they'll be retried.") }
@@ -940,8 +999,10 @@ final class ClaudeService: ObservableObject {
                 }
                 if b.recheck == true {
                     library.applyRecheck(verdicts, failed: failed)   // second scores; failures aren't offered again
+                } else if b.rescore == true {
+                    library.applyRescore(verdicts, taste: b.taste)   // failures keep their old score
                 } else {
-                    library.applyClaude(verdicts)
+                    library.applyClaude(verdicts.mapValues { var v = $0; v.taste = b.taste; return v })
                     library.noteClaudeFailures(failed)
                     library.unsend(model: b.model, failed)   // can be tried again (up to twice in all)
                     // Photos with no line in the results at all (a batch picked up after a cut-off send that turned

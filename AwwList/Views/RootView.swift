@@ -150,7 +150,9 @@ struct SettingsView: View {
         NavigationStack {
             List {
                 if PlusStore.available && library.mode == .aww { PlusSection() }
+                HowItsDoingSection()
                 ClaudeSection()
+                TasteSection()
                 LikesSection()
                 LearnedSection()
                 if library.mode == .aww { BirthdaysSection() }
@@ -253,7 +255,7 @@ struct HowScoresSection: View {
             if library.mode == .snap {
                 Text("AwwSnap helps you find the photos where you and the other grown-ups look your best, for a dating profile, a profile picture or a frame. It scores the photo, never the person: no one's looks, features or body are rated. On the phone, each photo gets points for the grown-ups' real smiles (30%), looking at the camera (12%), Apple's face quality reading (15%), eyes open (10%), a face big enough to see well (10%), even light on the face, not lost in shadow or glare (10%), framing with room above the head (8%) and posture (5%). Blur lowers the score, and crowds count a little less.")
                     .font(.footnote)
-                Text("Claude, if you use it, looks for the same things plus a natural pose, being dressed for the occasion and a moment or setting that shows personality. Your \"Which is the better photo?\" votes in Learn my Likes then teach AwwSnap your own eye.")
+                Text("Claude, if you use it, looks for the same things plus a natural pose, being dressed for the occasion and a moment or setting that shows personality. Claude leads the ranking. To steer it toward your own eye, write what you like in My taste below; your \"Which is the better photo?\" votes settle close calls.")
                     .font(.footnote)
             } else {
             Text("Each photo gets points for the main child's expression (25%: a laugh beats a smile, and a sleeping baby counts too), eyes open and looking at the camera (10%), photo quality from Apple's quality score and sharpness (12%), how big the child is in the frame (10%), how clearly a child is the subject (10%), action and play (5%), a special moment or outing like a birthday cake, costume, snow or the zoo (5%), pure \"aww\" like a sleeping baby (5%), pure joy like a real laugh or arms up (5%), candid moments caught mid-action or looking away (5%), the best smile, grin or mischief, a big grin or a cheeky smirk (5%), and unposed fun, kids clearly having fun and not posing for the camera, messy or not (3%). A second person earns nothing extra, and crowds count a little less.")
@@ -317,6 +319,8 @@ struct BirthdaysSection: View {
 struct ClaudeSection: View {
     @State private var askClear = false
     @State private var askRemoveKey = false
+    @State private var askTop1000 = false
+    @State private var scopeBefore: Int?
     @EnvironmentObject var library: Library
     @EnvironmentObject var claude: ClaudeService
     @EnvironmentObject var scanner: PhotoScanner
@@ -403,6 +407,29 @@ struct ClaudeSection: View {
                 Button(scanner.isScanning ? "Score with Claude (starts after the photo check)" : "Score \(n.formatted()) photos with Claude") { start() }
                     .disabled(!canScore || (n == 0 && !scanner.isScanning))
             }
+            if library.claudeScope != 0 && library.claudeScope < 1000 && !claude.busy && !autoClaude {
+                Button("Score each year's top 1,000 with Claude…") {
+                    scopeBefore = library.claudeScope
+                    library.setClaude(scope: 1000)   // counts what that sends, for the question below
+                    askTop1000 = true
+                }
+                .disabled(!canScore)
+                .confirmationDialog("Score each year's top 1,000?", isPresented: $askTop1000, titleVisibility: .visible) {
+                    let m = library.claudeToSend
+                    Button(m == 0 ? "Keep Top 1,000 a year" : onPlus ? "Score \(m.formatted()) photos"
+                           : "Score \(m.formatted()) photos, about \(Claude.dollars(micros: Claude.costMicros(photos: m, model: library.claudeModel, fast: fast)))") {
+                        scopeBefore = nil
+                        if m > 0 { start() }
+                    }
+                    Button("Cancel", role: .cancel) { if let s = scopeBefore { library.setClaude(scope: s) }; scopeBefore = nil }
+                } message: {
+                    Text("Claude's score is what ranks your list, so more Claude scores mean less guessing further down. Photos Claude already scored aren't sent again. \(onPlus ? "" : "The cost is an estimate; your Anthropic bill shows the actual.")")
+                }
+                .onChange(of: askTop1000) { _, open in
+                    // Closed without choosing (tapped outside): back to what it was.
+                    if !open, let s = scopeBefore { library.setClaude(scope: s); scopeBefore = nil }
+                }
+            }
             let rc = library.claudeRecheckable
             if library.claudeScored > 0 {
                 Button(onPlus ? "Check Claude's consistency (re-score \(rc.formatted()) photos)"
@@ -449,6 +476,98 @@ struct ClaudeSection: View {
     }
 }
 
+/// "My taste": your own words, added to Claude's instructions, and re-scoring your top photos with them.
+struct TasteSection: View {
+    @EnvironmentObject var library: Library
+    @EnvironmentObject var claude: ClaudeService
+    @EnvironmentObject var scanner: PhotoScanner
+    @EnvironmentObject var plus: PlusStore
+    @State private var text = Claude.tasteNote(AppMode.current)
+    @State private var saved = Claude.tasteNote(AppMode.current)
+    @State private var askRescore = false
+    @AppStorage(AppMode.current.key("claudeFast")) private var fast = true
+    private var onPlus: Bool { library.mode == .aww && PlusStore.available && plus.isActive }
+    var body: some View {
+        Section {
+            if onPlus {
+                Text("My taste works with your own Anthropic API key. With Awwbum Plus, photos are scored with Awwbum's standard instructions.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            } else {
+                TextField(library.mode == .snap ? "For example: I like candid shots outdoors, warm light, a real laugh; skip group photos and selfies in the car."
+                          : "For example: I love messy, laughing moments with grandparents; posed photos matter less to me.",
+                          text: $text, axis: .vertical)
+                    .lineLimit(3...8)
+                    .onChange(of: text) { _, v in if v.count > Claude.tasteLimit { text = String(v.prefix(Claude.tasteLimit)) } }
+                LabeledContent("Length", value: "\(text.count.formatted()) of \(Claude.tasteLimit.formatted()) characters")
+                Button("Save my taste") {
+                    Claude.setTasteNote(text, library.mode)
+                    saved = Claude.tasteNote(library.mode); text = saved
+                    library.recountClaude()
+                }
+                .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines) == saved)
+                let n = library.claudeRescorable
+                if n > 0 && Claude.hasKey(library.mode) {
+                    Button("Re-score my top \(n.formatted()) with my taste…") { askRescore = true }
+                        .disabled(claude.busy || scanner.isScanning || text.trimmingCharacters(in: .whitespacesAndNewlines) != saved)
+                        .confirmationDialog("Re-score your top \(n.formatted()) photos?", isPresented: $askRescore, titleVisibility: .visible) {
+                            Button("Re-score, about \(Claude.dollars(micros: Claude.costMicros(photos: n, model: library.claudeModel, fast: fast)))") {
+                                Task { await claude.send(library, rescore: true) }
+                            }
+                            Button("Cancel", role: .cancel) {}
+                        } message: {
+                            Text("Sends your best-ranked photos Claude already scored (up to \(ClaudeService.rescoreCount.formatted())) again, with your taste added, and the new scores replace the old ones. Same privacy rules as scoring. The cost is an estimate; your Anthropic bill shows the actual.")
+                        }
+                }
+            }
+        } header: {
+            Text("My taste")
+        } footer: {
+            if !onPlus {
+                Text("The most direct way to steer the ranking: tell Claude in your own words what makes a photo great to you. It's added to Claude's instructions for every photo sent from now on; it can't change which photos are left out\(library.mode == .snap ? " or make Claude rate anyone's looks" : ""). The learned score then learns the new scores. Stays on this iPhone and goes to Anthropic only with the photos.")
+            }
+        }
+    }
+}
+
+/// "How it's doing": how much of the list rests on Claude, how close the learned score gets, and how often your
+/// votes agree with Claude.
+struct HowItsDoingSection: View {
+    @EnvironmentObject var library: Library
+    var body: some View {
+        let s = library.standing()
+        let pct = { (a: Int, b: Int) in b == 0 ? "–" : "\(Int((Double(a) * 100 / Double(b)).rounded(.toNearestOrAwayFromZero)))%" }
+        Section {
+            if s.top > 0 {
+                LabeledContent("Your top \(s.top.formatted()) scored by Claude", value: "\(s.topScored.formatted()) (\(pct(s.topScored, s.top)))")
+            }
+            if let m = library.learned {
+                LabeledContent("Learned score within 1 point of Claude", value: "\(Int((m.within1 * 100 + 1e-9).rounded(.toNearestOrAwayFromZero)))%")
+                if let o = m.topOverlap {
+                    LabeledContent("Learned score finds Claude's top fifth", value: "\(Int((o * 100 + 1e-9).rounded(.toNearestOrAwayFromZero)))%")
+                }
+            }
+            if s.votes > 0 {
+                LabeledContent("Your votes agree with Claude", value: "\(pct(s.agree, s.votes)) of \(s.votes.formatted())")
+                if s.closeVotes > 0 {
+                    LabeledContent("Votes on close calls (½ point or less)", value: s.closeVotes.formatted())
+                }
+            }
+            Text(advice(s)).font(.footnote).foregroundStyle(.secondary)
+        } header: {
+            Text("How it's doing")
+        }
+    }
+    private func advice(_ s: Library.Standing) -> String {
+        if s.top > 0 && s.topScored * 10 < s.top * 9 {
+            return "Claude's score ranks the list; photos Claude hasn't seen use the learned score, which is a guess. Scoring more photos with Claude (below) puts more of your top photos on Claude's own verdict."
+        }
+        if s.votes >= 20 && s.agree * 10 < s.votes * 6 {
+            return "Your votes often pick the photo Claude scored lower. Writing what you like in My taste (below) tells Claude directly, then re-score your top photos."
+        }
+        return "Claude's score ranks the list; photos Claude hasn't seen use the learned score. Votes only settle photos Claude scored about the same."
+    }
+}
+
 /// The app's learned score: what it picked up from Claude's scores, and how close it gets.
 struct LearnedSection: View {
     @State private var askRelearn = false
@@ -465,7 +584,7 @@ struct LearnedSection: View {
     var body: some View {
         Section {
             if let m = library.learned {
-                LabeledContent("Learned from", value: "\(m.trainedOn.formatted()) " + (!library.learnedIsBuiltIn && library.pairVotes.contains { $0.winner != nil } ? "Claude scores, with your votes" : "Claude scores"))
+                LabeledContent("Learned from", value: "\(m.trainedOn.formatted()) " + "Claude scores")
                 let pct = { (v: Double) in "\(Int((v * 100 + 1e-9).rounded(.toNearestOrAwayFromZero)))%" }
                 let pts = { (v: Double) in String(format: "%.1f", (v * 10).rounded(.toNearestOrAwayFromZero) / 10) + " points" }
                 LabeledContent("Within 1 point of Claude", value: pct(m.within1))
@@ -567,7 +686,7 @@ struct LearnedSection: View {
         } header: {
             Text("Learned score")
         } footer: {
-            Text("The app studies Claude's scores alongside what it measures on the phone (smiles, closeness, face size, sharpness and the scene), then predicts a Claude-style score for every photo, privately and for free. It also learns which photos Claude takes off the list, so removals follow Claude's judgment instead of Apple's. Both are checked on a fifth of Claude's verdicts it didn't learn from. Your Learn my Likes votes move the photos you voted on up or down every ranking (up to 2 points) and the score the learning aims for, ahead of Claude's where the two disagree (votes stay on this iPhone). Claude's removals apply in every ranking. With Rank by Claude, Claude's own score wins where it exists and photos Claude hasn't seen use the learned score; with Rank by Learned, every photo uses the learned score.")
+            Text("The app studies Claude's scores alongside what it measures on the phone (smiles, closeness, face size, sharpness and the scene), then predicts a Claude-style score for every photo, privately and for free. It also learns which photos Claude takes off the list, so removals follow Claude's judgment instead of Apple's. Both are checked on a fifth of Claude's verdicts it didn't learn from. The learning learns Claude's scoring only. Your Learn my Likes votes only settle photos Claude scored about the same (a quarter point at most) with Rank by Claude, and move photos up to 2 points with the other rankings (votes stay on this iPhone). Claude's removals apply in every ranking. With Rank by Claude, Claude's own score wins where it exists and photos Claude hasn't seen use the learned score; with Rank by Learned, every photo uses the learned score.")
         }
     }
 }

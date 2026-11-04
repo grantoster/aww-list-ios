@@ -254,11 +254,13 @@ final class Library: ObservableObject {
         note("Apply saved library", seconds: Date().timeIntervalSince(t0))
         // The ranking chosen last time (remembered on its own); Learned by default.
         if let r = UserDefaults.standard.string(forKey: mode.key("rankBy")) { rankBy = r }
-        // Learned is the main ranking: switched to once on this update (you can still pick another in the menu).
-        if !UserDefaults.standard.bool(forKey: mode.key("learnedPrimary")) {
-            UserDefaults.standard.set(true, forKey: mode.key("learnedPrimary"))
-            rankBy = "learned"
-            UserDefaults.standard.set("learned", forKey: mode.key("rankBy"))
+        // Claude leads once it has scored photos (switched to once on this update; your own pick stays after that).
+        if !UserDefaults.standard.bool(forKey: mode.key("claudePrimary")) {
+            UserDefaults.standard.set(true, forKey: mode.key("claudePrimary"))
+            UserDefaults.standard.set(false, forKey: mode.key("rankByYou"))
+        }
+        if photos.values.contains(where: { $0.claude != nil && $0.claude?.exclude == nil }) && !UserDefaults.standard.bool(forKey: mode.key("rankByYou")) {
+            rankBy = "claude"; UserDefaults.standard.set("claude", forKey: mode.key("rankBy"))
         }
         // Work out every photo's scores off the main thread first, so the first ranking is quick.
         prewarmDerived { [weak self] in self?.finishLoadingRanked(hadSaved: hadSaved, failedBlock: failedBlock) }
@@ -519,16 +521,27 @@ final class Library: ObservableObject {
     /// when they can change, not on every redraw).
     @Published private(set) var claudeToSend = 0
     @Published private(set) var claudeRecheckable = 0
+    @Published private(set) var claudeRescorable = 0
     func recountClaude() {
         let n = claude.candidates(self).count, r = claude.recheckCandidates(self).count
+        let t = Claude.tasteID(mode) == nil && !photos.values.contains(where: { $0.claude?.taste != nil }) ? 0 : claude.rescoreCandidates(self).count
         if n != claudeToSend { claudeToSend = n }
         if r != claudeRecheckable { claudeRecheckable = r }
+        if t != claudeRescorable { claudeRescorable = t }
     }
     /// How many of each ranking's best moments per year go into Consolidated.
     nonisolated static let consolidatedTop = 100
     /// Switching the ranking only re-ranks: the choice is remembered on its own, without rewriting the whole
     /// library (a full save on every switch, on top of a scan, could push a large library past iOS's memory limit).
-    func setRankBy(_ v: String) {
+    /// Claude's scoring leads the list once there are Claude scores, unless you picked another ranking yourself.
+    func claudeLeadsIfUnchosen() {
+        guard !UserDefaults.standard.bool(forKey: mode.key("rankByYou")), rankBy != "claude",
+              photos.values.contains(where: { $0.claude != nil && $0.claude?.exclude == nil }) else { return }
+        setRankBy("claude", byYou: false)
+    }
+
+    func setRankBy(_ v: String, byYou: Bool = true) {
+        if byYou { UserDefaults.standard.set(true, forKey: mode.key("rankByYou")) }   // your choice is kept from then on
         guard v != rankBy else { return }
         rankBy = v
         UserDefaults.standard.set(v, forKey: mode.key("rankBy"))
@@ -583,6 +596,39 @@ final class Library: ObservableObject {
         rebuild(); saveNowIfAway()
         retrain()
     }
+    /// For "How it's doing": how many of the list's top 100 Claude has scored, and how often your decided votes
+    /// picked the photo Claude scored higher (only pairs Claude scored both of, and not the same).
+    struct Standing { var top: Int; var topScored: Int; var votes: Int; var agree: Int; var closeVotes: Int }
+    func standing() -> Standing {
+        let top = Array(moments.prefix(100))
+        func claudeOf(_ id: String) -> Double? {
+            guard let c = photos[id]?.claude, c.exclude == nil else { return nil }
+            return c.score2.map { (c.score + $0) / 2 } ?? c.score
+        }
+        var votes = 0, agree = 0, close = 0
+        for v in pairVotes {
+            guard let w = v.winner, let ca = claudeOf(v.a), let cb = claudeOf(v.b) else { continue }
+            let (cw, cl) = w == v.a ? (ca, cb) : (cb, ca)
+            if abs(cw - cl) < 0.05 { continue }            // Claude scored them the same: nothing to agree with
+            votes += 1
+            if cw > cl { agree += 1 }
+            if abs(cw - cl) <= 0.5 { close += 1 }
+        }
+        return Standing(top: top.count, topScored: top.filter { $0.claudeScore != nil }.count, votes: votes, agree: agree, closeVotes: close)
+    }
+    /// New scores from "Re-score with my taste": they replace the old ones (a removal on the new pass stands).
+    func applyRescore(_ verdicts: [String: ClaudeVerdict], taste: UInt64?) {
+        guard !verdicts.isEmpty else { return }
+        for (id, v) in verdicts {
+            guard photos[id]?.claude != nil else { continue }
+            var n = v; n.taste = taste; n.score2 = nil; n.rechecked = nil
+            photos[id]?.claude = n
+            if let e = v.exclude { claudeRemoved[id] = e }
+        }
+        recountClaude()
+        rebuild(); saveNowIfAway()
+        retrain()
+    }
     /// Saves in the background while the app is open (waiting for the write made the screen stall); if the app is
     /// already in the background, waits for the write, so iOS can't pause the app before Claude's scores are kept.
     func saveNowIfAway() {
@@ -616,6 +662,7 @@ final class Library: ObservableObject {
     }
     /// Re-ranks with the scores recorded so far, saves, and learns from them.
     func refreshAfterClaude() {
+        claudeLeadsIfUnchosen()
         rebuild(); saveNowIfAway()
         retrain()
     }
@@ -837,8 +884,10 @@ final class Library: ObservableObject {
         let known = trainedSignature, knownLikes = tasteSignature, hadTaste = taste != nil, mode = self.mode
         // Learn my Likes: your "Which is cuter?" votes (earlier thumbs count only as a weak start) give each photo
         // a preference; it moves the target the learning aims for, and outweighs Claude where they disagree.
-        let strengths = voteStrengths
-        let picksNow = pickStrengths   // remembered once the learning has learned from them
+        // Claude is the anchor: the learning learns Claude's scores only. Your votes move the list (see rebuild),
+        // never what the learning aims for.
+        let strengths: [String: Double] = [:]
+        let picksNow: [String: Double] = [:]
         // Photos Claude hasn't scored are anchored on something your votes never moved: the built-in learning,
         // or else the on-device score (so retraining can't keep pushing them further).
         let anchorModel = builtIn.model
@@ -1325,6 +1374,7 @@ final class Library: ObservableObject {
         let d = voteShift(m)
         let ownLearning = learned != nil && !learnedIsBuiltIn
         let viaLearned = rankBy == "learned" || (rankBy == "claude" && m.claudeScore == nil && m.learnedScore != nil)
+        if rankBy == "claude" && m.claudeScore != nil { return max(-0.25, min(0.25, d)) }   // only settles near-ties
         return ownLearning && viaLearned && m.learnedScore != nil && votesAlreadyLearned(m, pickStrengths) ? 0 : d
     }
     /// The votes (per photo) this phone's own learning was last trained with.
@@ -1835,7 +1885,9 @@ final class Library: ObservableObject {
                 let appleOnly: Double = Double(min(m.apple, 6))
                 var v: Double = appleOnly + voteShift(m, strengths)
                 if useClaude {
-                    if let c = m.claudeScore { v = c + voteShift(m, strengths) } else if let l = learnedValue(m) { v = min(l, 8) }
+                    // Claude's own score leads; your votes only settle photos Claude scored about the same (a quarter
+                    // point at most), so nothing outranks a Claude verdict because of them.
+                    if let c = m.claudeScore { v = c + max(-0.25, min(0.25, voteShift(m, strengths))) } else if let l = learnedValue(m) { v = min(l, 8) }
                 } else if let l = learnedValue(m) {
                     v = l
                 }
