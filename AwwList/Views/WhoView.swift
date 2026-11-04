@@ -80,7 +80,7 @@ struct WhoView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     Image(systemName: "person.2.crop.square.stack").font(.system(size: 44)).foregroundStyle(Theme.accent)
                     Text("Turn on Who's Who?").font(Theme.label(24, relativeTo: .title2))
-                    Text("Who's Who recognizes the people you name, like your kids, so you can see each person's best photos.")
+                    Text("Who's Who recognizes the people you name, like \(AppMode.current == .snap ? "your family and friends" : "your kids"), so you can see each person's best photos.")
                     VStack(alignment: .leading, spacing: 10) {
                         Label("Turning it on makes face measurements (face prints) of up to 8 faces in each photo on your list, on this iPhone, so it can tell people apart. It re-reads those photos, which can take a while on a large library.", systemImage: "face.smiling")
                         Label("Face prints and names stay in Awwbum on this iPhone. They're never sent to us, Claude or Anthropic (they're part of your iPhone backup if backups are on).", systemImage: "lock.fill")

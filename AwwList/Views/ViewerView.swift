@@ -7,6 +7,9 @@ struct ViewerView: View {
     @State var index: Int
     /// Home ranked around this person ("Best of …"): the score shown is theirs, with the photo's own beside it.
     var focus: Person? = nil
+    /// The whole list's length when the viewer only got its first part.
+    var total: Int? = nil
+    private var count: Int { max(total ?? 0, moments.count) }
     @EnvironmentObject var library: Library
     @Environment(\.dismiss) private var dismiss
     @State private var sharing: UIImage?
@@ -36,7 +39,7 @@ struct ViewerView: View {
             .ignoresSafeArea()
 
             HStack {
-                Text("\(index + 1) / \(moments.count)").foregroundStyle(.white.opacity(0.8)).font(.subheadline)
+                Text("\(index + 1) / \(count)").foregroundStyle(.white.opacity(0.8)).font(.subheadline)
                 Spacer()
                 Button { dismiss() } label: {
                     Image(systemName: "xmark").font(.title3.bold()).foregroundStyle(.white)
@@ -190,7 +193,7 @@ struct ViewerView: View {
     /// Why this photo is where it is: what it's ranked by, its place, and anything you or the app did to it.
     private func whyHere(_ m: Moment) -> String {
         var parts: [String] = []
-        if moments.indices.contains(index) && moments.count > 1 { parts.append("No. \(index + 1) of \(moments.count) here") }
+        if moments.indices.contains(index) && count > 1 { parts.append("No. \(index + 1) of \(count.formatted()) here") }
         if let p = focus {
             parts.append("ranked by how \(p.name) comes across in it: their expression, eyes and how clearly they're caught (75%), plus the photo's own score of \(m.score) (25%)")
         }

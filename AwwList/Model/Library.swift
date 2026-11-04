@@ -346,7 +346,7 @@ final class Library: ObservableObject {
             var out: [String: Derived] = [:]
             out.reserveCapacity(snapshot.count)
             for p in snapshot {
-                guard let f = p.feat, let x = Learner.decode(f) else { continue }
+                guard let f = p.feat, let x = Library.features(f, mode) else { continue }
                 out[p.id] = Library.derive(p, f, x, model: model, filter: filter, taste: likes, epoch: epoch, mode: mode)
             }
             let took = Date().timeIntervalSince(t0)
@@ -732,6 +732,14 @@ final class Library: ObservableObject {
     /// while scanning used to decode and score every photo again). Valid while the photo's measurements and the
     /// learning in use are unchanged.
     private struct Derived { var feat: Data; var epoch: Int; var special: Double; var learned: Double?; var removes: Bool; var balanced: Double }
+    /// A photo's fingerprint as the learning reads it. AwwSnap leaves the face picture out (zero, the same as "no
+    /// face"), so it never learns what someone looks like, even from photos read before that rule.
+    nonisolated static func features(_ f: Data, _ mode: AppMode) -> [Double]? {
+        guard var x = Learner.decode(f) else { return nil }
+        if mode == .snap { for i in LearningPack.faceRange where i < x.count { x[i] = 0 } }
+        return x
+    }
+
     private var derived: [String: Derived] = [:]
     private var learningEpoch = 0
 
@@ -739,7 +747,7 @@ final class Library: ObservableObject {
         guard let f = p.feat else { return nil }
         let sp = p.special ?? Scorer.specialFromCaption(p.caption)   // a new caption can change this without new measurements
         if let d = derived[p.id], d.epoch == learningEpoch, d.special == sp, d.feat == f { return d }
-        guard let x = Learner.decode(f) else { return nil }
+        guard let x = Library.features(f, mode) else { return nil }
         let d = Library.derive(p, f, x, model: learned, filter: learnedFilter, taste: taste, epoch: learningEpoch, mode: mode)
         derived[p.id] = d
         return d
@@ -782,7 +790,7 @@ final class Library: ObservableObject {
         guard !retrainBusy else { pendingRetrain = true; return }   // run again once the current one finishes
         retrainBusy = true
         let gen = generation
-        let known = trainedSignature, knownLikes = tasteSignature, hadTaste = taste != nil
+        let known = trainedSignature, knownLikes = tasteSignature, hadTaste = taste != nil, mode = self.mode
         // Learn my Likes: your "Which is cuter?" votes (earlier thumbs count only as a weak start) give each photo
         // a preference; it moves the target the learning aims for, and outweighs Claude where they disagree.
         let strengths = voteStrengths
@@ -800,17 +808,18 @@ final class Library: ObservableObject {
             var parts: [String] = []
             var examples: [(date: Date, x: [Double], y: Double)] = []
             var moved: [(date: Date, x: [Double], y: Double)] = []   // targets your votes moved
+            var movedClaude = 0                                      // of those, photos Claude scored (they count as Claude scores)
             var verdicts: [(date: Date, x: [Double], removed: Bool)] = []
             var averaged = 0
             for p in scored.sorted(by: { $0.id < $1.id }) {
-                guard let f = p.feat, let x = Learner.decode(f) else { continue }
+                guard let f = p.feat, let x = Library.features(f, mode) else { continue }
                 guard let c = p.claude else { continue }
                 // Your votes move what it learns from Claude's score.
                 if let st = strengths[p.id], c.exclude == nil {
                     let base = c.score2.map { (c.score + $0) / 2 } ?? c.score
                     parts.append("\(p.id)|b\(Int((st * 1000).rounded()))|\(c.score)|\(c.score2 ?? -1)")
                     verdicts.append((p.date, x, false))
-                    moved.append((p.date, x, Pairwise.target(anchor: base, strength: st)))
+                    moved.append((p.date, x, Pairwise.target(anchor: base, strength: st))); movedClaude += 1
                     if c.score2 != nil { averaged += 1 }
                     continue
                 }
@@ -822,7 +831,7 @@ final class Library: ObservableObject {
             }
             // Photos you voted on that Claude hasn't scored: where the learning puts them now, moved by your votes.
             for p in votedOnly.sorted(by: { $0.id < $1.id }) {
-                guard let f = p.feat, let x = Learner.decode(f), let st = strengths[p.id],
+                guard let f = p.feat, let x = Library.features(f, mode), let st = strengths[p.id],
                       let anchor = anchorModel.map({ Learner.predict($0, x) }) ?? onDevice[p.id] else { continue }
                 parts.append("u|\(p.id)|b\(Int((st * 1000).rounded()))|\(Int((anchor * 100).rounded()))")
                 moved.append((p.date, x, Pairwise.target(anchor: anchor, strength: st)))
@@ -848,7 +857,7 @@ final class Library: ObservableObject {
             }
             await MainActor.run { self.training = true }      // shown in Settings only while really learning
             // Only what changed is learned again (votes alone don't re-learn Claude's scoring).
-            let model = claudeChanged ? Learner.train(examples, extra: moved, averaged: averaged) : nil
+            let model = claudeChanged ? Learner.train(examples, extra: moved, extraFromClaude: movedClaude, averaged: averaged) : nil
             let keepIfShort = !moved.isEmpty && !examples.isEmpty
             let filter = claudeChanged ? Learner.trainFilter(verdicts) : nil
             let likes = likesChanged ? Learner.trainTaste(votes) : nil
@@ -1815,7 +1824,7 @@ final class Library: ObservableObject {
                 case "No child": why = (p.faces ?? 0) > 0 ? "No sign of a child" : "No child and no face"
                 case "Bath", "Undressed": why = keptOut.contains(p.id) ? "Possible bath or undressed (kept out by you)" : "Possible bath or undressed, can't be scored"
                 case Scorer.unavailable: why = "Couldn't be loaded (iCloud)"
-                default: why = Scorer.softReasons.contains(e) ? "\(e), and no sign of a child" : e
+                default: why = Scorer.softReasons.contains(e) && mode == .aww ? "\(e), and no sign of a child" : e
                 }
             } else { why = "Other" }
             counts[why, default: []].append(p)

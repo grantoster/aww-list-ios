@@ -12,8 +12,12 @@ final class Analyzer {
     /// measures on the CPU (slower, same results) instead of getting blank pictures.
     private var ciContext: CIContext { Analyzer.inBackground.value ? cpuContext : gpuContext }
     static let inBackground = BackgroundFlag()
-    private lazy var faceDetector = CIDetector(ofType: CIDetectorTypeFace, context: ciContext,
-                                               options: [CIDetectorAccuracy: CIDetectorAccuracyHigh])
+    private lazy var gpuFaceDetector = CIDetector(ofType: CIDetectorTypeFace, context: gpuContext,
+                                                  options: [CIDetectorAccuracy: CIDetectorAccuracyHigh])
+    private lazy var cpuFaceDetector = CIDetector(ofType: CIDetectorTypeFace, context: cpuContext,
+                                                  options: [CIDetectorAccuracy: CIDetectorAccuracyHigh])
+    /// The smile and eye detector on the same kind of context (CPU in the background).
+    private var faceDetector: CIDetector? { Analyzer.inBackground.value ? cpuFaceDetector : gpuFaceDetector }
 
     /// Vision classifier labels that mean a child is in the picture (exact identifiers from Apple's taxonomy).
     static let childLabels: Set<String> = ["baby", "child"]

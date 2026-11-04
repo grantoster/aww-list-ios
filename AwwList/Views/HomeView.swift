@@ -234,7 +234,7 @@ struct HomeView: View {
             .sheet(isPresented: $showSettings) { SettingsView() }
             .sheet(isPresented: $showWho) { WhoView() }
             .sheet(isPresented: $showSearch) { SearchView() }
-            .fullScreenCover(item: $viewer) { v in ViewerView(moments: v.list, index: v.index, focus: focusPerson) }
+            .fullScreenCover(item: $viewer) { v in ViewerView(moments: v.list, index: v.index, focus: focusPerson, total: v.total) }
             .sheet(item: $collage) { c in ShareSheet(image: c.image).presentationDetents([.medium, .large]) }
             .onChange(of: filterKey) { shown = 30; if !preparing { endSelecting() }; refreshLists() }
             .onChange(of: listSettings) { shown = 30; if !preparing { endSelecting() }; refreshLists() }
@@ -509,7 +509,7 @@ struct HomeView: View {
     private func open(_ list: [Moment], _ i: Int) {
         let whole = list.count < pool.count && list.indices.contains(i) && pool.indices.contains(i) && pool[i].id == list[i].id
         // (Up to 500 photos, so the pages stay quick to set up.)
-        viewer = ViewerState(list: whole ? Array(pool.prefix(max(500, i + 100))) : list, index: i)
+        viewer = ViewerState(list: whole ? Array(pool.prefix(max(500, i + 100))) : list, index: i, total: whole ? pool.count : nil)
     }
 
     // MARK: Picking photos to send
@@ -644,6 +644,8 @@ struct ViewerState: Identifiable {
     let id = UUID()
     let list: [Moment]
     let index: Int
+    /// How many photos the whole list has (the viewer gets at most 500 of them).
+    var total: Int? = nil
 }
 
 struct Pill: View {

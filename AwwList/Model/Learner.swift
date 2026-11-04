@@ -496,7 +496,7 @@ enum Learner {
     /// `extra` rows (targets your Learn my Likes votes moved) are learned from but never part of the check, so
     /// the reported accuracy is about Claude's own scores only (`trainedOn` counts every row learned from).
     static func train(_ claudeRows: [(date: Date, x: [Double], y: Double)], extra: [(date: Date, x: [Double], y: Double)] = [],
-                      averaged: Int = 0, useNet: Bool = true) -> LearnedModel? {
+                      extraFromClaude: Int? = nil, averaged: Int = 0, useNet: Bool = true) -> LearnedModel? {
         let test = claudeRows.filter { heldBack($0.date) }, claudeTrain = claudeRows.filter { !heldBack($0.date) }
         let extraTrain = extra.filter { !heldBack($0.date) }
         guard claudeTrain.count + extraTrain.count >= minimumExamples, test.count >= 10 else { return nil }
@@ -531,7 +531,7 @@ enum Learner {
         // The neural net: trained on three folds of the training days, stopped when the fourth stops improving,
         // and blended with the formula by whatever mix does best on that fourth fold.
         var blend = 0.0, epochs = 0
-        if useNet {
+        if useNet && train.count >= 400 {   // the net needs enough rows to be judged (see keepNet)
             let fitPart = train.filter { fold($0.date) != 0 }, valPart = train.filter { fold($0.date) == 0 }
             if fitPart.count >= minimumExamples, valPart.count >= 10,
                let rf = fit(fitPart.map(\.x), fitPart.map(\.y), lambda: bestLambda) {
@@ -578,7 +578,7 @@ enum Learner {
         var finalNet: MLP? = nil
         if keepNet { finalNet = trainMLP(netRows(examples, all), examples.map(\.y), epochs: epochs)?.net }
         return LearnedModel(mean: all.mean, std: all.std, weights: all.w, bias: all.bias, lambda: bestLambda,
-                            trainedOn: claudeRows.count + extra.count, tested: test.count, within1: within(gaps), meanGap: mean(gaps),
+                            trainedOn: claudeRows.count + (extraFromClaude ?? extra.count), tested: test.count, within1: within(gaps), meanGap: mean(gaps),
                             date: Date(), baselineWithin1: within(baseGaps), baselineGap: mean(baseGaps),
                             mlp: finalNet, blend: finalNet == nil ? 0 : blend, linearGap: mean(linearGaps),
                             topOverlap: overlap, averaged: averaged)
