@@ -265,7 +265,7 @@ struct HowScoresSection: View {
             }
             Text("Those points become 1–10 by rank across your whole library: about 1 in 20 moments a year is a 9 or 10 (the top 1% are 10s), the next 10% are 8s and the next 15% are 7s. Every year counts equally, so a huge year can't crowd out the others, and a photo needs real quality for a high score, not just being the best of a weak bunch.")
                 .font(.footnote)
-            Text("Pick someone on Home (Who) and their photos are ranked around them: their own expression and how clearly they're caught (smiling, eyes open, a sharp, well-lit face by Apple's face capture quality, facing the camera, and how big their face is) count 75%, and the photo's score 25%. That score isn't spread by rank. Choose \"Best whole photo\" in the same menu to rank by the whole photo instead.")
+            Text("Pick someone on Home (Who) and \"Best of\" ranks their photos around them: each photo's own score, moved up or down by as much as 1½ points by how they come across in it (smiling, eyes open, a sharp, well-lit face by Apple's face capture quality, facing the camera, and how big their face is). Choose \"Best whole photo\" in the same menu to rank by the whole photo instead.")
                 .font(.footnote)
             Text("Photos are analyzed with Apple's on-device Vision framework. Nothing is uploaded unless you score with Claude.")
                 .font(.footnote).foregroundStyle(.secondary)

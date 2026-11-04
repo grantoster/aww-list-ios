@@ -16,7 +16,7 @@ struct LikesSection: View {
         } header: {
             Text("Learn my Likes")
         } footer: {
-            Text("Shows two photos from your list at a time; tap the \(AppMode.current == .snap ? "better one" : "cuter one"). Pairs are close calls the ranking is least sure about, so every vote counts. Each vote moves the two photos up or down your list right away, in every ranking: up to about ¾ of a point for one vote, and at most 2 points for a photo you keep picking (or passing over). The learning also aims for your preferences, ahead of Claude's score where the two disagree, so photos you haven't voted on follow your taste too. \(library.training ? "Learning from your votes now…" : "It learns when you tap Done.") Thumbs up and down given before this count as a light starting hint; thumbs no longer teach the learning. Votes stay on this iPhone; they're only in the learning data if you choose to send it.")
+            Text("Shows two photos from your list at a time; tap the \(AppMode.current == .snap ? "better one" : "cuter one"). Pairs are close calls the ranking is least sure about, so every vote counts. Each vote moves the two photos up or down your list in every ranking: about a quarter point for one vote, more for a photo you keep picking (or passing over), at most 2 points. The learning also aims for your preferences, ahead of Claude's score where the two disagree, so photos you haven't voted on follow your taste too. \(library.training ? "Learning from your votes now…" : "It learns when you tap Done.") Thumbs up and down given before this count as a light starting hint; thumbs no longer teach the learning. Votes stay on this iPhone; they're only in the learning data if you choose to send it.")
         }
     }
 }

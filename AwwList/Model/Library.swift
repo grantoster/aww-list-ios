@@ -1019,10 +1019,10 @@ final class Library: ObservableObject {
         set { Shared.who.dirty = true; Shared.who.ignoredFaces = newValue }
     }
 
-    /// Ranking one person's photos by how they look in each (Home, with someone picked): 75% this person's own
-    /// face (a smile 40%, eyes open 20%, Apple's face quality 15%, looking at the camera 10%, how big their face is
-    /// 15%) and 25% the photo's own score. A photo where their face isn't known yet (still being learned) counts
-    /// their face as middling, so it neither jumps ahead nor drops out. Not spread across 1–10 by rank.
+    /// Ranking one person's photos (Home, with someone picked): the photo's own score, moved up to 1½ points either
+    /// way by how this person comes across in it (a smile 40%, eyes open 20%, Apple's face quality 15%, looking at
+    /// the camera 10%, how big their face is 15%). A photo where their face isn't known yet (still being learned)
+    /// counts it as middling: no move. Not spread across 1–10 by rank.
     func personScore(_ m: Moment, _ person: UUID) -> Double {
         let f = m.best.faceRecords?.first { r in
             let k = Library.faceKey(m.best.id, r)
@@ -1042,7 +1042,8 @@ final class Library: ObservableObject {
             let turn = at(3).flatMap { $0 >= 0 ? max(0, 1 - 1.5 * Double($0)) : nil } ?? 0.5
             own += 0.40 * v(at(0)) + 0.20 * v(at(1)) + 0.15 * v(at(2)) + 0.10 * turn
         }
-        return max(1, min(10, 10 * (0.75 * own) + 0.25 * Double(photoScore)))
+        // The photo's own score, moved up to 1½ points either way by how they come across in it.
+        return max(1, min(10, Double(photoScore) + 3 * (own - 0.5)))
     }
 
     /// A face's lasting key: its photo and where it sits in it (stays the same when the photo is read again).

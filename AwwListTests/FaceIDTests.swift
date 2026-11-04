@@ -212,11 +212,12 @@ final class VoteShiftTests: XCTestCase {
         let t = Date()
         // One vote: about three quarters of a point each way.
         let one = Pairwise.strengths([PairVote(a: "A", b: "B", winner: "A", date: t)])
-        XCTAssertEqual(Pairwise.shift(one["A"]!), 0.75, accuracy: 0.05)
-        XCTAssertEqual(Pairwise.shift(one["B"]!), -0.75, accuracy: 0.05)
+        XCTAssertEqual(Pairwise.shift(one["A"]!), 0.23, accuracy: 0.03)    // about a quarter point
+        XCTAssertEqual(Pairwise.shift(one["B"]!), -0.23, accuracy: 0.03)
         // Picked over five different photos: capped at 2.
         let five = Pairwise.strengths((0..<5).map { PairVote(a: "A", b: "B\($0)", winner: "A", date: t) })
-        XCTAssertEqual(Pairwise.shift(five["A"]!), Pairwise.maxShift, accuracy: 1e-9)
+        XCTAssertEqual(Pairwise.shift(five["A"]!), 0.64, accuracy: 0.05)   // five wins: about two thirds of a point
+        XCTAssertEqual(Pairwise.shift(100), Pairwise.maxShift, accuracy: 1e-9)  // never more than 2
         XCTAssertEqual(Pairwise.maxShift, 2)
     }
 }
@@ -306,13 +307,16 @@ final class PersonFocusTests: XCTestCase {
         let box: [Float] = [0.3, 0.3, 0.25, 0.25]   // a good-sized face
         let smiling = FaceRecord(box: box, vec: Data(), look: [1, 1, 0.8, 0.05])
         let blinking = FaceRecord(box: box, vec: Data(), look: [0, 0, 0.3, 0.6])
-        // In a great group photo (9) with eyes shut, they rank below a solo photo (6) where they're beaming.
-        XCTAssertGreaterThan(Library.personScore(face: smiling, photoScore: 6), Library.personScore(face: blinking, photoScore: 9))
+        // Beaming lifts a photo up to 1½ points and a blink lowers it: a 7 where they're beaming beats an 8 where their eyes are shut,
+        // but a great photo isn't swamped (a beaming 3 stays below an unsmiling 9).
+        XCTAssertGreaterThan(Library.personScore(face: smiling, photoScore: 7), Library.personScore(face: blinking, photoScore: 8))
+        XCTAssertLessThan(Library.personScore(face: smiling, photoScore: 3), Library.personScore(face: blinking, photoScore: 9))
+        XCTAssertEqual(Library.personScore(face: nil, photoScore: 6), 6, accuracy: 1e-9)   // face not known yet: no move
         // Always 1–10; a face read before looks were kept counts as middling.
         let old = FaceRecord(box: box, vec: Data())
         let v = Library.personScore(face: old, photoScore: 5)
         XCTAssertTrue((1...10).contains(v))
-        XCTAssertEqual(Library.personScore(face: smiling, photoScore: 10), 10, accuracy: 0.5)
+        XCTAssertEqual(Library.personScore(face: smiling, photoScore: 10), 10, accuracy: 1e-9)   // capped at 10
     }
 
     func testOldFaceRecordsStillDecode() throws {

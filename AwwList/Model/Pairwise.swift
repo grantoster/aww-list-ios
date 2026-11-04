@@ -15,12 +15,16 @@ enum Pairwise {
     /// The same key for a pair whichever way round it was shown.
     static func key(_ a: String, _ b: String) -> String { a < b ? a + "|" + b : b + "|" + a }
 
-    /// How far, in score points, one unit of Bradley-Terry strength (log odds) moves a photo.
-    static let pointsPerUnit = 1.0
+    /// How far, in score points, one unit of Bradley-Terry strength (log odds) moves a photo on the list. Small:
+    /// the photos you compare are usually within a fraction of a point of each other, so a bigger move made the
+    /// order worse in testing (about 0.3 helped at every number of votes).
+    static let pointsPerUnit = 0.3
+    /// The same for what the learning aims for, so votes still outweigh Claude where they disagree.
+    static let trainingPointsPerUnit = 1.0
     /// The most votes can move a photo from where Claude (or the learning) put it, in points.
     static let maxShift = 2.0
-    /// How far your votes move a photo, in points (the same in every ranking): about ¾ of a point for one vote,
-    /// about 1½ for three wins, and never more than `maxShift`.
+    /// How far your votes move a photo on the list, in points (the same in every ranking): about a quarter point
+    /// for one vote, more for a photo you keep picking (or passing over), and never more than `maxShift`.
     static func shift(_ strength: Double) -> Double { max(-maxShift, min(maxShift, pointsPerUnit * strength)) }
 
     /// Each photo's strength (log scale; 0 = average) from the votes, by Bradley-Terry's minorize-maximize steps.
@@ -65,7 +69,7 @@ enum Pairwise {
     /// The training target for a photo: where Claude (or the learning) put it, moved by your votes. With several
     /// votes the move is big enough that a photo you keep picking ends up above one Claude scored higher.
     static func target(anchor: Double, strength: Double) -> Double {
-        max(1, min(10, anchor + shift(strength)))
+        max(1, min(10, anchor + max(-maxShift, min(maxShift, trainingPointsPerUnit * strength))))
     }
 
     /// How many photos' preference moved by at least `by` points between two sets of strengths.

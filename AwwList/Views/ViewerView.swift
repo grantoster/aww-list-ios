@@ -195,7 +195,7 @@ struct ViewerView: View {
         var parts: [String] = []
         if moments.indices.contains(index) && count > 1 { parts.append("No. \(index + 1) of \(count.formatted()) here") }
         if let p = focus {
-            parts.append("ranked by how \(p.name) comes across in it: their expression, eyes and how clearly they're caught (75%), plus the photo's own score of \(m.score) (25%)")
+            parts.append("the photo's own score of \(m.score), moved up to 1½ points by how \(p.name) comes across in it (their expression, eyes and how clearly they're caught)")
         }
         func one(_ v: Double) -> String { let t = (v * 10).rounded(.toNearestOrAwayFromZero) / 10; return t == t.rounded() ? String(Int(t)) : String(format: "%.1f", t) }
         switch library.rankBy {
