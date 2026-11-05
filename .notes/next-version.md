@@ -1,0 +1,1 @@
+- Next version: remove the Home tip line (HomeView.swift ~446: "Tip: hold any photo to pick several to send..."); keep the "Tap photos to pick up to N" line while selecting. Requested by Grant 2026-11-05.
