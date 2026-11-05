@@ -1124,15 +1124,20 @@ final class Library: ObservableObject {
     /// the camera 10%, how big their face is 15%). A photo where their face isn't known yet (still being learned)
     /// counts it as middling: no move. Not spread across 1–10 by rank.
     func personScore(_ m: Moment, _ person: UUID) -> Double {
-        let f = m.best.faceRecords?.first { r in
+        Library.personScore(face: face(of: person, in: m), photoScore: m.score)
+    }
+    /// This person's face in the moment's best shot, if known.
+    func face(of person: UUID, in m: Moment) -> FaceRecord? {
+        m.best.faceRecords?.first { r in
             let k = Library.faceKey(m.best.id, r)
             return (confirmedFaces[k] ?? faceOwner[k]) == person
         }
-        return Library.personScore(face: f, photoScore: m.score)
     }
     /// AwwSnap's tie-breaker, from published dating-photo findings (Hinge: sunglasses and selfies get fewer likes):
     /// how the photo was taken, never how anyone looks. −1...1; settles only photos scored the same.
-    nonisolated static func craft(_ p: PhotoScore) -> Double {
+    /// `main`: the face to judge (Best of a person: theirs). Its capture quality counts only then, comparing one
+    /// person's own photos; across different people it could track the face rather than the shot.
+    nonisolated static func craft(_ p: PhotoScore, main: FaceRecord? = nil) -> Double {
         let s = Set(p.scenes ?? [])
         var c = 0.0
         if s.contains("sunglasses") || s.contains("goggles") { c -= 0.4 }   // eyes hidden
@@ -1140,13 +1145,15 @@ final class Library: ObservableObject {
         let faces = (p.faceRecords ?? []).map { f -> (area: Double, f: FaceRecord) in
             (f.box.count == 4 ? Double(f.box[2] * f.box[3]) : 0, f)
         }.sorted { $0.area > $1.area }
+        let mainArea = main.map { m in m.box.count == 4 ? Double(m.box[2] * m.box[3]) : 0 }
         if let top = faces.first, top.area > 0 {
-            // One clear main person, rather than a crowd.
-            let others = faces.dropFirst().filter { $0.area >= top.area * 0.25 }.count
+            // One clear main person, rather than a crowd (the person you're looking at, in Best of).
+            let lead = mainArea ?? top.area
+            let others = faces.filter { $0.area >= lead * 0.25 && !(main.map { m in $0.f.box == m.box } ?? ($0.f.box == top.f.box)) }.count
             c += others == 0 ? 0.2 : others >= 3 ? -0.2 : 0
-            // The main face clearly visible (Apple's face capture quality), not hidden or blurred.
-            if let l = top.f.look, l.count > 2, l[2] >= 0 { c += 0.2 * (Double(l[2]) - 0.5) }
         }
+        // Their face clearly visible (Apple's face capture quality), not hidden or blurred.
+        if let l = main?.look, l.count > 2, l[2] >= 0 { c += 0.2 * (Double(l[2]) - 0.5) }
         return max(-1, min(1, c))
     }
 
@@ -1914,8 +1921,8 @@ final class Library: ObservableObject {
                     // Claude's own score leads; your votes only settle photos Claude scored about the same (a quarter
                     // point at most), so nothing outranks a Claude verdict because of them.
                     if let c = m.claudeScore { v = c + max(-0.25, min(0.25, voteShift(m, strengths))) } else if let l = learnedValue(m) { v = min(l, 8) }
-                    // AwwSnap: how the photo was taken settles photos Claude scored the same (Claude's scores
-                    // step by a tenth; this moves a photo less than half of that).
+                    // AwwSnap: how the photo was taken settles photos Claude scored the same (Claude's scores step
+                    // by a tenth; this never separates two photos by more than half of that).
                     if mode == .snap { v += 0.04 * Library.craft(m.best) }
                 } else if let l = learnedValue(m) {
                     v = l

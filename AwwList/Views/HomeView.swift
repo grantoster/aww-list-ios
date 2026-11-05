@@ -107,7 +107,7 @@ struct HomeView: View {
             let v = library.personScore(m, person)
             m.score = max(1, min(10, Int(v.rounded(.toNearestOrAwayFromZero))))
             // Ties settled by how the photo was taken (AwwSnap only; never changes the score shown).
-            return (m, v + (library.mode == .snap ? 0.004 * Library.craft(m.best) : 0), n)
+            return (m, v + (library.mode == .snap ? 0.004 * Library.craft(m.best, main: library.face(of: person, in: m)) : 0), n)
         }
         return scored.sorted { $0.v != $1.v ? $0.v > $1.v : $0.n < $1.n }.map(\.m)
     }
@@ -444,9 +444,11 @@ struct HomeView: View {
                 }
                 .opacity(selecting ? 0 : 1)
                 .accessibilityHidden(selecting)
-                if selecting {
-                    Text("Tap photos to pick up to \(maxPick).")
-                        .font(.caption).foregroundStyle(.secondary)
+                .overlay {   // in the same space, so nothing below moves
+                    if selecting {
+                        Text("Tap photos to pick up to \(maxPick).")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 Menu {
                     Button("Top 10 collage") { makeCollage(10) }

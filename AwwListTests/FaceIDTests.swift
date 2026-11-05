@@ -274,8 +274,14 @@ final class CraftTieBreakTests: XCTestCase {
         XCTAssertGreaterThan(Library.craft(solo), Library.craft(selfie))
         XCTAssertGreaterThan(Library.craft(solo), Library.craft(crowd))
         for p in [solo, shades, selfie, crowd] { XCTAssertTrue((-1...1).contains(Library.craft(p))) }
-        // Small enough to settle only photos Claude scored the same (its scores step by a tenth).
-        XCTAssertLessThan(0.04 * (Library.craft(solo) - Library.craft(shades)), 0.05)
+        // Best of: their own face's visibility counts (only there).
+        let sharp = photo([], faces: [[0.3, 0.3, 0.3, 0.3]], quality: 1), soft = photo([], faces: [[0.3, 0.3, 0.3, 0.3]], quality: 0)
+        XCTAssertEqual(Library.craft(sharp), Library.craft(soft))
+        XCTAssertGreaterThan(Library.craft(sharp, main: sharp.faceRecords![0]), Library.craft(soft, main: soft.faceRecords![0]))
+        // The widest possible gap still can't outweigh a tenth of a Claude point.
+        let best = photo([], faces: [[0.3, 0.3, 0.3, 0.3]], quality: 1)
+        let worst = photo(["sunglasses", "selfie"], faces: (0..<4).map { i in [Float(i) * 0.2, 0.3, 0.15, 0.15] }, quality: 0)
+        XCTAssertLessThan(0.04 * (Library.craft(best, main: best.faceRecords![0]) - Library.craft(worst, main: worst.faceRecords![0])), 0.1)
     }
 }
 
