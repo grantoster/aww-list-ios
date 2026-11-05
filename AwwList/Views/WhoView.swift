@@ -634,6 +634,7 @@ struct ReviewGridView: View {
                                            systemImage: "checkmark.circle",
                                            description: Text(rounds == 0
                                                              ? "New faces to check show up as the app finds them."
+                                                             : named == 0 ? "More faces to check show up here as the app finds them."
                                                              : "You confirmed \(named.formatted()) face\(named == 1 ? "" : "s") of \(person.name). The app is learning from them; more show up here as it finds them."))
                 } else {
                     Text("Is this \(person.name)? Tap any that aren't, then confirm.")
@@ -652,12 +653,14 @@ struct ReviewGridView: View {
                                     }
                             }
                             .buttonStyle(.plain)
-                            .accessibilityLabel(no ? "Not \(person.name)" : "\(person.name)")
-                            .accessibilityHint("Tap to change")
+                            .accessibilityLabel("Might be \(person.name)")
+                            .accessibilityValue(no ? "Not \(person.name)" : "Yes, \(person.name)")
+                            .accessibilityHint(no ? "Double-tap to count as \(person.name)" : "Double-tap to mark as not \(person.name)")
                         }
                     }
                     Button { confirm() } label: {
                         Text(notThem.isEmpty ? (batch.count == 1 ? "Yes, it's \(person.name)" : "Yes, all \(batch.count) are \(person.name)")
+                             : notThem.count == batch.count ? (batch.count == 1 ? "It's not \(person.name)" : "None are \(person.name)")
                              : "Confirm \(batch.count - notThem.count) as \(person.name)")
                             .frame(maxWidth: .infinity, minHeight: 48)
                     }
@@ -672,8 +675,17 @@ struct ReviewGridView: View {
         }
         .background(Theme.background.ignoresSafeArea())
         .navigationTitle(person.name).navigationBarTitleDisplayMode(.inline)
-        .onAppear { if batch.isEmpty { next() } }
-        .onChange(of: library.reviewFaces[person.id]?.count ?? 0) { if batch.isEmpty { next() } }
+        .onAppear { sync() }
+        .onChange(of: library.reviewFaces[person.id]?.count ?? 0) { sync() }
+    }
+
+    /// Drops faces already answered elsewhere (One at a time), so a face you said wasn't them can't be confirmed
+    /// here by "Yes, all"; loads more once none are left.
+    private func sync() {
+        let live = Set((library.reviewFaces[person.id] ?? []).map { Library.faceKey($0.photo, $0.face) })
+        batch.removeAll { !live.contains(Library.faceKey($0.photo, $0.face)) }
+        notThem.formIntersection(live)
+        if batch.isEmpty { next() }
     }
 
     private func next() {

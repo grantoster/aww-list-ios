@@ -447,7 +447,7 @@ struct HomeView: View {
                 .overlay {   // in the same space, so nothing below moves
                     if selecting {
                         Text("Tap photos to pick up to \(maxPick).")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
                     }
                 }
                 Menu {

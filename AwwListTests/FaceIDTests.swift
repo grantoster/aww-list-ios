@@ -281,7 +281,9 @@ final class CraftTieBreakTests: XCTestCase {
         // The widest possible gap still can't outweigh a tenth of a Claude point.
         let best = photo([], faces: [[0.3, 0.3, 0.3, 0.3]], quality: 1)
         let worst = photo(["sunglasses", "selfie"], faces: (0..<4).map { i in [Float(i) * 0.2, 0.3, 0.15, 0.15] }, quality: 0)
-        XCTAssertLessThan(0.04 * (Library.craft(best, main: best.faceRecords![0]) - Library.craft(worst, main: worst.faceRecords![0])), 0.1)
+        // The list (no main face) never separates two photos by half a tenth; Best of's tiny weight even less.
+        XCTAssertLessThan(0.04 * (Library.craft(best) - Library.craft(worst)), 0.05)
+        XCTAssertLessThan(0.004 * (Library.craft(best, main: best.faceRecords![0]) - Library.craft(worst, main: worst.faceRecords![0])), 0.01)
     }
 }
 
