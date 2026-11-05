@@ -106,7 +106,8 @@ struct HomeView: View {
             var m = m
             let v = library.personScore(m, person)
             m.score = max(1, min(10, Int(v.rounded(.toNearestOrAwayFromZero))))
-            return (m, v, n)
+            // Ties settled by how the photo was taken (AwwSnap only; never changes the score shown).
+            return (m, v + (library.mode == .snap ? 0.004 * Library.craft(m.best) : 0), n)
         }
         return scored.sorted { $0.v != $1.v ? $0.v > $1.v : $0.n < $1.n }.map(\.m)
     }
@@ -443,8 +444,10 @@ struct HomeView: View {
                 }
                 .opacity(selecting ? 0 : 1)
                 .accessibilityHidden(selecting)
-                Text(selecting ? "Tap photos to pick up to \(maxPick)." : "Tip: hold any photo to pick several to send. Copy, Share and collages leave out photos flagged as possible bath or undressed photos (and the ones around them).")
-                    .font(.caption).foregroundStyle(.secondary)
+                if selecting {
+                    Text("Tap photos to pick up to \(maxPick).")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Menu {
                     Button("Top 10 collage") { makeCollage(10) }
                     if bulkPool.count > 10 { Button("Top 20 collage") { makeCollage(20) } }

@@ -258,6 +258,27 @@ final class TasteNoteTests: XCTestCase {
     }
 }
 
+final class CraftTieBreakTests: XCTestCase {
+    func testHowThePhotoWasTakenSettlesTies() {
+        func photo(_ scenes: [String], faces: [[Float]], quality: Float = 0.8) -> PhotoScore {
+            var p = PhotoScore(id: UUID().uuidString, date: Date(), raw: nil, excluded: nil, age: nil, caption: "")
+            p.scenes = scenes
+            p.faceRecords = faces.map { FaceRecord(box: $0, vec: Data(), look: [1, 1, quality, 0]) }
+            return p
+        }
+        let solo = photo([], faces: [[0.3, 0.3, 0.3, 0.3]])
+        let shades = photo(["sunglasses"], faces: [[0.3, 0.3, 0.3, 0.3]])
+        let selfie = photo(["selfie"], faces: [[0.3, 0.3, 0.3, 0.3]])
+        let crowd = photo([], faces: (0..<4).map { i in [Float(i) * 0.2, 0.3, 0.15, 0.15] })
+        XCTAssertGreaterThan(Library.craft(solo), Library.craft(shades))
+        XCTAssertGreaterThan(Library.craft(solo), Library.craft(selfie))
+        XCTAssertGreaterThan(Library.craft(solo), Library.craft(crowd))
+        for p in [solo, shades, selfie, crowd] { XCTAssertTrue((-1...1).contains(Library.craft(p))) }
+        // Small enough to settle only photos Claude scored the same (its scores step by a tenth).
+        XCTAssertLessThan(0.04 * (Library.craft(solo) - Library.craft(shades)), 0.05)
+    }
+}
+
 final class SnapAdultTests: XCTestCase {
     func testGrownUpsCountByTheirOwnReading() {
         var f = FaceSignal(area: 0.01, quality: 0.5, smile: true, eyesClosed: false)

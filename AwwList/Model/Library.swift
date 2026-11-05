@@ -1130,6 +1130,26 @@ final class Library: ObservableObject {
         }
         return Library.personScore(face: f, photoScore: m.score)
     }
+    /// AwwSnap's tie-breaker, from published dating-photo findings (Hinge: sunglasses and selfies get fewer likes):
+    /// how the photo was taken, never how anyone looks. −1...1; settles only photos scored the same.
+    nonisolated static func craft(_ p: PhotoScore) -> Double {
+        let s = Set(p.scenes ?? [])
+        var c = 0.0
+        if s.contains("sunglasses") || s.contains("goggles") { c -= 0.4 }   // eyes hidden
+        if s.contains("selfie") { c -= 0.3 }                                 // an arm's-length selfie
+        let faces = (p.faceRecords ?? []).map { f -> (area: Double, f: FaceRecord) in
+            (f.box.count == 4 ? Double(f.box[2] * f.box[3]) : 0, f)
+        }.sorted { $0.area > $1.area }
+        if let top = faces.first, top.area > 0 {
+            // One clear main person, rather than a crowd.
+            let others = faces.dropFirst().filter { $0.area >= top.area * 0.25 }.count
+            c += others == 0 ? 0.2 : others >= 3 ? -0.2 : 0
+            // The main face clearly visible (Apple's face capture quality), not hidden or blurred.
+            if let l = top.f.look, l.count > 2, l[2] >= 0 { c += 0.2 * (Double(l[2]) - 0.5) }
+        }
+        return max(-1, min(1, c))
+    }
+
     nonisolated static func personScore(face f: FaceRecord?, photoScore: Int) -> Double {
         var own = 0.5
         if let f {
@@ -1894,6 +1914,9 @@ final class Library: ObservableObject {
                     // Claude's own score leads; your votes only settle photos Claude scored about the same (a quarter
                     // point at most), so nothing outranks a Claude verdict because of them.
                     if let c = m.claudeScore { v = c + max(-0.25, min(0.25, voteShift(m, strengths))) } else if let l = learnedValue(m) { v = min(l, 8) }
+                    // AwwSnap: how the photo was taken settles photos Claude scored the same (Claude's scores
+                    // step by a tenth; this moves a photo less than half of that).
+                    if mode == .snap { v += 0.04 * Library.craft(m.best) }
                 } else if let l = learnedValue(m) {
                     v = l
                 }
