@@ -1149,7 +1149,8 @@ final class Library: ObservableObject {
         if let top = faces.first, top.area > 0 {
             // One clear main person, rather than a crowd (the person you're looking at, in Best of).
             let lead = mainArea ?? top.area
-            let others = faces.filter { $0.area >= lead * 0.25 && !(main.map { m in $0.f.box == m.box } ?? ($0.f.box == top.f.box)) }.count
+            let leadBox = main?.box ?? top.f.box
+            let others = faces.filter { $0.area >= lead * 0.25 && $0.f.box != leadBox }.count
             c += others == 0 ? 0.2 : others >= 3 ? -0.2 : 0
         }
         // Their face clearly visible (Apple's face capture quality), not hidden or blurred.
