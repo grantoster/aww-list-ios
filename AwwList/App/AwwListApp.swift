@@ -25,8 +25,9 @@ struct AwwListApp: App {
     @StateObject private var plus = Shared.plus
 
     init() {
+        // Always opens in Awwbum: AwwSnap is reached only from the logo, each time.
+        AppMode.current = .aww
         BackgroundScan.register(); Theme.styleNavigationBars()
-        if AppMode.current == .snap { Shared.snapOpened = true }
     }
 
     var body: some Scene {
