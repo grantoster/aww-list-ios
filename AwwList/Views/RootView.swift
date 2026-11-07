@@ -663,12 +663,12 @@ struct LearnedSection: View {
                 }
                 Text("Copies this phone's own learning (numbers only: no photos, and the face-picture part left out) so it can be built into the app as the starting point for new installs.")
                     .font(.footnote).foregroundStyle(.secondary)
-            } else if library.mode == .aww {
+            } else {
                 Text("Copy learning appears once this phone has learned from its own Claude scores (about 80–100 of them, spread over enough days).")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             let shareable = library.shareableLearningCount, votesShared = library.shareableVoteCount
-            if library.mode == .aww && shareable + votesShared > 0 {   // AwwSnap's learning is never sent anywhere
+            if shareable + votesShared > 0 {   // only when you choose to send it
                 Button(preparingShare ? "Getting it ready…" : "Send my learning data to Grant") { askShare = true }
                     .disabled(preparingShare)
                     .confirmationDialog("Send your learning data?", isPresented: $askShare, titleVisibility: .visible) {
@@ -683,12 +683,12 @@ struct LearnedSection: View {
                         }
                         Button("Cancel", role: .cancel) {}
                     } message: {
-                        Text("For each photo Claude judged, this sends numbers the phone measured (like smiles, sharpness and the kind of scene), Claude's score, and whether Claude removed it. It also sends your Learn my Likes votes, as which photo you picked over which, with the same measured numbers for the photos in them. It leaves out the photos themselves, photo names, captions, names, face prints and face-shape measurements, locations and dates, and never includes bath or undressed photos. The numbers can't practically be turned back into pictures, though someone who already had one of your photos could tell it matches. Grant uses this only to improve the learning built into Awwbum.")
+                        Text("For each photo Claude judged, this sends numbers the phone measured (like smiles, sharpness and the kind of scene), Claude's score, and whether Claude removed it. It also sends your Learn my Likes votes, as which photo you picked over which, with the same measured numbers for the photos in them. It leaves out the photos themselves, photo names, captions, names, face prints and face-shape measurements, locations and dates, and never includes bath or undressed photos. The numbers can't practically be turned back into pictures, though someone who already had one of your photos could tell it matches. Grant uses this only to improve the learning built into \(library.mode == .snap ? "AwwSnap" : "Awwbum").")
                     }
                     .sheet(item: $shareFile, onDismiss: {
-                        try? FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appendingPathComponent("Awwbum learning data.json"))
+                        try? FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appendingPathComponent(library.mode == .snap ? "AwwSnap learning data.json" : "Awwbum learning data.json"))
                     }) { f in ShareSheet(items: [f.url]) }
-                Text("Optional. Sends the numbers behind your \(shareText(shareable, votesShared)) so the learning built into the app can learn from more families. No photos, names, faces, captions, places or dates. You choose how to send it (Messages, Mail, AirDrop).")
+                Text("Optional. Sends the numbers behind your \(shareText(shareable, votesShared)) so the learning built into the app can learn from more \(library.mode == .snap ? "people" : "families"). No photos, names, faces, captions, places or dates. You choose how to send it (Messages, Mail, AirDrop).")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             if library.training { HStack { ProgressView(); Text("Learning…").foregroundStyle(.secondary) } }

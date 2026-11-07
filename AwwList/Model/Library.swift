@@ -710,8 +710,8 @@ final class Library: ObservableObject {
 
     /// This phone's own learning as text (for building into the app); nil until it has learned something.
     var learningText: String? {
-        // Awwbum only: AwwSnap's learning never leaves the phone.
-        mode != .aww || (ownModel == nil && ownFilter == nil) ? nil : LearningPack(model: ownModel, filter: ownFilter).text()
+        // Only when you copy it (Settings), with the face-picture part blanked; AwwSnap's is marked as AwwSnap's.
+        ownModel == nil && ownFilter == nil ? nil : LearningPack(app: mode == .snap ? "awwsnap" : nil, model: ownModel, filter: ownFilter).text()
     }
     /// Photos whose Claude result could be shared as learning data. Bath and undressed photos are never shared.
     private static func shareable(_ p: PhotoScore) -> Bool {
@@ -742,7 +742,8 @@ final class Library: ObservableObject {
     /// read back). No photos, photo ids, captions, names, face prints, places or dates. Bath and undressed photos
     /// are left out. Built off the main thread; nil if there's nothing to share or the file can't be written.
     func writeLearningData() async -> URL? {
-        guard mode == .aww else { return nil }   // AwwSnap's photos and votes never leave the phone
+        // Only when you choose to send it (Settings); AwwSnap's file is marked as AwwSnap's.
+        let app = mode
         // Claude-scored photos, plus the photos in your Learn my Likes votes (so the shared model can learn from them).
         let picked = pairVotes.filter { $0.winner != nil }
         func ok(_ id: String) -> Bool {
@@ -794,11 +795,11 @@ final class Library: ObservableObject {
                 guard let w = v.winner, let wi = row[w], let li = row[w == v.a ? v.b : v.a] else { return nil }
                 return [wi, li]
             }.shuffled()
-            let obj: [String: Any] = ["kind": "awwbum-learning-data", "version": 2, "featureCount": Learner.featureCount,
+            let obj: [String: Any] = ["kind": app == .snap ? "awwsnap-learning-data" : "awwbum-learning-data", "version": 2, "featureCount": Learner.featureCount,
                                       "faceBlanked": true, "build": build, "count": rows.count, "examples": rows,
                                       "votes": pairs]
             guard let data = try? JSONSerialization.data(withJSONObject: obj) else { return nil }
-            let url = FileManager.default.temporaryDirectory.appendingPathComponent("Awwbum learning data.json")
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent(app == .snap ? "AwwSnap learning data.json" : "Awwbum learning data.json")
             do { try data.write(to: url, options: [.atomic, .completeFileProtection]); return url } catch { return nil }
         }.value
     }

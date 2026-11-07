@@ -590,6 +590,8 @@ enum Learner {
 /// Only numbers: no photos, faces, captions or dates of photos.
 struct LearningPack: Codable {
     var version = 1
+    /// Which app it came from ("awwsnap" for AwwSnap; nil: Awwbum), so the two are never mixed up.
+    var app: String?
     var model: LearnedModel?
     var filter: LearnedFilter?
     // The long arrays, as base64 little-endian Float32 (the fields above carry them empty).
@@ -625,7 +627,8 @@ struct LearningPack: Codable {
         for i in faceRange where i < mean.count && i < std.count && i < w.count { mean[i] = 0; std[i] = 1; w[i] = 0 }
     }
 
-    init(model: LearnedModel?, filter: LearnedFilter?) {
+    init(app: String? = nil, model: LearnedModel?, filter: LearnedFilter?) {
+        self.app = app
         if var m = model {
             Self.blankFaces(&m.mean, &m.std, &m.weights)
             modelArrays = [m.mean, m.std, m.weights].map(Self.pack)
