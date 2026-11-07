@@ -183,7 +183,6 @@ final class Library: ObservableObject {
     init(mode: AppMode = .aww) {
         self.mode = mode
         url = Library.fileURL(mode)
-        if mode == .snap { useBuiltInLearning = false }   // Awwbum's built-in learning is about kids: not used here
         let u = url, legacy = legacyURL
         let read = { [weak self] in
             Task.detached(priority: .userInitiated) { [weak self] in
@@ -687,11 +686,13 @@ final class Library: ObservableObject {
     @Published private(set) var filteredOut = 0
     /// The learning built into the app (from Resources/BuiltInLearning.json, when present): new installs start
     /// with it, and this phone's own Claude scores replace each part once there are enough of them.
-    /// (Awwbum only: it learned what's cute in kids' photos, which isn't what AwwSnap ranks.)
+    /// Each app has its own (Awwbum's learned what's cute in kids' photos; AwwSnap's, grown-ups' best photos):
+    /// AwwSnap reads only BuiltInSnapLearning.json, and only a pack copied out of AwwSnap.
     private lazy var builtIn: (model: LearnedModel?, filter: LearnedFilter?) = {
-        guard self.mode == .aww, let u = Bundle.main.url(forResource: "BuiltInLearning", withExtension: "json"),
+        let name = self.mode == .snap ? "BuiltInSnapLearning" : "BuiltInLearning"
+        guard let u = Bundle.main.url(forResource: name, withExtension: "json"),
               let t = try? String(contentsOf: u, encoding: .utf8) else { return (nil, nil) }
-        return LearningPack.read(t)
+        return LearningPack.read(t, app: self.mode == .snap ? "awwsnap" : nil)
     }()
     var builtInScores: Int { builtIn.model?.trainedOn ?? 0 }
     var hasBuiltIn: Bool { builtIn.model != nil || builtIn.filter != nil }

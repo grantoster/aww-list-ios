@@ -654,10 +654,11 @@ struct LearningPack: Codable {
     }
 
     /// Reads a pack back; parts that don't fit this version of the app (wrong fingerprint size) are dropped.
-    static func read(_ text: String) -> (model: LearnedModel?, filter: LearnedFilter?) {
+    /// `app`: only a pack from that app is read ("awwsnap" for AwwSnap; nil: Awwbum); any other is ignored.
+    static func read(_ text: String, app: String? = nil) -> (model: LearnedModel?, filter: LearnedFilter?) {
         let d = JSONDecoder(); d.dateDecodingStrategy = .secondsSince1970
         guard let data = text.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8),
-              let p = try? d.decode(LearningPack.self, from: data) else { return (nil, nil) }
+              let p = try? d.decode(LearningPack.self, from: data), p.app == app else { return (nil, nil) }
         func arrays(_ s: [String]?) -> [[Double]]? {
             guard let s, s.count == 3 else { return nil }
             let a = s.compactMap(unpack)

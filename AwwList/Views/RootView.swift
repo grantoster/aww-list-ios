@@ -590,6 +590,7 @@ struct LearnedSection: View {
     @State private var askShare = false
     @State private var preparingShare = false
     @State private var shareFile: ShareFile?
+    @State private var sharedURL: URL?
     var body: some View {
         Section {
             if let m = library.learned {
@@ -678,7 +679,7 @@ struct LearnedSection: View {
                                 let url = await library.writeLearningData()
                                 try? await Task.sleep(for: .milliseconds(500))   // let the dialog finish closing
                                 preparingShare = false
-                                if let url { shareFile = ShareFile(url: url) }
+                                if let url { sharedURL = url; shareFile = ShareFile(url: url) }
                             }
                         }
                         Button("Cancel", role: .cancel) {}
@@ -686,7 +687,8 @@ struct LearnedSection: View {
                         Text("For each photo Claude judged, this sends numbers the phone measured (like smiles, sharpness and the kind of scene), Claude's score, and whether Claude removed it. It also sends your Learn my Likes votes, as which photo you picked over which, with the same measured numbers for the photos in them. It leaves out the photos themselves, photo names, captions, names, face prints and face-shape measurements, locations and dates, and never includes bath or undressed photos. The numbers can't practically be turned back into pictures, though someone who already had one of your photos could tell it matches. Grant uses this only to improve the learning built into \(library.mode == .snap ? "AwwSnap" : "Awwbum").")
                     }
                     .sheet(item: $shareFile, onDismiss: {
-                        try? FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appendingPathComponent(library.mode == .snap ? "AwwSnap learning data.json" : "Awwbum learning data.json"))
+                        if let u = sharedURL { try? FileManager.default.removeItem(at: u) }   // the file made for this send
+                        sharedURL = nil
                     }) { f in ShareSheet(items: [f.url]) }
                 Text("Optional. Sends the numbers behind your \(shareText(shareable, votesShared)) so the learning built into the app can learn from more \(library.mode == .snap ? "people" : "families"). No photos, names, faces, captions, places or dates. You choose how to send it (Messages, Mail, AirDrop).")
                     .font(.footnote).foregroundStyle(.secondary)
@@ -695,7 +697,7 @@ struct LearnedSection: View {
         } header: {
             Text("Learned score")
         } footer: {
-            Text("The app studies Claude's scores alongside what it measures on the phone (smiles, closeness, face size, sharpness and the scene), then predicts a Claude-style score for every photo, privately and for free. It also learns which photos Claude takes off the list, so removals follow Claude's judgment instead of Apple's. Both are checked on a fifth of Claude's verdicts it didn't learn from. The learning learns Claude's scoring only. With Rank by Claude, your Learn my Likes votes move a photo Claude scored a quarter point at most; photos Claude hasn't seen, and every photo with the other rankings, move up to 2 points (votes stay on this iPhone). Claude's removals apply in every ranking. With Rank by Claude, Claude's own score wins where it exists and photos Claude hasn't seen use the learned score; with Rank by Learned, every photo uses the learned score.")
+            Text("The app studies Claude's scores alongside what it measures on the phone (smiles, closeness, face size, sharpness and the scene), then predicts a Claude-style score for every photo, privately and for free. It also learns which photos Claude takes off the list, so removals follow Claude's judgment instead of Apple's. Both are checked on a fifth of Claude's verdicts it didn't learn from. The learning learns Claude's scoring only. With Rank by Claude, your Learn my Likes votes move a photo Claude scored a quarter point at most; photos Claude hasn't seen, and every photo with the other rankings, move up to 2 points (votes stay on this iPhone, except in the learning data if you choose to send it). Claude's removals apply in every ranking. With Rank by Claude, Claude's own score wins where it exists and photos Claude hasn't seen use the learned score; with Rank by Learned, every photo uses the learned score.")
         }
     }
 }
