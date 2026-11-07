@@ -5,6 +5,24 @@ import SwiftUI
 final class ModeSwitch: ObservableObject {
     static let shared = ModeSwitch()
     @Published private(set) var mode = AppMode.current
+
+    /// Away 4 hours or more: back in Awwbum when you return (a fresh start always opens there too).
+    private static let awayKey = "leftAppAt"
+    private var observers: [NSObjectProtocol] = []
+    private init() {
+        let nc = NotificationCenter.default
+        observers.append(nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
+            UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: ModeSwitch.awayKey)
+        })
+        observers.append(nc.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated {
+                let left = UserDefaults.standard.double(forKey: ModeSwitch.awayKey)
+                if left > 0, Date().timeIntervalSince1970 - left >= 4 * 3600, ModeSwitch.shared.mode == .snap {
+                    ModeSwitch.shared.switchTo(.aww)
+                }
+            }
+        })
+    }
     func switchTo(_ m: AppMode) {
         guard m != mode else { return }
         Shared.scanner(mode).stop()    // one scan at a time: the app being left stops checking photos
