@@ -308,7 +308,9 @@ enum BackgroundScan {
                         let live = Int64(scanner.live.value), total = Int64(scanner.total)
                         if live < lastLive { base += lastTotal }          // a new pass started
                         lastLive = live; lastTotal = max(total, live)
-                        report(base + live + sentBefore, base + lastTotal + sentBefore, "\(live.formatted()) of \(total.formatted()) photos checked")
+                        let d = base + live + sentBefore + lastSent
+                        report(max(d, shownDone + (d <= shownDone ? 1 : 0)), base + lastTotal + sentBefore + lastSent + 1,
+                               "\(live.formatted()) of \(total.formatted()) photos checked")
                     } else if scanner.needsScan {
                         scanner.startIfNeeded(library: lib)                // photos added meanwhile
                         report(shownDone + 1, shownTotal + 1, subtitle)
