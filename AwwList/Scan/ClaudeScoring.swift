@@ -287,6 +287,10 @@ final class ClaudeService: ObservableObject {
         }
     }
     func stop() { stopRequested = true; if busy { status = "Stopping after the photos already sent come back…" } }
+    /// iOS wants the time back: end this pass like Stop, but as a pause, so scoring set to keep going picks up
+    /// again later (Stop turns that off).
+    private var pausedBySystem = false
+    func pause() { pausedBySystem = true; stopRequested = true }
 
     /// Its own connection pool: a fresh connection per app session, waits for the network instead of failing,
     /// and generous timeouts for uploads on cellular.
@@ -605,7 +609,7 @@ final class ClaudeService: ObservableObject {
             return
         }
         busy = true; defer { busy = false }
-        stopRequested = false; scoredNow = 0; madeProgress = false
+        stopRequested = false; pausedBySystem = false; scoredNow = 0; madeProgress = false
         scoring = true; defer { scoring = false }
         // With Awwbum Plus, photos go one at a time through Awwbum's server (no batches there). The subscription is
         // checked first, so a run right after launch doesn't miss it.
@@ -642,7 +646,7 @@ final class ClaudeService: ObservableObject {
         var paused = false, unloadedIDs = Set<String>()
         var failure: Error?
         defer {
-            if paused { lastOutcome = .paused }
+            if paused || pausedBySystem { lastOutcome = .paused; pausedBySystem = false }
             else if let failure {
                 if case ClaudeError.http(let code, _) = failure, code == 401 || code == 403 { lastOutcome = .keyRejected }
                 else if case ClaudeError.noKey = failure { lastOutcome = .keyRejected }

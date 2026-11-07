@@ -787,7 +787,7 @@ struct ScanBanner: View {
             ProgressView(value: Double(scanner.done), total: Double(max(1, scanner.total))).controlSize(.mini)
             if expanded {
             Text(BackgroundScan.canContinueInBackground
-                 ? "Keeps going after you leave the app (iOS shows its progress), then Claude scoring if it's on. If iOS stops it, it picks up overnight while your phone charges, or when you come back."
+                 ? "Keeps going after you leave the app when iOS allows (it shows the progress), then Claude scoring if it's set to keep going. If iOS stops it, it picks up overnight while your phone charges, or when you come back."
                  : "If you leave, it picks up overnight while your phone charges, or when you come back.")
                 .font(.caption).foregroundStyle(.secondary)
             if let e = BackgroundScan.lastError { Text(e).font(.caption).foregroundStyle(.secondary) }

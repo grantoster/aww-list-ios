@@ -167,7 +167,8 @@ final class PhotoScanner: ObservableObject {
             // Gentler on battery and heat: one photo at a time in Low Power Mode or when the iPhone is hot.
             let pi = ProcessInfo.processInfo
             let workers = pi.isLowPowerModeEnabled || pi.thermalState == .serious || pi.thermalState == .critical
-                ? 1 : min(4, max(2, pi.activeProcessorCount - 2))
+                ? 1 : Analyzer.inBackground.value ? 2   // gentler while the app is closed (on battery, CPU only)
+                : min(4, max(2, pi.activeProcessorCount - 2))
             let collector = Collector()
             let live = me.live
             func post(_ r: PhotoScore?) {

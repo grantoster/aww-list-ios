@@ -42,6 +42,8 @@ enum BackgroundScan {
     /// whether iOS accepted the request, started it, and how it ended.
     static let logKey = "backgroundScanLog"
     static var log: [String] { UserDefaults.standard.stringArray(forKey: logKey) ?? [] }
+    /// AwwSnap's background events aren't recorded: this log goes into Awwbum's diagnostics and feedback.
+    @MainActor static func note(_ event: String, mode: AppMode) { if mode == .aww { note(event) } }
     static func note(_ event: String) {
         let f = DateFormatter(); f.dateFormat = "MMM d h:mm:ss a"
         var l = log
@@ -61,7 +63,7 @@ enum BackgroundScan {
         try? BGTaskScheduler.shared.submit(req)
     }
     @MainActor private static func runResultsCheck(_ task: BGAppRefreshTask) {
-        guard whenLibraryReady(task, { runResultsCheck(task) }) else { return }
+        guard whenLibraryReady(task, .aww, { runResultsCheck(task) }) else { return }
         let work = Task { @MainActor in
             await Shared.claude(.aww).collect(Shared.library)
             if Shared.snapOpened { await Shared.claude(.snap).collect(Shared.snapLibrary) }
@@ -107,7 +109,8 @@ enum BackgroundScan {
     static func scheduleOvernight() {
         let req = BGProcessingTaskRequest(identifier: overnightID)
         req.requiresExternalPower = true
-        req.requiresNetworkConnectivity = false
+        // Wi-Fi or cellular only matters when Claude scoring is set to keep going (it scores after the photo check).
+        req.requiresNetworkConnectivity = AppMode.allCases.contains { UserDefaults.standard.bool(forKey: $0.key("autoClaude")) }
         try? BGTaskScheduler.shared.submit(req)
     }
 
@@ -136,8 +139,10 @@ enum BackgroundScan {
         let m = AppMode(rawValue: UserDefaults.standard.string(forKey: workModeKey) ?? "") ?? .aww
         if m == .snap { Shared.snapOpened = true }
         guard whenLibraryReady(task, m, { runOvernight(task) }) else { return }
-        note("Overnight run started by iOS (\(m.name))")
+        note("Overnight run started by iOS", mode: m)
         guard hasAccess else { task.setTaskCompleted(success: true); return }
+        // Background work already running (started from the app): that run carries on; this one isn't needed.
+        guard !taskOwnsScan else { note("Overnight run skipped: background work already running", mode: m); task.setTaskCompleted(success: true); return }
         workMode = m
         taskOwnsScan = true
         let done = Once()
@@ -145,13 +150,13 @@ enum BackgroundScan {
         // When iOS needs the time back: stop, save what's done, and report right away (not after the current photo).
         task.expirationHandler = {
             Task { @MainActor in
-                note("Overnight run stopped by iOS (\(Shared.scanner(m).done.formatted()) photos checked)")
+                note("Overnight run stopped by iOS (\(Shared.scanner(m).done.formatted()) photos checked)", mode: m)
                 work.stop()
                 if done.claim() { taskOwnsScan = false; task.setTaskCompleted(success: false) }
             }
         }
         work.run(progress: nil) {
-            if done.claim() { note("Overnight run finished"); taskOwnsScan = false; task.setTaskCompleted(success: true) }
+            if done.claim() { note("Overnight run finished", mode: m); taskOwnsScan = false; task.setTaskCompleted(success: true) }
         }
     }
 
@@ -172,21 +177,22 @@ enum BackgroundScan {
     @discardableResult
     @MainActor static func keepWorking(_ m: AppMode) -> Bool {
         UserDefaults.standard.set(m.rawValue, forKey: workModeKey)   // the overnight run follows the app you use
-        guard #available(iOS 26.0, *), Work.hasWork(m) else { return false }
+        // Not in Low Power Mode: it picks up overnight while charging instead.
+        guard #available(iOS 26.0, *), Work.hasWork(m), !ProcessInfo.processInfo.isLowPowerModeEnabled else { return false }
         if taskOwnsScan || continuedRunning { return true }    // already running or waiting to start
         workMode = m
         let req = BGContinuedProcessingTaskRequest(identifier: continuedID,
-                                                   title: m == .snap ? "Finding your best photos" : "Finding your cutest photos",
+                                                   title: "Finding your best photos",
                                                    subtitle: "Checking your photos")
         req.strategy = .queue   // if iOS can't start it this second, it starts as soon as it can
         do {
             try BGTaskScheduler.shared.submit(req)
-            note("Asked iOS to keep working in the background (\(m.name))")
+            note("Asked iOS to keep working in the background", mode: m)
             continuedRunning = true
             lastError = nil
             return true
         } catch {
-            note("iOS refused background work: \(error.localizedDescription)")
+            note("iOS refused background work: \(error.localizedDescription)", mode: m)
             lastError = "iOS didn't allow background work just now (\(error.localizedDescription)). It picks up overnight while charging, or when you come back."
             return false
         }
@@ -203,7 +209,9 @@ enum BackgroundScan {
     @MainActor private static func runContinued(_ task: BGContinuedProcessingTask) {
         let m = workMode
         guard whenLibraryReady(task, m, { runContinued(task) }) else { return }
-        note("iOS started background work (\(m.name))")
+        // The overnight run is already doing this work: nothing to add.
+        guard !taskOwnsScan else { continuedRunning = false; task.setTaskCompleted(success: true); return }
+        note("iOS started background work", mode: m)
         let done = Once()
         taskOwnsScan = true
         continuedRunning = true
@@ -214,7 +222,7 @@ enum BackgroundScan {
         }
         task.expirationHandler = {
             Task { @MainActor in
-                note("iOS stopped background work (\(Shared.scanner(m).done.formatted()) photos checked, \(Shared.claude(m).sent.formatted()) sent to Claude)")
+                note("iOS stopped background work (\(Shared.scanner(m).done.formatted()) photos checked, \(Shared.claude(m).sent.formatted()) sent to Claude)", mode: m)
                 work.stop()
                 finish(false)
             }
@@ -222,10 +230,10 @@ enum BackgroundScan {
         work.run(progress: { done, total, subtitle in
             task.progress.totalUnitCount = max(1, total + 1)   // +1: finishing up still to come
             task.progress.completedUnitCount = min(done, task.progress.totalUnitCount - 1)
-            task.updateTitle(m == .snap ? "Finding your best photos" : "Finding your cutest photos", subtitle: subtitle)
+            task.updateTitle("Finding your best photos", subtitle: subtitle)
         }) {
             task.progress.completedUnitCount = task.progress.totalUnitCount
-            note("Background work finished")
+            note("Background work finished", mode: m)
             finish(true)
         }
     }
@@ -238,7 +246,7 @@ enum BackgroundScan {
         scheduleResultsCheck()
         let scanner = Shared.scanner(m)
         guard scanner.isScanning, !taskOwnsScan else { return }
-        note("Left the app mid-scan: 30-second wrap-up" + (continuedRunning ? " (waiting for iOS to take over)" : ""))
+        note("Left the app mid-scan: 30-second wrap-up" + (continuedRunning ? " (waiting for iOS to take over)" : ""), mode: m)
         let done = Once()
         var id = UIBackgroundTaskIdentifier.invalid
         id = UIApplication.shared.beginBackgroundTask(withName: "Aww List scan") {
@@ -283,6 +291,16 @@ enum BackgroundScan {
             var claudeTries = 0
             ticker = Task { @MainActor [weak self] in
                 var base: Int64 = 0, lastLive: Int64 = 0, lastTotal: Int64 = 0
+                // Never reported lower than before (iOS reads a drop or a standstill as stuck): earlier Claude
+                // passes' photos are kept, and a small step each second covers a long upload or a pause.
+                var shownDone: Int64 = 0, shownTotal: Int64 = 1, sentBefore: Int64 = 0, lastSent: Int64 = 0
+                var subtitle = "Checking your photos"
+                func report(_ d: Int64, _ t: Int64, _ s: String) {
+                    subtitle = s
+                    shownTotal = max(shownTotal, t, shownDone + 2)
+                    shownDone = min(max(shownDone, d), shownTotal - 1)
+                    progress?(shownDone, shownTotal, subtitle)
+                }
                 while !Task.isCancelled, let self, !self.stopped {
                     // You switched to the other app (its own work takes over): this one's run ends here.
                     if UIApplication.shared.applicationState == .active && AppMode.current != m { break }
@@ -290,17 +308,24 @@ enum BackgroundScan {
                         let live = Int64(scanner.live.value), total = Int64(scanner.total)
                         if live < lastLive { base += lastTotal }          // a new pass started
                         lastLive = live; lastTotal = max(total, live)
-                        progress?(base + live, base + lastTotal, "\(live.formatted()) of \(total.formatted()) photos checked")
+                        report(base + live + sentBefore, base + lastTotal + sentBefore, "\(live.formatted()) of \(total.formatted()) photos checked")
                     } else if scanner.needsScan {
                         scanner.startIfNeeded(library: lib)                // photos added meanwhile
+                        report(shownDone + 1, shownTotal + 1, subtitle)
                     } else if claude.busy {
-                        let photos = base + lastTotal
-                        progress?(photos + Int64(claude.sent), photos + Int64(max(claude.toSend, claude.sent)),
-                                  "Claude: \(claude.sent.formatted()) of \(claude.toSend.formatted()) photos sent")
+                        let photos = base + lastTotal, s = Int64(claude.sent)
+                        if s < lastSent { sentBefore += lastSent }          // a new pass started its count over
+                        lastSent = s
+                        let moved = shownDone >= photos + sentBefore + s ? 1 : 0   // a long upload still shows movement
+                        report(max(photos + sentBefore + s, shownDone + Int64(moved)),
+                               photos + sentBefore + Int64(max(claude.toSend, claude.sent)) + 1,
+                               "Claude: \(claude.sent.formatted()) of \(claude.toSend.formatted()) photos sent")
                     } else if Work.claudeWanted(m) && claudeTries < 2 {
                         claudeTries += 1                                     // a pass; at most twice per run
+                        sentBefore += lastSent; lastSent = 0
                         Task { await ClaudeService.runAndTrack(lib) }
-                        try? await Task.sleep(for: .seconds(2))             // let it get going
+                        report(shownDone + 1, shownTotal + 1, "Scoring with Claude")
+                        try? await Task.sleep(for: .seconds(1))             // let it get going
                         continue
                     } else {
                         break                                                // nothing left
@@ -317,7 +342,7 @@ enum BackgroundScan {
             stopped = true
             ticker?.cancel()
             Shared.scanner(mode).stop()
-            Shared.claude(mode).stop()
+            Shared.claude(mode).pause()
             Shared.library(mode).flush()
         }
     }
