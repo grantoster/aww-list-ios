@@ -770,8 +770,6 @@ struct Tile: View {
 
 struct ScanBanner: View {
     @EnvironmentObject var scanner: PhotoScanner
-    @State private var asked = BackgroundScan.autoContinue
-    @State private var failed: String?
     @State private var expanded = false
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -788,18 +786,11 @@ struct ScanBanner: View {
             .accessibilityHint(expanded ? "Hides the details" : "Shows the details")
             ProgressView(value: Double(scanner.done), total: Double(max(1, scanner.total))).controlSize(.mini)
             if expanded {
-            Text(AppMode.current == .aww
-                 ? "If you leave, it picks up overnight while your phone charges, or when you come back. To keep it going right after you leave, tap Keep scanning in the background."
-                 : "AwwSnap checks photos while it's open; it picks up where it left off when you come back.")
+            Text(BackgroundScan.canContinueInBackground
+                 ? "Keeps going after you leave the app (iOS shows its progress), then Claude scoring if it's on. If iOS stops it, it picks up overnight while your phone charges, or when you come back."
+                 : "If you leave, it picks up overnight while your phone charges, or when you come back.")
                 .font(.caption).foregroundStyle(.secondary)
-            if BackgroundScan.canContinueInBackground && AppMode.current == .aww {
-                Button(asked ? "It'll keep going after you leave" : "Keep scanning in the background") {
-                    asked = BackgroundScan.continueInBackground(userTapped: true)
-                    if !asked { failed = BackgroundScan.lastError }
-                }
-                .buttonStyle(.bordered).font(.subheadline).disabled(asked)
-                if let failed { Text(failed).font(.caption).foregroundStyle(.secondary) }
-            }
+            if let e = BackgroundScan.lastError { Text(e).font(.caption).foregroundStyle(.secondary) }
             }
         }
         .padding(.horizontal, 12).padding(.vertical, 8)

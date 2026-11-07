@@ -116,39 +116,48 @@ enum BackgroundScan {
 
     /// iOS often starts a background task by launching the app cold: wait until the saved library is read
     /// (a few seconds), ending the task cleanly if iOS wants the time back first.
-    @MainActor private static func whenLibraryReady(_ task: BGTask, _ run: @escaping @MainActor () -> Void) -> Bool {
-        if Shared.library.ready { return true }
+    @MainActor private static func whenLibraryReady(_ task: BGTask, _ m: AppMode = .aww, _ run: @escaping @MainActor () -> Void) -> Bool {
+        let lib = Shared.library(m)
+        if lib.ready && Shared.library.ready { return true }   // AwwSnap also needs Awwbum's (shared Who's Who)
         let gaveUp = Once()
         task.expirationHandler = { @Sendable in if gaveUp.claim() { task.setTaskCompleted(success: false) } }
-        Shared.library.whenReady { if gaveUp.claim() { run() } }
+        let notReady = lib.ready ? Shared.library : lib
+        notReady.whenReady { if gaveUp.claim() { run() } }
         return false
     }
 
+    /// The app the background work is for (the one that was open when it was asked for).
+    @MainActor private static var workMode: AppMode = .aww
+    private static let workModeKey = "backgroundWorkMode"
+
     @MainActor private static func runOvernight(_ task: BGTask) {
         scheduleOvernight()   // first, so the next night is asked for even if this one ends early
-        guard whenLibraryReady(task, { runOvernight(task) }) else { return }
-        note("Overnight scan started by iOS")
+        // The app last open (iOS may launch it cold for this): Awwbum or AwwSnap.
+        let m = AppMode(rawValue: UserDefaults.standard.string(forKey: workModeKey) ?? "") ?? .aww
+        if m == .snap { Shared.snapOpened = true }
+        guard whenLibraryReady(task, m, { runOvernight(task) }) else { return }
+        note("Overnight run started by iOS (\(m.name))")
         guard hasAccess else { task.setTaskCompleted(success: true); return }
-        let scanner = Shared.scanner
-        let done = Once()
+        workMode = m
         taskOwnsScan = true
+        let done = Once()
+        let work = Work(mode: m)
         // When iOS needs the time back: stop, save what's done, and report right away (not after the current photo).
         task.expirationHandler = {
             Task { @MainActor in
-                note("Overnight scan stopped by iOS (\(scanner.done.formatted()) photos checked)")
-                scanner.stop(); Shared.library.flush()
+                note("Overnight run stopped by iOS (\(Shared.scanner(m).done.formatted()) photos checked)")
+                work.stop()
                 if done.claim() { taskOwnsScan = false; task.setTaskCompleted(success: false) }
             }
         }
-        scanner.start(library: Shared.library)
-        scanner.whenFinished {
-            Shared.library.flush()
-            if done.claim() { note("Overnight scan finished"); taskOwnsScan = false; task.setTaskCompleted(success: true) }
+        work.run(progress: nil) {
+            if done.claim() { note("Overnight run finished"); taskOwnsScan = false; task.setTaskCompleted(success: true) }
         }
     }
 
-    /// iOS 26+: when you tap "Keep scanning in the background", the running scan continues after you leave the app,
-    /// with its progress shown by iOS. Does nothing on older iOS or when nothing is scanning.
+    /// iOS 26+: checking photos and Claude scoring carry on after you leave the app, with their progress shown by
+    /// iOS, until they finish or iOS needs the resources back. Asked for by itself as soon as either starts while
+    /// the app is open (iOS only takes these requests from an app on screen).
     static var canContinueInBackground: Bool {
         if #available(iOS 26.0, *) { return true } else { return false }
     }
@@ -156,54 +165,34 @@ enum BackgroundScan {
     /// Last reason a background request didn't go through (shown on the scan banner).
     @MainActor static var lastError: String?
     @MainActor private static var continuedRunning = false
-
-    /// Once you've tapped "Keep scanning in the background" (or turned it on in Settings), later scans keep going
-    /// on their own when you leave. It can be turned off in Settings.
-    static let autoKey = "keepScanningWhenLeaving"
-    @MainActor static var autoContinue: Bool { UserDefaults.standard.bool(forKey: autoKey) }
     @MainActor private static var continuedStarted = false
-    @MainActor private static var watching = false
 
-    /// Asks iOS to keep the running scan going after the app is left. Called from the button and automatically
-    /// whenever the app starts to close mid-scan (it has to be asked while the app is still on screen).
-
+    /// Asks iOS to keep this app's photo check and Claude scoring going after you leave. Safe to call often: it
+    /// does nothing when there's nothing to do or a request is already in. Must be called while the app is on screen.
     @discardableResult
-    @MainActor static func continueInBackground(userTapped: Bool = false) -> Bool {
-        guard #available(iOS 26.0, *), Shared.scanner.isScanning else { return false }
-        if userTapped { UserDefaults.standard.set(true, forKey: autoKey) } else if !autoContinue { return false }
+    @MainActor static func keepWorking(_ m: AppMode) -> Bool {
+        UserDefaults.standard.set(m.rawValue, forKey: workModeKey)   // the overnight run follows the app you use
+        guard #available(iOS 26.0, *), Work.hasWork(m) else { return false }
         if taskOwnsScan || continuedRunning { return true }    // already running or waiting to start
+        workMode = m
         let req = BGContinuedProcessingTaskRequest(identifier: continuedID,
-                                                   title: "Finding your cutest photos",
-                                                   subtitle: "Scanning your library")
+                                                   title: m == .snap ? "Finding your best photos" : "Finding your cutest photos",
+                                                   subtitle: "Checking your photos")
         req.strategy = .queue   // if iOS can't start it this second, it starts as soon as it can
         do {
             try BGTaskScheduler.shared.submit(req)
-            note(userTapped ? "Asked iOS to keep scanning (you tapped)" : "Asked iOS to keep scanning (leaving the app)")
+            note("Asked iOS to keep working in the background (\(m.name))")
             continuedRunning = true
-            // If iOS never got to it before the scan ended, withdraw the request (so it can't start a scan out of the
-            // blue later) and allow asking again for the next scan. One watcher at a time.
-            guard !watching else { return true }
-            watching = true
-            Shared.scanner.whenFinished {
-                watching = false
-                // Only when the scan really finished: one stopped by the 30-second wrap-up is waiting for iOS to
-                // take it over, so the request must stay in place.
-                if !continuedStarted && !Shared.scanner.stoppedEarly {
-                    note("iOS hadn't started background scanning before the scan ended")
-                    continuedRunning = false
-                    BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: continuedID)
-                }
-            }
             lastError = nil
             return true
         } catch {
-            note("iOS refused background scanning: \(error.localizedDescription)")
-            lastError = "iOS didn't allow background scanning just now (\(error.localizedDescription)). It'll pick up overnight while charging, or when you come back."
+            note("iOS refused background work: \(error.localizedDescription)")
+            lastError = "iOS didn't allow background work just now (\(error.localizedDescription)). It picks up overnight while charging, or when you come back."
             return false
         }
     }
 
-    /// Back in the app: a background request iOS never started is withdrawn, so leaving again can ask afresh.
+    /// Back in the app: a background request iOS never started is withdrawn, so it can be asked afresh.
     @MainActor static func appBecameActive() {
         guard #available(iOS 26.0, *), continuedRunning, !continuedStarted else { return }
         BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: continuedID)
@@ -212,87 +201,124 @@ enum BackgroundScan {
 
     @available(iOS 26.0, *)
     @MainActor private static func runContinued(_ task: BGContinuedProcessingTask) {
-        guard whenLibraryReady(task, { runContinued(task) }) else { return }
-        note("iOS started background scanning")
-        let scanner = Shared.scanner
+        let m = workMode
+        guard whenLibraryReady(task, m, { runContinued(task) }) else { return }
+        note("iOS started background work (\(m.name))")
         let done = Once()
         taskOwnsScan = true
         continuedRunning = true
         continuedStarted = true
-        if !scanner.isScanning { scanner.start(library: Shared.library) }
-        // Progress is reported every second from the photo-by-photo count: iOS ends a continued task whose
-        // progress stops moving, and the 50-photo batches (or one slow iCloud download) used to look like a stall.
-        // A follow-up scan (photos added meanwhile) starts its count over, so totals are carried across.
-        let ticker = Task { @MainActor in
-            var base: Int64 = 0, lastLive: Int64 = 0, lastTotal: Int64 = 0
-            while !Task.isCancelled && scanner.isScanning {
-                let live = Int64(scanner.live.value), total = Int64(scanner.total)
-                if live < lastLive { base += lastTotal }          // a new pass started
-                lastLive = live; lastTotal = max(total, live)
-                task.progress.totalUnitCount = max(1, base + lastTotal + 1)   // +1: finishing up still to come
-                task.progress.completedUnitCount = min(base + live, task.progress.totalUnitCount - 1)
-                task.updateTitle("Finding your cutest photos",
-                                 subtitle: "\(live.formatted()) of \(total.formatted()) photos")
-                try? await Task.sleep(for: .seconds(1))
-            }
-        }
+        let work = Work(mode: m)
         func finish(_ ok: Bool) {
             if done.claim() { taskOwnsScan = false; continuedRunning = false; continuedStarted = false; task.setTaskCompleted(success: ok) }
         }
-        let expired = Once()
         task.expirationHandler = {
             Task { @MainActor in
-                _ = expired.claim()
-                note("iOS stopped background scanning (\(scanner.done.formatted()) photos checked)")
-                ticker.cancel(); scanner.stop(); Shared.library.flush()
+                note("iOS stopped background work (\(Shared.scanner(m).done.formatted()) photos checked, \(Shared.claude(m).sent.formatted()) sent to Claude)")
+                work.stop()
                 finish(false)
             }
         }
-        // If this task started just as the 30-second wrap-up was stopping the scan, that scan ends "stopped early":
-        // start it again rather than reporting done with photos left (a few tries at most).
-        var restarts = 0
-        func attach() {
-            scanner.whenFinished {
-                // (Not when you've switched to AwwSnap: Awwbum's scan was stopped on purpose.)
-                if scanner.stoppedEarly && !expired.used && restarts < 3 && AppMode.current == .aww {
-                    restarts += 1
-                    scanner.start(library: Shared.library)
-                    attach()
-                    return
-                }
-                ticker.cancel()
-                Shared.library.flush()
-                if !expired.used { note("Background scanning finished") }
-                task.progress.completedUnitCount = task.progress.totalUnitCount
-                finish(true)
-            }
+        work.run(progress: { done, total, subtitle in
+            task.progress.totalUnitCount = max(1, total + 1)   // +1: finishing up still to come
+            task.progress.completedUnitCount = min(done, task.progress.totalUnitCount - 1)
+            task.updateTitle(m == .snap ? "Finding your best photos" : "Finding your cutest photos", subtitle: subtitle)
+        }) {
+            task.progress.completedUnitCount = task.progress.totalUnitCount
+            note("Background work finished")
+            finish(true)
         }
-        attach()
     }
 
     /// The ~30 seconds iOS allows after the app is closed: save, and let the current batch finish.
-    /// Stays out of the way when a background task already owns the scan.
-    @MainActor static func wrapUpAfterClosing() {
+    /// Stays out of the way when a background task already owns the work (or iOS is about to start one).
+    @MainActor static func wrapUpAfterClosing(_ m: AppMode) {
         Shared.library.flush()
+        if m == .snap { Shared.snapLibrary.flush() }
         scheduleResultsCheck()
-        let scanner = Shared.scanner
+        let scanner = Shared.scanner(m)
         guard scanner.isScanning, !taskOwnsScan else { return }
         note("Left the app mid-scan: 30-second wrap-up" + (continuedRunning ? " (waiting for iOS to take over)" : ""))
         let done = Once()
         var id = UIBackgroundTaskIdentifier.invalid
         id = UIApplication.shared.beginBackgroundTask(withName: "Aww List scan") {
-            // Runs on the main thread: end the task right away (iOS is waiting), then save in the background queue.
             // Runs on the main thread: queue the save, and end the task as soon as that write finishes.
             MainActor.assumeIsolated {
-                // Waiting for iOS to start background scanning: leave the scan as it is (iOS pauses the app and the
+                // Waiting for iOS to start background work: leave the scan as it is (iOS pauses the app and the
                 // background task carries on from there); otherwise stop it cleanly.
                 if !taskOwnsScan && !continuedRunning { scanner.stop() }
-                Shared.library.save { if done.claim() { UIApplication.shared.endBackgroundTask(id) } }
+                Shared.library(m).save { if done.claim() { UIApplication.shared.endBackgroundTask(id) } }
             }
         }
         scanner.whenFinished {
-            Shared.library.flush()
+            Shared.library(m).flush()
             if id != .invalid, done.claim() { UIApplication.shared.endBackgroundTask(id) }
+        }
+    }
+
+    /// One background run: finish checking photos, then (when Claude scoring is on and set to keep going) score
+    /// with Claude, the same way as in the app. Reports progress every second: iOS ends a continued task whose
+    /// progress stops moving.
+    @MainActor final class Work {
+        let mode: AppMode
+        private var ticker: Task<Void, Never>?
+        private var stopped = false
+        init(mode: AppMode) { self.mode = mode }
+
+        /// Photos left to check, or Claude scoring running or set to start.
+        static func hasWork(_ m: AppMode) -> Bool {
+            let s = Shared.scanner(m), c = Shared.claude(m)
+            return s.isScanning || s.needsScan || c.busy || claudeWanted(m)
+        }
+        /// Claude scoring set to keep going by itself (Score, or chosen on the first screen), with a key or Plus.
+        static func claudeWanted(_ m: AppMode) -> Bool {
+            let c = Shared.claude(m), lib = Shared.library(m)
+            return UserDefaults.standard.bool(forKey: m.key("autoClaude")) && lib.claudeToSend > 0
+                && (Claude.apiKey(for: m) != nil || c.viaPlus)
+        }
+
+        func run(progress: ((Int64, Int64, String) -> Void)?, done: @escaping @MainActor () -> Void) {
+            let m = mode, scanner = Shared.scanner(m), claude = Shared.claude(m), lib = Shared.library(m)
+            scanner.startIfNeeded(library: lib)
+            var claudeTries = 0
+            ticker = Task { @MainActor [weak self] in
+                var base: Int64 = 0, lastLive: Int64 = 0, lastTotal: Int64 = 0
+                while !Task.isCancelled, let self, !self.stopped {
+                    // You switched to the other app (its own work takes over): this one's run ends here.
+                    if UIApplication.shared.applicationState == .active && AppMode.current != m { break }
+                    if scanner.isScanning {
+                        let live = Int64(scanner.live.value), total = Int64(scanner.total)
+                        if live < lastLive { base += lastTotal }          // a new pass started
+                        lastLive = live; lastTotal = max(total, live)
+                        progress?(base + live, base + lastTotal, "\(live.formatted()) of \(total.formatted()) photos checked")
+                    } else if scanner.needsScan {
+                        scanner.startIfNeeded(library: lib)                // photos added meanwhile
+                    } else if claude.busy {
+                        let photos = base + lastTotal
+                        progress?(photos + Int64(claude.sent), photos + Int64(max(claude.toSend, claude.sent)),
+                                  "Claude: \(claude.sent.formatted()) of \(claude.toSend.formatted()) photos sent")
+                    } else if Work.claudeWanted(m) && claudeTries < 2 {
+                        claudeTries += 1                                     // a pass; at most twice per run
+                        Task { await ClaudeService.runAndTrack(lib) }
+                        try? await Task.sleep(for: .seconds(2))             // let it get going
+                        continue
+                    } else {
+                        break                                                // nothing left
+                    }
+                    try? await Task.sleep(for: .seconds(1))
+                }
+                lib.flush()
+                if !(self?.stopped ?? true) { done() }
+            }
+        }
+
+        /// iOS wants the time back: stop checking, let photos already sent to Claude come back, save.
+        func stop() {
+            stopped = true
+            ticker?.cancel()
+            Shared.scanner(mode).stop()
+            Shared.claude(mode).stop()
+            Shared.library(mode).flush()
         }
     }
 }

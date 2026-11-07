@@ -50,10 +50,14 @@ struct RootView: View {
                 if !library.claudeBatches.isEmpty && !claude.busy { await claude.collect(library) }
             }
         }
+        // Checking photos or Claude scoring started: ask iOS (26+) right away, while the app is on screen, to keep
+        // it going after you leave. Asked again as you leave, in case more work started since.
+        .onChange(of: scanner.isScanning) { if phase == .active && scanner.isScanning { BackgroundScan.keepWorking(library.mode) } }
+        .onChange(of: claude.busy) { if phase == .active && claude.busy { BackgroundScan.keepWorking(library.mode) } }
         .onChange(of: phase) {
-            // Leaving mid-scan doesn't ask iOS to keep going by itself: only your tap on "Keep scanning in the
-            // background" does (Apple's rule for these tasks). Otherwise it picks up overnight or when you're back.
-            if phase == .active {
+            if phase == .inactive {
+                BackgroundScan.keepWorking(library.mode)
+            } else if phase == .active {
                 BackgroundScan.appBecameActive()
                 status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
                 if status == .authorized && !library.notVisible.isEmpty { scanner.start(library: library) }   // Limited → Full
@@ -63,13 +67,9 @@ struct RootView: View {
             } else if phase == .background {
                 // Photos may be hidden or deleted in Photos while Awwbum is away: no cached copy outlives that.
                 AssetImage.clearCache()
-                if library.mode == .snap {
-                    // AwwSnap doesn't scan in the background: stop, and save it (and Who's Who, with Awwbum's) now.
-                    scanner.stop(); library.flush(); Shared.library.flush()
-                } else {
-                    library.save()
-                }
-                BackgroundScan.wrapUpAfterClosing()
+                library.save()
+                if library.mode == .snap { Shared.library.save() }   // Who's Who is kept with Awwbum's
+                BackgroundScan.wrapUpAfterClosing(library.mode)
                 BackgroundScan.scheduleOvernight()
             }
         }
