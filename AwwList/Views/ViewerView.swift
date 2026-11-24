@@ -132,6 +132,10 @@ struct ViewerView: View {
                 }
                 if let favNote { Text(favNote).font(Theme.label(14)).foregroundStyle(Theme.sunny) }
                 Text(m.caption).font(Theme.label(18, relativeTo: .headline)).foregroundStyle(.white)
+                // Who's Who: the people recognized or tagged in this photo (only when face recognition is on).
+                if Library.faceConsent {
+                    Label(whoLine(m), systemImage: "person.2.fill").font(.caption.bold()).foregroundStyle(.white.opacity(0.9))
+                }
                 Text(bothScores(m)).font(.caption.monospacedDigit()).foregroundStyle(.white.opacity(0.85))
                 Text(whyHere(m)).font(.caption).foregroundStyle(.white.opacity(0.85)).fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 8) {
@@ -145,6 +149,12 @@ struct ViewerView: View {
             .padding(16)
             .background(LinearGradient(colors: [.clear, .black.opacity(0.8)], startPoint: .top, endPoint: .bottom))
         }
+    }
+
+    /// "Emma, Jack" for the people tagged in this photo, or "No one tagged".
+    private func whoLine(_ m: Moment) -> String {
+        let names = library.people.filter { m.people.contains($0.id) }.map(\.name).sorted()
+        return names.isEmpty ? "No one tagged" : names.joined(separator: ", ")
     }
 
     private func react(_ m: Moment, _ value: Int) {

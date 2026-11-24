@@ -796,6 +796,8 @@ struct PhotoGroupView: View {
     struct OpenPhoto: Identifiable { let id: String }
 
     private var verb: String { action == .takeOff ? "Take off my list" : "Add back to my list" }
+    /// Every photo in the group that can be picked (not just the ones on screen), minus those already done.
+    private var selectable: [String] { ids.filter { can($0) && !done.contains($0) } }
     private func apply(_ list: [String]) {
         guard !list.isEmpty else { return }
         if action == .takeOff { library.takeBack(list) } else { library.addBack(list) }
@@ -805,7 +807,7 @@ struct PhotoGroupView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 12) {
-                Text("\(ids.count.formatted()) photos" + (action == .addBack ? ". Tap one to see it larger; add back any you want on your list." : ""))
+                Text("\(ids.count.formatted()) photos" + (action == .addBack ? ". Tap one to see it larger. To add back several at once, tap Select, pick photos (or Select all), then Add back." : ""))
                     .font(.footnote).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 LazyVGrid(columns: columns, spacing: 6) {
@@ -848,8 +850,14 @@ struct PhotoGroupView: View {
                 }
             }
             if selecting {
-                ToolbarItem(placement: .bottomBar) {
-                    Button(picked.isEmpty ? verb : (action == .takeOff ? "Take \(picked.count) off" : "Add \(picked.count) back")) {
+                ToolbarItemGroup(placement: .bottomBar) {
+                    let all = selectable
+                    Button(!all.isEmpty && picked.count == all.count ? "Select none" : "Select all \(all.count.formatted())") {
+                        picked = picked.count == all.count ? [] : Set(all)
+                    }
+                    .disabled(all.isEmpty)
+                    Spacer()
+                    Button(picked.isEmpty ? verb : (action == .takeOff ? "Take \(picked.count.formatted()) off" : "Add \(picked.count.formatted()) back")) {
                         apply(Array(picked))
                     }
                     .buttonStyle(.borderedProminent).tint(Theme.accent).disabled(picked.isEmpty)

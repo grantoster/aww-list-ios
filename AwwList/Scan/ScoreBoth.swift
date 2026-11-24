@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 /// One trigger scores both apps. Opening the app (or coming back to it), a photo check finishing, or tapping Score
 /// all land here: Awwbum's waiting photos are scored, then AwwSnap's, with nothing to tap and no switching apps.
@@ -35,6 +36,9 @@ final class ScoreBoth {
     private var again = false
     private var armNext = false
     private var launched = false
+    /// Bumped by Stop: a run started before it ends, and can't switch scoring back on afterwards.
+    private var epoch = 0
+    private var foreground: Bool { UIApplication.shared.applicationState == .active }
 
     /// True the first time it's asked in a launch (so opening the app scores once, not on every screen rebuild).
     func firstOpen() -> Bool {
@@ -55,9 +59,13 @@ final class ScoreBoth {
         task = Task { @MainActor [self] in
             repeat {
                 again = false
+                let e = epoch
                 let arm = armNext
                 armNext = false
-                for m in Self.modes(for: AppMode.current) { await score(m, arm: arm) }
+                for m in Self.modes(for: AppMode.current) {
+                    if e != epoch { break }
+                    await score(m, arm: arm, epoch: e)
+                }
             } while again
             task = nil
         }
@@ -66,6 +74,7 @@ final class ScoreBoth {
     /// Stop scoring in both apps: photos already out come back, and nothing restarts by itself until the app is
     /// opened again (or Score is tapped).
     func stop() {
+        epoch += 1; armNext = false; again = false
         for m in AppMode.allCases {
             UserDefaults.standard.set(false, forKey: m.key("autoClaude"))
             if m == .aww || Shared.snapOpened { Shared.claude(m).stop() }
@@ -74,22 +83,23 @@ final class ScoreBoth {
 
     // MARK: One app
 
-    private func score(_ m: AppMode, arm: Bool) async {
+    private func score(_ m: AppMode, arm: Bool, epoch e: Int) async {
         let d = UserDefaults.standard, flag = m.key("autoClaude")
         guard Self.canPay(m) else { return }
-        if m == .snap { Shared.snapOpened = true }   // its library follows Who's Who changes from here on
         let lib = Shared.library(m), claude = Shared.claude(m)
         await whenReady(Shared.library)   // AwwSnap shares Who's Who with Awwbum's library
         await whenReady(lib)
         // Never opened (nothing was ever listed): nothing to score, and nothing is started for it.
-        guard !lib.photos.isEmpty else { return }
+        guard !lib.photos.isEmpty, e == epoch else { return }
+        if m == .snap { Shared.snapOpened = true }   // its library follows Who's Who changes from here on
         // Only an app that has had Claude score photos before starts by itself: the first scoring is always your tap.
         if arm && lib.claudeScored > 0 { d.set(0, forKey: m.key("autoClaudeTries")); d.set(true, forKey: flag) }
         var passes = 0
-        while d.bool(forKey: flag), passes < 4 {
-            guard await photosChecked(m) else { return }
-            while claude.busy && d.bool(forKey: flag) { try? await Task.sleep(for: .seconds(1)) }
-            guard d.bool(forKey: flag) else { return }
+        // In the foreground only: once you leave, the background task (Work) carries on, so the two never fight.
+        while e == epoch, foreground, d.bool(forKey: flag), passes < 4 {
+            guard await photosChecked(m, epoch: e) else { return }
+            while claude.busy && e == epoch && d.bool(forKey: flag) { try? await Task.sleep(for: .seconds(1)) }
+            guard e == epoch, foreground, d.bool(forKey: flag) else { return }
             // Nothing waiting after the photo check: done, without redrawing the whole list for nothing.
             if lib.claudeToSend == 0 { d.set(false, forKey: flag); return }
             passes += 1
@@ -104,16 +114,20 @@ final class ScoreBoth {
 
     /// This app's photos are checked (new ones too) before anything is sent, one app's photo check at a time.
     /// False when scoring was switched off meanwhile.
-    private func photosChecked(_ m: AppMode) async -> Bool {
+    private func photosChecked(_ m: AppMode, epoch e: Int) async -> Bool {
         let d = UserDefaults.standard, flag = m.key("autoClaude")
         let lib = Shared.library(m), scanner = Shared.scanner(m)
-        while d.bool(forKey: flag) {
+        while e == epoch, foreground, d.bool(forKey: flag) {
             if scanner.isScanning {
                 await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in scanner.whenFinished { c.resume() } }
                 continue
             }
-            // The other app's photo check goes first when it's running (leaving an app also stops its own).
-            if (m == .snap || Shared.snapOpened) && Shared.scanner(m.other).isScanning {
+            // One photo check at a time: the other app's goes first when it's running, and the app showing gets
+            // its own checked before this one's (leaving an app stops its check; it picks up again after).
+            let cur = AppMode.current
+            let other = (m == .snap || Shared.snapOpened) && Shared.scanner(m.other).isScanning
+            let showingFirst = m != cur && (Shared.scanner(cur).isScanning || Shared.scanner(cur).needsScan)
+            if other || showingFirst {
                 try? await Task.sleep(for: .seconds(1))
                 continue
             }
