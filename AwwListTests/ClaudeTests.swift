@@ -230,6 +230,5 @@ private extension PhotoScore {
     func withDate(_ d: Date) -> PhotoScore {
         var p = PhotoScore(id: id, date: d, raw: raw, excluded: excluded, age: age, caption: caption, version: version)
         p.soft = soft; return p
-}
     }
 }
