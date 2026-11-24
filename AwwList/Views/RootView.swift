@@ -15,6 +15,8 @@ struct RootView: View {
     /// Set when you choose "score every photo" on that screen: Claude runs by itself once the first scan is done.
     @AppStorage(AppMode.current.key("autoClaude")) private var autoClaude = false
     @AppStorage(AppMode.current.key("autoClaudeTries")) private var autoTries = 0
+    /// Set when the app goes to the background, so coming back counts as opening it again.
+    @State private var leftApp = false
 
     var body: some View {
         Group {
@@ -40,6 +42,12 @@ struct RootView: View {
             KeySetupView(hadKey: hadKey) { askedForKey = true }
         }
         .onChange(of: scanner.isScanning) { autoScore() }
+        // Opening the app scores whatever is waiting, in both apps, without a tap (once per launch; coming back
+        // from the background does the same below).
+        .task(id: "\(library.ready)-\(status.rawValue)") {
+            guard library.ready, status == .authorized || status == .limited, ScoreBoth.shared.firstOpen() else { return }
+            ScoreBoth.shared.appOpened()
+        }
         .onReceive(Shared.plus.$signedTransaction) { _ in if library.mode == .aww { autoScore() } }   // Plus confirmed: a waiting run can start
         // While the app is open and photos are with Claude, check for their scores every couple of minutes.
         .task(id: phase == .active) {
@@ -63,8 +71,14 @@ struct RootView: View {
                 if status == .authorized && !library.notVisible.isEmpty { scanner.start(library: library) }   // Limited → Full
                 if status == .authorized || status == .limited { scanner.startIfNeeded(library: library) }
                 if !library.claudeBatches.isEmpty { Task { await library.claude.collect(library) } }
-                autoScore()
+                if leftApp, status == .authorized || status == .limited {
+                    leftApp = false
+                    ScoreBoth.shared.appOpened()   // back after being away: score what's waiting
+                } else {
+                    autoScore()
+                }
             } else if phase == .background {
+                leftApp = true
                 // Photos may be hidden or deleted in Photos while Awwbum is away: no cached copy outlives that.
                 AssetImage.clearCache()
                 library.save()
@@ -79,11 +93,11 @@ struct RootView: View {
     /// scored: it picks up again by itself when the photo check finishes and when you come back to the app. Same
     /// rules and checks as every send. It stops after a pass that finished (or was stopped), when the key is
     /// rejected, or after 6 tries in a row that sent nothing.
+    /// Awwbum's and AwwSnap's scoring run together from one place (ScoreBoth), which waits for each app's photo
+    /// check and only scores the apps that are switched on and have a key (or Plus).
     private func autoScore() {
-        guard autoClaude, phase == .active, status == .authorized || status == .limited,
-              !scanner.isScanning, !scanner.needsScan, !claude.busy, !library.photos.isEmpty,
-              Claude.apiKey(for: library.mode) != nil || claude.viaPlus else { return }
-        Task { await ClaudeService.runAndTrack(library) }
+        guard phase == .active, status == .authorized || status == .limited else { return }
+        ScoreBoth.shared.start()
     }
 
     private func request() {
@@ -334,6 +348,9 @@ struct ClaudeSection: View {
     @AppStorage(AppMode.current.key("autoClaude")) private var autoClaude = false
     @AppStorage(AppMode.current.key("autoClaudeTries")) private var autoTries = 0
     @AppStorage(AppMode.current.key("claudeFast")) private var fast = true
+    /// Shared by both apps: score when the app opens, and score Awwbum and AwwSnap together (both on by default).
+    @AppStorage(ScoreBoth.onOpenKey) private var scoreOnOpen = true
+    @AppStorage(ScoreBoth.bothKey) private var scoreBoth = true
 
     @ViewBuilder private var keyRows: some View {
         if hasKey {
@@ -357,7 +374,7 @@ struct ClaudeSection: View {
         autoTries = 0
         autoClaude = true
         ClaudeService.askToNotify()   // so a run that finishes while you're away can tell you
-        Task { await ClaudeService.runAndTrack(library) }
+        ScoreBoth.shared.start(arming: true)   // this app now, then the other one too when scoring both together is on
     }
 
     var body: some View {
@@ -374,6 +391,10 @@ struct ClaudeSection: View {
             Picker("Photos to send", selection: Binding(get: { library.claudeScope }, set: { library.setClaude(scope: $0) })) {
                 ForEach(Claude.scopes, id: \.n) { s in Text(s.name).tag(s.n) }
             }
+            Toggle("Score automatically when the app opens", isOn: $scoreOnOpen)
+            Toggle("Score Awwbum and AwwSnap together", isOn: $scoreBoth)
+            Text("Opening the app sends the photos Claude hasn't scored yet (within the Photos to send choice), with nothing to tap. It starts once you've had Claude score photos before. With both apps together, one run scores Awwbum and then AwwSnap; each keeps its own key, model, speed and photo choices. AwwSnap needs its own API key.")
+                .font(.footnote).foregroundStyle(.secondary)
             let n = library.claudeToSend
             LabeledContent("Not sent yet", value: n == 0 ? "None" : "\(n.formatted()) photos")
             if !library.claudeBatches.isEmpty {
@@ -398,7 +419,7 @@ struct ClaudeSection: View {
             Toggle("Also send possible swimwear or shirtless photos",
                    isOn: Binding(get: { library.claudeSensitive }, set: { library.setClaudeSensitive($0) }))
             if claude.busy || autoClaude {
-                Button("Stop scoring") { autoClaude = false; claude.stop() }
+                Button("Stop scoring") { autoClaude = false; ScoreBoth.shared.stop() }
                 if !claude.busy {
                     Text("Scoring continues by itself once the photo check finishes or when you come back to the app.")
                         .font(.footnote).foregroundStyle(.secondary)
@@ -1091,7 +1112,10 @@ struct PlacesSection: View {
                 }
             }
             .onDelete { idx in idx.map { places.saved[$0].id }.forEach(places.remove) }
+            // The sheet belongs to this one button: on the Section it would be attached to every row, and several
+            // copies of the same sheet trying to open at once can crash.
             Button { adding = true } label: { Label("Add a place", systemImage: "mappin.and.ellipse") }
+                .sheet(isPresented: $adding) { AddPlaceSheet() }
             Toggle("Name towns from photo locations", isOn: $places.lookUpTowns)
             if places.naming { HStack { ProgressView(); Text("Naming towns…").foregroundStyle(.secondary) } }
         } header: {
@@ -1099,7 +1123,6 @@ struct PlacesSection: View {
         } footer: {
             Text("Add a home by its address (Grandma's house, say) and Home's Place filter shows every photo taken within about 650 feet of it. The address is looked up with Apple's location service. With naming towns on, towns like Gulf Shores, AL come from each photo's own location: Apple's location service gets a rough location (to about half a mile) for each area your photos are from, never the photos. Swipe left on a place to remove it.")
         }
-        .sheet(isPresented: $adding) { AddPlaceSheet() }
     }
 }
 

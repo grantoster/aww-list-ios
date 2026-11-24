@@ -120,11 +120,12 @@ enum BackgroundScan {
     /// iOS often starts a background task by launching the app cold: wait until the saved library is read
     /// (a few seconds), ending the task cleanly if iOS wants the time back first.
     @MainActor private static func whenLibraryReady(_ task: BGTask, _ m: AppMode = .aww, _ run: @escaping @MainActor () -> Void) -> Bool {
-        let lib = Shared.library(m)
-        if lib.ready && Shared.library.ready { return true }   // AwwSnap also needs Awwbum's (shared Who's Who)
+        // AwwSnap also needs Awwbum's (shared Who's Who); and the other app's, when it's scored along with this one.
+        var libs = [Shared.library(m), Shared.library]
+        if let o = ScoreBoth.shared.otherToScore(m) { libs.append(Shared.library(o)) }
+        guard let notReady = libs.first(where: { !$0.ready }) else { return true }
         let gaveUp = Once()
         task.expirationHandler = { @Sendable in if gaveUp.claim() { task.setTaskCompleted(success: false) } }
-        let notReady = lib.ready ? Shared.library : lib
         notReady.whenReady { if gaveUp.claim() { run() } }
         return false
     }
@@ -274,9 +275,12 @@ enum BackgroundScan {
         init(mode: AppMode) { self.mode = mode }
 
         /// Photos left to check, or Claude scoring running or set to start.
-        static func hasWork(_ m: AppMode) -> Bool {
+        static func hasWork(_ m: AppMode) -> Bool { modes(for: m).contains { hasWorkOne($0, tries: 0) } }
+        /// The app itself, then the other one when scoring both apps together is on and it's ready for it.
+        static func modes(for m: AppMode) -> [AppMode] { ScoreBoth.shared.otherReady(m) ? [m, m.other] : [m] }
+        static func hasWorkOne(_ m: AppMode, tries: Int) -> Bool {
             let s = Shared.scanner(m), c = Shared.claude(m)
-            return s.isScanning || s.needsScan || c.busy || claudeWanted(m)
+            return s.isScanning || s.needsScan || c.busy || (claudeWanted(m) && tries < 2)
         }
         /// Claude scoring set to keep going by itself (Score, or chosen on the first screen), with a key or Plus.
         static func claudeWanted(_ m: AppMode) -> Bool {
@@ -285,10 +289,17 @@ enum BackgroundScan {
                 && (Claude.apiKey(for: m) != nil || c.viaPlus)
         }
 
+        /// The apps this run covers (set when it starts).
+        private var active: [AppMode] = []
+
         func run(progress: ((Int64, Int64, String) -> Void)?, done: @escaping @MainActor () -> Void) {
-            let m = mode, scanner = Shared.scanner(m), claude = Shared.claude(m), lib = Shared.library(m)
-            scanner.startIfNeeded(library: lib)
-            var claudeTries = 0
+            let m = mode
+            // This app, then the other one when it's scored along with it: its photo check and scoring follow.
+            let apps = Work.modes(for: m)
+            active = apps
+            if apps.contains(.snap) { Shared.snapOpened = true }
+            Shared.scanner(m).startIfNeeded(library: Shared.library(m))
+            var claudeTries: [AppMode: Int] = [:]
             ticker = Task { @MainActor [weak self] in
                 var base: Int64 = 0, lastLive: Int64 = 0, lastTotal: Int64 = 0
                 // Never reported lower than before (iOS reads a drop or a standstill as stuck): earlier Claude
@@ -304,13 +315,17 @@ enum BackgroundScan {
                 while !Task.isCancelled, let self, !self.stopped {
                     // You switched to the other app (its own work takes over): this one's run ends here.
                     if UIApplication.shared.applicationState == .active && AppMode.current != m { break }
+                    // The first app with something left to do; the other one follows once it's finished.
+                    guard let cur = apps.first(where: { Work.hasWorkOne($0, tries: claudeTries[$0] ?? 0) }) else { break }
+                    let scanner = Shared.scanner(cur), claude = Shared.claude(cur), lib = Shared.library(cur)
+                    let tag = cur == m ? "" : "\(cur.title): "
                     if scanner.isScanning {
                         let live = Int64(scanner.live.value), total = Int64(scanner.total)
                         if live < lastLive { base += lastTotal }          // a new pass started
                         lastLive = live; lastTotal = max(total, live)
                         let d = base + live + sentBefore + lastSent
                         report(max(d, shownDone + (d <= shownDone ? 1 : 0)), base + lastTotal + sentBefore + lastSent + 1,
-                               "\(live.formatted()) of \(total.formatted()) photos checked")
+                               tag + "\(live.formatted()) of \(total.formatted()) photos checked")
                     } else if scanner.needsScan {
                         scanner.startIfNeeded(library: lib)                // photos added meanwhile
                         report(shownDone + 1, shownTotal + 1, subtitle)
@@ -321,9 +336,9 @@ enum BackgroundScan {
                         let moved = shownDone >= photos + sentBefore + s ? 1 : 0   // a long upload still shows movement
                         report(max(photos + sentBefore + s, shownDone + Int64(moved)),
                                photos + sentBefore + Int64(max(claude.toSend, claude.sent)) + 1,
-                               "Claude: \(claude.sent.formatted()) of \(claude.toSend.formatted()) photos sent")
-                    } else if Work.claudeWanted(m) && claudeTries < 2 {
-                        claudeTries += 1                                     // a pass; at most twice per run
+                               "Claude: \(tag)\(claude.sent.formatted()) of \(claude.toSend.formatted()) photos sent")
+                    } else if Work.claudeWanted(cur) && (claudeTries[cur] ?? 0) < 2 {
+                        claudeTries[cur, default: 0] += 1                    // a pass; at most twice per app per run
                         sentBefore += lastSent; lastSent = 0
                         Task { await ClaudeService.runAndTrack(lib) }
                         report(shownDone + 1, shownTotal + 1, "Scoring with Claude")
@@ -334,7 +349,8 @@ enum BackgroundScan {
                     }
                     try? await Task.sleep(for: .seconds(1))
                 }
-                lib.flush()
+                Shared.library(m).flush()
+                for k in apps where k != m { Shared.library(k).flush() }
                 if !(self?.stopped ?? true) { done() }
             }
         }
@@ -343,9 +359,11 @@ enum BackgroundScan {
         func stop() {
             stopped = true
             ticker?.cancel()
-            Shared.scanner(mode).stop()
-            Shared.claude(mode).pause()
-            Shared.library(mode).flush()
+            for k in (active.isEmpty ? [mode] : active) {
+                Shared.scanner(k).stop()
+                Shared.claude(k).pause()
+                Shared.library(k).flush()
+            }
         }
     }
 }

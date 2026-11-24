@@ -830,8 +830,7 @@ struct ClaudeBanner: View {
                 Text(claude.status).font(.footnote.bold()).lineLimit(2)
                 Spacer(minLength: 4)
                 Button("Stop") {
-                    UserDefaults.standard.set(false, forKey: AppMode.current.key("autoClaude"))
-                    claude.stop()
+                    ScoreBoth.shared.stop()   // both apps, so the other one doesn't carry on
                 }
                 .font(.footnote).buttonStyle(.bordered).controlSize(.mini)
             }

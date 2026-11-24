@@ -218,4 +218,17 @@ private extension PhotoScore {
         var p = PhotoScore(id: id, date: d, raw: raw, excluded: excluded, age: age, caption: caption, version: version)
         p.soft = soft; return p
     }
+
+    /// One run scores both apps (the showing one first), unless turned off; opening the app scores by default.
+    @MainActor func testScoreBothCoversTheOtherApp() {
+        let d = UserDefaults.standard
+        d.removeObject(forKey: ScoreBoth.bothKey); d.removeObject(forKey: ScoreBoth.onOpenKey)
+        defer { d.removeObject(forKey: ScoreBoth.bothKey); d.removeObject(forKey: ScoreBoth.onOpenKey) }
+        XCTAssertTrue(ScoreBoth.both)
+        XCTAssertTrue(ScoreBoth.onOpen)
+        XCTAssertEqual(ScoreBoth.modes(for: .aww), [.aww, .snap])
+        XCTAssertEqual(ScoreBoth.modes(for: .snap), [.snap, .aww])
+        d.set(false, forKey: ScoreBoth.bothKey)
+        XCTAssertEqual(ScoreBoth.modes(for: .aww), [.aww])
+    }
 }
