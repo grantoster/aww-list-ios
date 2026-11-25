@@ -385,9 +385,8 @@ struct ClaudeSection: View {
             } else {
                 keyRows
             }
-            Picker("Model", selection: Binding(get: { library.claudeModel }, set: { library.setClaude(model: $0) })) {
-                ForEach(Claude.models, id: \.id) { m in Text(m.name).tag(m.id) }
-            }
+            // Always Haiku: there's no model to switch (it's the cheapest, and every score then comes from the same model).
+            LabeledContent("Model", value: "Haiku")
             Picker("Photos to send", selection: Binding(get: { library.claudeScope }, set: { library.setClaude(scope: $0) })) {
                 ForEach(Claude.scopes, id: \.n) { s in Text(s.name).tag(s.n) }
             }

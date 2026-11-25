@@ -511,7 +511,7 @@ final class Library: ObservableObject {
     // MARK: Claude
 
     func setClaude(model: String? = nil, scope: Int? = nil) {
-        if let model { claudeModel = model }
+        _ = model   // the model is fixed (Haiku); kept so older callers still compile
         if let scope { claudeScope = scope }
         recountClaude()
         save()
@@ -2157,11 +2157,9 @@ final class Library: ObservableObject {
         }
         strictness = s.strictness ?? 1
         }
-        claudeModel = s.claudeModel ?? claudeModel
-        // Haiku is the default; switch earlier saves that were on the old default and never sent anything.
-        if claudeModel == "claude-sonnet-5-5" && !s.photos.contains(where: { $0.claude != nil }) && (s.claudeBatches ?? []).isEmpty {
-            claudeModel = "claude-haiku-5-5"
-        }
+        // Claude always scores with Haiku: the model can't be switched, so an earlier save on another model moves
+        // to Haiku too (photos already scored keep their scores).
+        claudeModel = "claude-haiku-5-5"
         keptOut = Set(s.keptOut ?? [])
         reactions = s.reactions ?? [:]
         if mode == .aww {
