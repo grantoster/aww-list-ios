@@ -620,6 +620,8 @@ struct ReviewTarget: Hashable { let person: Person }
 struct ReviewGridView: View {
     let person: Person
     @EnvironmentObject var library: Library
+    @Environment(\.dismiss) private var dismiss
+    @State private var oneAtATime = false
     @State private var batch: [(photo: String, face: FaceRecord)] = []
     @State private var notThem = Set<String>()
     @State private var rounds = 0
@@ -668,13 +670,20 @@ struct ReviewGridView: View {
                     Text("The ones you marked × are remembered as not \(person.name).")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
-                NavigationLink("One at a time (with more choices)") { ReviewFacesView(person: person) }
+                Button("One at a time (with more choices)") { oneAtATime = true }
                     .frame(minHeight: 44)
             }
             .padding(16)
         }
         .background(Theme.background.ignoresSafeArea())
         .navigationTitle(person.name).navigationBarTitleDisplayMode(.inline)
+        .navigationDestination(isPresented: $oneAtATime) {
+            // After the last face, close both screens: straight back to the main Who's Who.
+            ReviewFacesView(person: person) {
+                oneAtATime = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { dismiss() }
+            }
+        }
         .onAppear { sync() }
         .onChange(of: library.reviewFaces[person.id]?.count ?? 0) { sync() }
     }
@@ -711,6 +720,8 @@ struct ReviewGridView: View {
 /// are applied every 15 and when you leave, and each round teaches the app more about them.
 struct ReviewFacesView: View {
     let person: Person
+    /// Called after the last face is answered (the grid closes both screens); without it this screen just closes.
+    var onFinished: (() -> Void)? = nil
     @EnvironmentObject var library: Library
     @Environment(\.dismiss) private var dismiss
     @State private var queue: [(photo: String, face: FaceRecord)] = []
@@ -803,7 +814,7 @@ struct ReviewFacesView: View {
         }
         // Answered the last face: back to the main Who's Who (the answers are applied as the screen closes).
         .onChange(of: index) { _, now in
-            if started, !queue.isEmpty, now >= queue.count { dismiss() }
+            if started, !queue.isEmpty, now >= queue.count { if let onFinished { onFinished() } else { dismiss() } }
         }
         .onDisappear { apply() }
     }
