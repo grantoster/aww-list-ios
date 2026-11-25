@@ -712,6 +712,7 @@ struct ReviewGridView: View {
 struct ReviewFacesView: View {
     let person: Person
     @EnvironmentObject var library: Library
+    @Environment(\.dismiss) private var dismiss
     @State private var queue: [(photo: String, face: FaceRecord)] = []
     @State private var index = 0
     @State private var yes: [(photo: String, face: FaceRecord)] = []
@@ -799,6 +800,10 @@ struct ReviewFacesView: View {
             guard !started else { return }
             started = true
             queue = library.reviewFaces[person.id] ?? []
+        }
+        // Answered the last face: back to the main Who's Who (the answers are applied as the screen closes).
+        .onChange(of: index) { _, now in
+            if started, !queue.isEmpty, now >= queue.count { dismiss() }
         }
         .onDisappear { apply() }
     }
