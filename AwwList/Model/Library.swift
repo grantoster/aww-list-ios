@@ -1413,7 +1413,7 @@ final class Library: ObservableObject {
     /// has learned the vote itself), for "Why it's here".
     func appliedVoteShift(_ m: Moment) -> Double {
         let d = voteShift(m)
-        let ownLearning = learned != nil && !learnedIsBuiltIn
+        let ownLearning = learned != nil && !learnedIsBuiltIn && learned?.fromVotes == nil   // a votes-only learning is too coarse to carry the vote: the list still adds it
         let viaLearned = rankBy == "learned" || (rankBy == "claude" && m.claudeScore == nil && m.learnedScore != nil)
         if rankBy == "claude" && m.claudeScore != nil { return max(-0.25, min(0.25, d)) }   // only settles near-ties
         return ownLearning && viaLearned && m.learnedScore != nil && votesAlreadyLearned(m, pickStrengths) ? 0 : d
@@ -1876,7 +1876,7 @@ final class Library: ObservableObject {
         // Your Learn my Likes votes move a photo up or down every ranking right away (up to 2 points). Only real
         // votes count here (old thumbs keep their own small nudge).
         let strengths = pickStrengths
-        let ownLearning = learned != nil && !learnedIsBuiltIn
+        let ownLearning = learned != nil && !learnedIsBuiltIn && learned?.fromVotes == nil   // a votes-only learning is too coarse to carry the vote: the list still adds it
         func learnedValue(_ m: Moment) -> Double? {
             guard let l = m.learnedScore else { return nil }
             let d = voteShift(m, strengths)

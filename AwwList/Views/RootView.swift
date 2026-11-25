@@ -683,9 +683,9 @@ struct LearnedSection: View {
                 .confirmationDialog("Start learning over?", isPresented: $askRelearn, titleVisibility: .visible) {
                     Button("Start over", role: .destructive) { library.relearn(); copied = false }
                     Button("Cancel", role: .cancel) {}
-                } message: { Text("This phone's own learning is thrown away and learned again from your Claude scores. The built-in learning isn't affected.") }
+                } message: { Text("This phone's own learning is thrown away and learned again from your Claude scores (or your votes, with none). The built-in learning isn't affected.") }
                 .disabled(library.training)
-            Text("Throws away this phone's own learning and learns again from every Claude score on this iPhone (\(library.learnableCount.formatted()) so far). The built-in learning isn't affected.")
+            Text("Throws away this phone's own learning and learns again from every Claude score on this iPhone (or, with none, from your votes) (\(library.learnableCount.formatted()) so far). The built-in learning isn't affected.")
                 .font(.footnote).foregroundStyle(.secondary)
             if let text = library.learningText {
                 Button(copied ? "Copied" : "Copy learning") {
