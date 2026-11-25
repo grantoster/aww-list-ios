@@ -392,7 +392,7 @@ struct ClaudeSection: View {
             }
             Toggle("Score automatically when the app opens", isOn: $scoreOnOpen)
             Toggle("Score Awwbum and AwwSnap together", isOn: $scoreBoth)
-            Text("Opening the app sends the photos Claude hasn't scored yet (within the Photos to send choice), with nothing to tap. It starts once you've had Claude score photos before. With both apps together, one run scores Awwbum and then AwwSnap; each keeps its own key, model, speed and photo choices. AwwSnap needs its own API key.")
+            Text("Opening the app sends the photos Claude hasn't scored yet (within the Photos to send choice), with nothing to tap. It starts once you've had Claude score photos before. With both apps together, one run scores Awwbum and then AwwSnap; each keeps its own key and photo choices. AwwSnap needs its own API key.")
                 .font(.footnote).foregroundStyle(.secondary)
             let n = library.claudeToSend
             LabeledContent("Not sent yet", value: n == 0 ? "None" : "\(n.formatted()) photos")
