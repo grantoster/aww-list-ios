@@ -29,6 +29,10 @@ struct LearnedModel: Codable, Equatable {
     var topOverlap: Double? = nil
     /// How many of the scores it learned from were averaged from two Claude passes.
     var averaged: Int? = nil
+    /// Set when there were no Claude scores and this phone's own learning came from your Learn my Likes votes
+    /// instead: how many voted photos it learned from. Then the numbers above compare against those vote-moved
+    /// targets (not Claude), and `trainedOn` is 0.
+    var fromVotes: Int? = nil
 }
 
 /// A one-hidden-layer neural net (ReLU), with its output in score points. Its inputs are Apple's measurements
@@ -496,8 +500,10 @@ enum Learner {
     /// `extra` rows (targets your Learn my Likes votes moved) are learned from but never part of the check, so
     /// the reported accuracy is about Claude's own scores only (`trainedOn` counts every row learned from).
     static func train(_ claudeRows: [(date: Date, x: [Double], y: Double)], extra: [(date: Date, x: [Double], y: Double)] = [],
-                      extraFromClaude: Int? = nil, averaged: Int = 0, useNet: Bool = true) -> LearnedModel? {
-        let test = claudeRows.filter { heldBack($0.date) }, claudeTrain = claudeRows.filter { !heldBack($0.date) }
+                      extraFromClaude: Int? = nil, averaged: Int = 0, useNet: Bool = true, fromVotes: Int? = nil) -> LearnedModel? {
+        // With no Claude scores at all (learning from votes alone) the held-back check uses the vote-moved rows.
+        let test = (claudeRows.isEmpty && fromVotes != nil ? extra : claudeRows).filter { heldBack($0.date) }
+        let claudeTrain = claudeRows.filter { !heldBack($0.date) }
         let extraTrain = extra.filter { !heldBack($0.date) }
         guard claudeTrain.count + extraTrain.count >= minimumExamples, test.count >= 10 else { return nil }
         let train = claudeTrain + extraTrain, examples = claudeRows + extra
@@ -581,7 +587,7 @@ enum Learner {
                             trainedOn: claudeRows.count + (extraFromClaude ?? extra.count), tested: test.count, within1: within(gaps), meanGap: mean(gaps),
                             date: Date(), baselineWithin1: within(baseGaps), baselineGap: mean(baseGaps),
                             mlp: finalNet, blend: finalNet == nil ? 0 : blend, linearGap: mean(linearGaps),
-                            topOverlap: overlap, averaged: averaged)
+                            topOverlap: overlap, averaged: averaged, fromVotes: fromVotes)
     }
 }
 

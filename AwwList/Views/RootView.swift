@@ -563,7 +563,7 @@ struct HowItsDoingSection: View {
             if s.top > 0 {
                 LabeledContent("Your top \(s.top.formatted()) scored by Claude", value: "\(s.topScored.formatted()) (\(pct(s.topScored, s.top)))")
             }
-            if let m = library.learned {
+            if let m = library.learned, m.fromVotes == nil {
                 LabeledContent("Learned score within 1 point of Claude", value: "\(Int((m.within1 * 100 + 1e-9).rounded(.toNearestOrAwayFromZero)))%")
                 if let o = m.topOverlap {
                     LabeledContent("Learned score finds Claude's top fifth", value: "\(Int((o * 100 + 1e-9).rounded(.toNearestOrAwayFromZero)))%")
@@ -614,7 +614,12 @@ struct LearnedSection: View {
     @State private var sharedURL: URL?
     var body: some View {
         Section {
-            if let m = library.learned {
+            if let m = library.learned, let v = m.fromVotes {
+                LabeledContent("Learned from", value: "\(v.formatted()) photos you voted on")
+                Text("No Claude scores on this iPhone, so your Learn my Likes votes teach it instead: each voted photo is learned a little above or below where the built-in score put it. Once Claude scores photos, it learns Claude's scoring again and your votes only move the list.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                LabeledContent("Last trained", value: m.date.formatted(date: .abbreviated, time: .shortened))
+            } else if let m = library.learned {
                 LabeledContent("Learned from", value: "\(m.trainedOn.formatted()) " + "Claude scores")
                 let pct = { (v: Double) in "\(Int((v * 100 + 1e-9).rounded(.toNearestOrAwayFromZero)))%" }
                 let pts = { (v: Double) in String(format: "%.1f", (v * 10).rounded(.toNearestOrAwayFromZero) / 10) + " points" }
@@ -637,7 +642,7 @@ struct LearnedSection: View {
                 LabeledContent("Last trained", value: m.date.formatted(date: .abbreviated, time: .shortened))
             } else {
                 let n = library.learnableCount
-                Text(n == 0 ? "Once Claude has scored some of your photos, the app learns from those scores and uses them to score every photo on this iPhone."
+                Text(n == 0 ? "Once Claude has scored some of your photos, the app learns from those scores and uses them to score every photo on this iPhone. Without Claude, your Learn my Likes votes teach it instead, after about 50 votes."
                             : "Learning starts once there are roughly 80–100 Claude scores (spread over enough days to test it fairly). You have \(n.formatted()) so far.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
@@ -668,7 +673,11 @@ struct LearnedSection: View {
             }
             if library.ownModel != nil || library.ownFilter != nil {
                 let n = max(library.ownModel?.trainedOn ?? 0, library.ownFilter?.trainedOn ?? 0)
-                LabeledContent("This phone's own learning", value: "\(n.formatted()) Claude verdicts")
+                if let v = library.ownModel?.fromVotes, n == 0 {
+                    LabeledContent("This phone's own learning", value: "\(v.formatted()) voted photos")
+                } else {
+                    LabeledContent("This phone's own learning", value: "\(n.formatted()) Claude verdicts")
+                }
             }
             Button("Start learning over") { askRelearn = true }
                 .confirmationDialog("Start learning over?", isPresented: $askRelearn, titleVisibility: .visible) {

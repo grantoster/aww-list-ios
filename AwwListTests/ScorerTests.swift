@@ -458,6 +458,25 @@ final class LearnerTests: XCTestCase {
         XCTAssertNil(Learner.train(Array(examples.prefix(30))))   // too few to learn from
     }
 
+    func testLearnsFromVoteMovedRowsWithNoClaudeScores() {
+        // No Claude rows at all: only photos your votes moved. It still learns, and says it came from votes.
+        var extra: [(date: Date, x: [Double], y: Double)] = []
+        for i in 0..<300 {
+            var x = [Double](repeating: 0, count: Learner.featureCount)
+            for j in 0..<x.count { x[j] = Double((i * 31 + j * 17) % 97) / 97 }
+            extra.append((Date(timeIntervalSince1970: 1_500_000_000 + Double(i) * 86_400), x, 3 + 5 * x[0]))
+        }
+        XCTAssertNil(Learner.train([], extra: extra, extraFromClaude: 0))                       // not asked as votes: nothing to check on
+        let m = Learner.train([], extra: extra, extraFromClaude: 0, fromVotes: extra.count)
+        XCTAssertNotNil(m)
+        XCTAssertEqual(m?.fromVotes, 300)
+        XCTAssertEqual(m?.trainedOn, 0)                                                         // not Claude scores
+        XCTAssertLessThan(m!.meanGap, 0.6)
+        XCTAssertNil(Learner.train([], extra: Array(extra.prefix(30)), extraFromClaude: 0, fromVotes: 30))   // too few votes
+        // With Claude rows the model is Claude's, as before.
+        XCTAssertNil(Learner.train(extra, extra: [], fromVotes: nil)?.fromVotes)
+    }
+
     func testHeldBackSplitIsByDay() {
         let days = (0..<1000).map { Date(timeIntervalSince1970: 1_500_000_000 + Double($0) * 86_400) }
         let share = Double(days.filter(Learner.heldBack).count) / 1000

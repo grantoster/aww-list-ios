@@ -712,7 +712,9 @@ final class Library: ObservableObject {
     /// This phone's own learning as text (for building into the app); nil until it has learned something.
     var learningText: String? {
         // Only when you copy it (Settings), with the face-picture part blanked; AwwSnap's is marked as AwwSnap's.
-        ownModel == nil && ownFilter == nil ? nil : LearningPack(app: mode == .snap ? "awwsnap" : nil, model: ownModel, filter: ownFilter).text()
+        // A learning built from your own votes (no Claude scores) is yours alone: it isn't copied out as a starting point.
+        let model = ownModel?.fromVotes == nil ? ownModel : nil
+        return model == nil && ownFilter == nil ? nil : LearningPack(app: mode == .snap ? "awwsnap" : nil, model: model, filter: ownFilter).text()
     }
     /// Photos whose Claude result could be shared as learning data. Bath and undressed photos are never shared.
     private static func shareable(_ p: PhotoScore) -> Bool {
@@ -811,7 +813,8 @@ final class Library: ObservableObject {
             guard useBuiltInLearning, let b else { return false }
             return own.map { $0 < b } ?? true
         }
-        if preferBuiltIn(ownModel?.trainedOn, builtIn.model?.trainedOn) { learned = builtIn.model; learnedIsBuiltIn = true }
+        // A learning built from your own votes (no Claude scores) is yours: it's used over the built-in one.
+        if ownModel?.fromVotes == nil && preferBuiltIn(ownModel?.trainedOn, builtIn.model?.trainedOn) { learned = builtIn.model; learnedIsBuiltIn = true }
         else { learned = ownModel; learnedIsBuiltIn = false }
         if preferBuiltIn(ownFilter?.trainedOn, builtIn.filter?.trainedOn) { learnedFilter = builtIn.filter; filterIsBuiltIn = true }
         else { learnedFilter = ownFilter; filterIsBuiltIn = false }
@@ -890,10 +893,13 @@ final class Library: ObservableObject {
         retrainBusy = true
         let gen = generation
         let known = trainedSignature, knownLikes = tasteSignature, hadTaste = taste != nil, mode = self.mode
-        // Claude is the anchor: the learning learns Claude's scores only. Your votes move the list (see rebuild),
-        // never what the learning aims for.
-        let strengths: [String: Double] = [:]
-        let picksNow: [String: Double] = [:]
+        // Claude is the anchor: once Claude has scored photos, the learning learns Claude's scores only, and your
+        // votes only move the list (see rebuild). With no Claude scores at all (no key, or not used) there's
+        // nothing to anchor on, so your votes teach it instead: each voted photo is learned at where the
+        // built-in learning (or Apple's score) put it, moved by your votes.
+        let noClaude = !photos.values.contains { $0.claude != nil }
+        let strengths: [String: Double] = noClaude ? pickStrengths : [:]
+        let picksNow: [String: Double] = strengths
         // Photos Claude hasn't scored are anchored on something your votes never moved: the built-in learning,
         // or else the on-device score (so retraining can't keep pushing them further).
         let anchorModel = builtIn.model
@@ -957,7 +963,8 @@ final class Library: ObservableObject {
             }
             await MainActor.run { self.training = true }      // shown in Settings only while really learning
             // Only what changed is learned again (votes alone don't re-learn Claude's scoring).
-            let model = claudeChanged ? Learner.train(examples, extra: moved, extraFromClaude: movedClaude, averaged: averaged) : nil
+            let model = claudeChanged ? Learner.train(examples, extra: moved, extraFromClaude: movedClaude, averaged: averaged,
+                                                      fromVotes: examples.isEmpty && !moved.isEmpty ? moved.count : nil) : nil
             let keepIfShort = !moved.isEmpty && !examples.isEmpty
             let filter = claudeChanged ? Learner.trainFilter(verdicts) : nil
             let likes = likesChanged ? Learner.trainTaste(votes) : nil
