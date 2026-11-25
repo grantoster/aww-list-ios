@@ -214,10 +214,10 @@ enum Claude {
         ((try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? [String: Any])?["message"] as? String
     }
 
-    /// Fast (on, the default): each photo is its own request, so scores come back in seconds, at full price.
+    /// Fast (always): each photo is its own request, so scores come back in seconds, at full price.
     /// Off: the Message Batches API, half price, scores usually within an hour.
     static var fast: Bool { fast(.current) }
-    static func fast(_ mode: AppMode) -> Bool { UserDefaults.standard.object(forKey: mode.key("claudeFast")) as? Bool ?? true }
+    static func fast(_ mode: AppMode) -> Bool { true }   // always fast: there is no speed setting
     /// Estimated cost at the price of the chosen speed (fast is full price, twice the batch price).
     static func costMicros(photos: Int, model: String, fast: Bool) -> Int { costMicros(photos: photos, model: model) * (fast ? 2 : 1) }
 

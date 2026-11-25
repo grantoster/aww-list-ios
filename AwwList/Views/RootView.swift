@@ -347,7 +347,7 @@ struct ClaudeSection: View {
     private var onPlus: Bool { library.mode == .aww && PlusStore.available && plus.isActive }
     @AppStorage(AppMode.current.key("autoClaude")) private var autoClaude = false
     @AppStorage(AppMode.current.key("autoClaudeTries")) private var autoTries = 0
-    @AppStorage(AppMode.current.key("claudeFast")) private var fast = true
+    private let fast = true   // scoring is always fast (no speed setting)
     /// Shared by both apps: score when the app opens, and score Awwbum and AwwSnap together (both on by default).
     @AppStorage(ScoreBoth.onOpenKey) private var scoreOnOpen = true
     @AppStorage(ScoreBoth.bothKey) private var scoreBoth = true
@@ -398,15 +398,6 @@ struct ClaudeSection: View {
             LabeledContent("Not sent yet", value: n == 0 ? "None" : "\(n.formatted()) photos")
             if !library.claudeBatches.isEmpty {
                 LabeledContent("Being scored", value: "\(library.claudeBatches.reduce(0) { $0 + $1.photos.count }.formatted()) photos")
-            }
-            if !onPlus {
-            Picker("Speed", selection: $fast) {
-                Text("Fast").tag(true)
-                Text("Half price").tag(false)
-            }
-            Text(fast ? "Fast: scores come back as each photo is sent, usually seconds apart. Full price."
-                      : "Half price: photos go in batches and Claude's scores usually arrive within an hour.")
-                .font(.footnote).foregroundStyle(.secondary)
             }
             if n > 0 && !onPlus {
                 Text("Estimated cost: about \(Claude.dollars(micros: Claude.costMicros(photos: n, model: library.claudeModel, fast: fast))) for \(n.formatted()) photos. This is an estimate (about 1,200 tokens in and about 300 out a photo); your Anthropic bill shows the actual.")
@@ -502,7 +493,7 @@ struct TasteSection: View {
     @State private var text = Claude.tasteNote(AppMode.current)
     @State private var saved = Claude.tasteNote(AppMode.current)
     @State private var askRescore = false
-    @AppStorage(AppMode.current.key("claudeFast")) private var fast = true
+    private let fast = true   // scoring is always fast (no speed setting)
     private var onPlus: Bool { library.mode == .aww && PlusStore.available && plus.isActive }
     var body: some View {
         Section {
