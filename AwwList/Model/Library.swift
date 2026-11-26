@@ -29,7 +29,7 @@ final class Library: ObservableObject {
     }
     /// Claude scoring settings and batches waiting for results.
     @Published private(set) var claudeModel = "claude-haiku-5-5"
-    @Published private(set) var claudeScope = 300
+    @Published private(set) var claudeScope = 0   // every photo on the list (a saved choice still wins)
     @Published private(set) var claudeBatches: [ClaudeBatch] = []
     /// Which score orders the lists: "learned" (the main one), "claude", "apple" or "consolidated".
     @Published private(set) var rankBy = "learned"
