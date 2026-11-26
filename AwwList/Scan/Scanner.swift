@@ -48,6 +48,7 @@ final class PhotoScanner: ObservableObject {
     /// The very first scan of a fresh install keeps the screen from locking (a locked phone pauses the scan).
     private var firstScanKey: String { mode.key("firstScanRunning") }
     private func updateAwake() {
+        guard mode == .aww else { return }   // only Awwbum's first scan; AwwSnap never touches the setting
         UIApplication.shared.isIdleTimerDisabled = isScanning && UserDefaults.standard.bool(forKey: firstScanKey)
     }
 
@@ -254,7 +255,9 @@ final class PhotoScanner: ObservableObject {
     private var restartAfterStop = false
 
     /// True when photos were added or changed since the last scan, or it was stopped before finishing.
-    var needsScan: Bool { stoppedEarly || changes.peekChanged() }
+    var needsScan: Bool { !estimateWaiting && (stoppedEarly || changes.peekChanged()) }
+    /// A fresh Awwbum install that hasn't tapped Start on the first-scan screen yet: nothing is waiting to scan.
+    private var estimateWaiting: Bool { estimatePending(Shared.library(mode)) }
 }
 
 /// Reads the file details that reveal AI generation or retouching: the original file name, the app that wrote
