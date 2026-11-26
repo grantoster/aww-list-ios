@@ -40,6 +40,11 @@ final class PhotoScanner: ObservableObject {
         if isScanning { finishHandlers.append(handler) } else { handler() }
     }
 
+    /// On a fresh Awwbum install, no scan starts (from anywhere) until the first-scan screen's Start button is tapped.
+    private func estimatePending(_ library: Library) -> Bool {
+        mode == .aww && !library.hadSavedData && !UserDefaults.standard.bool(forKey: mode.key("sawScanEstimate"))
+    }
+
     private var retryKey: String { mode.key("lastUnavailableRetry") }
 
     /// Scans on first launch and afterwards only when photos were added or deleted, so opening and closing
@@ -48,7 +53,8 @@ final class PhotoScanner: ObservableObject {
     func startIfNeeded(library: Library) {
         // A scan that was told to stop (leaving the app) but is still winding down: start again once it's done.
         if isScanning { if cancelFlag.isCancelled { restartAfterStop = true }; return }
-        guard library.ready else { library.whenReady { [weak self] in self?.startIfNeeded(library: library) }; return }                       // don't consume a change while a scan is running
+        guard library.ready else { library.whenReady { [weak self] in self?.startIfNeeded(library: library) }; return }
+        if estimatePending(library) { return }                       // don't consume a change while a scan is running
         let last = UserDefaults.standard.object(forKey: retryKey) as? Date ?? .distantPast
         let retry = Date().timeIntervalSince(last) > 86_400
         if hasScanned && !retry && !stoppedEarly && !changes.takeChanged() { return }
@@ -60,6 +66,7 @@ final class PhotoScanner: ObservableObject {
         guard !isScanning else { if cancelFlag.isCancelled { restartAfterStop = true }; return }
         // Not before the saved library is read (it would look like every photo is new).
         guard library.ready else { library.whenReady { [weak self] in self?.start(library: library, retryUnavailable: retryUnavailable) }; return }
+        if estimatePending(library) { return }
         isScanning = true
         startedAt = nil; cloudWaiting = 0
         total = 0; done = 0                            // so no stale "x of y" shows before counting finishes
@@ -176,9 +183,8 @@ final class PhotoScanner: ObservableObject {
             let collector = Collector()
             let live = me.live
             func post(_ r: PhotoScore?) {
-                live.add()
                 // Move the counter every 10 photos (the saved batches are 50), so it never looks stuck.
-                let seen = live.value
+                let seen = live.addAndGet()
                 if seen % 10 == 0 { Task { @MainActor in me.done = max(me.done, seen) } }
                 if let ready = collector.add(r) {
                     let (out, n) = ready
@@ -552,6 +558,7 @@ final class Counter: @unchecked Sendable {
     private let lock = NSLock()
     private var n = 0
     func add() { lock.lock(); n += 1; lock.unlock() }
+    func addAndGet() -> Int { lock.lock(); n += 1; let v = n; lock.unlock(); return v }
     func reset() { lock.lock(); n = 0; lock.unlock() }
     var value: Int { lock.lock(); defer { lock.unlock() }; return n }
 }

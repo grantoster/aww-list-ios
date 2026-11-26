@@ -25,8 +25,8 @@ enum ScanEstimate {
             let a = max(1, Int((lo / 60).rounded())), b = max(a + 1, Int((hi / 60).rounded()))
             return "\(a) to \(b) minutes"
         }
-        let a = max(1, Int((lo / 3_600).rounded())), b = max(a + 1, Int((hi / 3_600).rounded()))
-        return "\(a) to \(b) hours"
+        let a = max(1, Int((lo / 3_600).rounded())), b = Int((hi / 3_600).rounded())
+        return b <= a ? (a == 1 ? "about an hour" : "about \(a) hours") : "\(a) to \(b) hours"
     }
 }
 
@@ -44,7 +44,7 @@ struct ScanEstimateView: View {
                         Divider()
                         Text("Estimated first scan").font(.footnote).foregroundStyle(.secondary)
                         Text(ScanEstimate.range(photos: n)).font(Theme.display(28, relativeTo: .title)).foregroundStyle(Theme.accent)
-                        Text("A guess: it depends on your iPhone and how many photos are in iCloud. After a minute it switches to your real speed. The first scan is the longest. After that, only new photos are checked.")
+                        Text("A guess: it depends on your iPhone and how many photos are in iCloud. After a minute or so it switches to your real speed. The first scan is the longest. After that, only new photos are checked.")
                             .font(.subheadline).foregroundStyle(.secondary)
                     } else {
                         ProgressView("Counting your photos…")

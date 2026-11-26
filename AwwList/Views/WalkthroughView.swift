@@ -61,8 +61,10 @@ struct WalkthroughView: View {
             HStack {
                 Text("\(page + 1) of \(pages.count)").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
                 Spacer()
-                Button("Skip") { dismiss() }.font(Theme.label(17, relativeTo: .body)).foregroundStyle(Theme.accent)
-                    .frame(minWidth: 44, minHeight: 44)
+                if page < pages.count - 1 {
+                    Button("Skip") { dismiss() }.font(Theme.label(17, relativeTo: .body)).foregroundStyle(Theme.accent)
+                        .frame(minWidth: 44, minHeight: 44)
+                } else { Color.clear.frame(width: 44, height: 44) }
             }
             .padding(.horizontal, 20).padding(.top, 8)
             TabView(selection: $page) {

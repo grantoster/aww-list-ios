@@ -14,7 +14,7 @@ struct RootView: View {
     @State private var hadKey = Claude.apiKey != nil
     /// Set once the first-scan screen has been shown (existing installs, which already have photos checked, never see it).
     @AppStorage(AppMode.current.key("sawScanEstimate")) private var sawEstimate = false
-    private var needsEstimate: Bool { library.ready && !library.hadSavedData && !sawEstimate }
+    private var needsEstimate: Bool { AppMode.current == .aww && library.ready && !library.hadSavedData && !sawEstimate }
     /// Set when you choose "score every photo" on that screen: Claude runs by itself once the first scan is done.
     @AppStorage(AppMode.current.key("autoClaude")) private var autoClaude = false
     @AppStorage(AppMode.current.key("autoClaudeTries")) private var autoTries = 0
