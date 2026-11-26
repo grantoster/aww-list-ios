@@ -53,7 +53,7 @@ struct ScanEstimateView: View {
                 .padding().frame(maxWidth: .infinity, alignment: .leading)
                 .background(Theme.surface, in: RoundedRectangle(cornerRadius: 22))
                 VStack(alignment: .leading, spacing: 10) {
-                    Label("Keep Awwbum open. It's fastest while it's on the screen.", systemImage: "iphone")
+                    Label("Keep Awwbum open. It's fastest while it's on the screen, so the screen stays on during this first scan. Plugging in helps.", systemImage: "iphone")
                     Label("You can leave. It may pause, keeps what it has already checked, and carries on when you return.", systemImage: "pause.circle")
                     Label("Photos stored in iCloud take longer. They download first, so they are checked last.", systemImage: "icloud")
                 }

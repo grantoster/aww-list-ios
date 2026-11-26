@@ -45,6 +45,12 @@ final class PhotoScanner: ObservableObject {
         mode == .aww && !library.hadSavedData && !UserDefaults.standard.bool(forKey: mode.key("sawScanEstimate"))
     }
 
+    /// The very first scan of a fresh install keeps the screen from locking (a locked phone pauses the scan).
+    private var firstScanKey: String { mode.key("firstScanRunning") }
+    private func updateAwake() {
+        UIApplication.shared.isIdleTimerDisabled = isScanning && UserDefaults.standard.bool(forKey: firstScanKey)
+    }
+
     private var retryKey: String { mode.key("lastUnavailableRetry") }
 
     /// Scans on first launch and afterwards only when photos were added or deleted, so opening and closing
@@ -67,7 +73,9 @@ final class PhotoScanner: ObservableObject {
         // Not before the saved library is read (it would look like every photo is new).
         guard library.ready else { library.whenReady { [weak self] in self?.start(library: library, retryUnavailable: retryUnavailable) }; return }
         if estimatePending(library) { return }
+        if mode == .aww && !library.hadSavedData { UserDefaults.standard.set(true, forKey: firstScanKey) }
         isScanning = true
+        updateAwake()
         startedAt = nil; cloudWaiting = 0
         total = 0; done = 0                            // so no stale "x of y" shows before counting finishes
         live.reset()
@@ -223,6 +231,8 @@ final class PhotoScanner: ObservableObject {
             Task { @MainActor in
                 library.add(out); library.finishScan()
                 me.done = n; me.isScanning = false; me.cloudWaiting = 0
+                if !flag.isCancelled { UserDefaults.standard.set(false, forKey: me.firstScanKey) }
+                me.updateAwake()
                 me.stoppedEarly = flag.isCancelled
                 // Photos added while scanning are picked up right away (unless the scan was stopped); a stopped
                 // scan that was asked to run again (you came back to the app) picks up where it left off.
