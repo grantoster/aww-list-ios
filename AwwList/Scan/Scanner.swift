@@ -18,6 +18,9 @@ final class PhotoScanner: ObservableObject {
     @Published private(set) var isScanning = false
     @Published private(set) var done = 0
     @Published private(set) var total = 0
+    /// When the photos to check were counted (used for the time-left estimate), and how many are stored only in iCloud.
+    @Published private(set) var startedAt: Date?
+    @Published private(set) var cloudWaiting = 0
 
     /// Photos checked so far in this scan, counted one by one from the workers (`done` only moves every 50).
     /// The background task reports this to iOS every second, which treats a task whose progress stalls as stuck.
@@ -58,6 +61,7 @@ final class PhotoScanner: ObservableObject {
         // Not before the saved library is read (it would look like every photo is new).
         guard library.ready else { library.whenReady { [weak self] in self?.start(library: library, retryUnavailable: retryUnavailable) }; return }
         isScanning = true
+        startedAt = nil; cloudWaiting = 0
         total = 0; done = 0                            // so no stale "x of y" shows before counting finishes
         live.reset()
         hasScanned = true
@@ -159,7 +163,7 @@ final class PhotoScanner: ObservableObject {
                         library.remove(missing); me.suspectGone = []
                     }
                 }
-                me.total = count; me.done = 0
+                me.total = count; me.done = 0; me.startedAt = Date()
             }
 
             // Several photos are analyzed at once (one worker per spare core). Photos already on the phone go first;
@@ -173,6 +177,9 @@ final class PhotoScanner: ObservableObject {
             let live = me.live
             func post(_ r: PhotoScore?) {
                 live.add()
+                // Move the counter every 10 photos (the saved batches are 50), so it never looks stuck.
+                let seen = live.value
+                if seen % 10 == 0 { Task { @MainActor in me.done = max(me.done, seen) } }
                 if let ready = collector.add(r) {
                     let (out, n) = ready
                     Task { @MainActor in library.add(out); me.done = max(me.done, n) }
@@ -201,13 +208,15 @@ final class PhotoScanner: ObservableObject {
                 return deferred.items
             }
             let cloudOnly = runPass(todo, network: false, lanes: workers)
+            let waiting = cloudOnly.count
+            Task { @MainActor in me.cloudWaiting = waiting }
             if !flag.isCancelled && !cloudOnly.isEmpty { _ = runPass(cloudOnly, network: true, lanes: 2) }
             let (batch, checked) = collector.drain()
 
             let out = batch, n = checked
             Task { @MainActor in
                 library.add(out); library.finishScan()
-                me.done = n; me.isScanning = false
+                me.done = n; me.isScanning = false; me.cloudWaiting = 0
                 me.stoppedEarly = flag.isCancelled
                 // Photos added while scanning are picked up right away (unless the scan was stopped); a stopped
                 // scan that was asked to run again (you came back to the app) picks up where it left off.

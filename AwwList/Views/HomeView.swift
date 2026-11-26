@@ -771,6 +771,14 @@ struct Tile: View {
 struct ScanBanner: View {
     @EnvironmentObject var scanner: PhotoScanner
     @State private var expanded = false
+    /// Time left from the speed so far; shown after the first minute and 100 photos, so it isn't a wild guess.
+    private var timeLeft: String? {
+        guard let start = scanner.startedAt, scanner.done >= 100, scanner.total > scanner.done else { return nil }
+        let elapsed = Date().timeIntervalSince(start)
+        guard elapsed >= 60 else { return nil }
+        let seconds = Double(scanner.total - scanner.done) / (Double(scanner.done) / elapsed)
+        return "About \(ScanEstimate.describe(seconds: seconds)) left, from your speed so far."
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             // One slim line; tap for the details.
@@ -785,6 +793,12 @@ struct ScanBanner: View {
             .buttonStyle(.plain)
             .accessibilityHint(expanded ? "Hides the details" : "Shows the details")
             ProgressView(value: Double(scanner.done), total: Double(max(1, scanner.total))).controlSize(.mini)
+            if let left = timeLeft {
+                Text(left + (scanner.cloudWaiting > 0 ? " \(scanner.cloudWaiting.formatted()) more are waiting on iCloud and are checked last." : ""))
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if scanner.cloudWaiting > 0 {
+                Text("\(scanner.cloudWaiting.formatted()) are waiting on iCloud and are checked last.").font(.caption).foregroundStyle(.secondary)
+            }
             if expanded {
             Text(BackgroundScan.canContinueInBackground
                  ? "Keeps going after you leave the app when iOS allows (it shows the progress), then Claude scoring if it's set to keep going. If iOS stops it, it picks up overnight while your phone charges, or when you come back."

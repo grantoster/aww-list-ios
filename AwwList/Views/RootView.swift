@@ -12,6 +12,9 @@ struct RootView: View {
     /// First open: ask for a Claude API key before anything else (once; skipped when a key is already saved).
     @AppStorage(AppMode.current.key("askedForKey")) private var askedForKey = false
     @State private var hadKey = Claude.apiKey != nil
+    /// Set once the first-scan screen has been shown (existing installs, which already have photos checked, never see it).
+    @AppStorage(AppMode.current.key("sawScanEstimate")) private var sawEstimate = false
+    private var needsEstimate: Bool { library.ready && !library.hadSavedData && !sawEstimate }
     /// Set when you choose "score every photo" on that screen: Claude runs by itself once the first scan is done.
     @AppStorage(AppMode.current.key("autoClaude")) private var autoClaude = false
     @AppStorage(AppMode.current.key("autoClaudeTries")) private var autoTries = 0
@@ -25,8 +28,13 @@ struct RootView: View {
             } else {
             switch status {
             case .authorized, .limited:
-                HomeView()
-                    .task { scanner.startIfNeeded(library: library) }
+                if needsEstimate {
+                    // First time only: how many photos, and roughly how long the first scan takes, before it starts.
+                    ScanEstimateView { sawEstimate = true }
+                } else {
+                    HomeView()
+                        .task { scanner.startIfNeeded(library: library) }
+                }
             case .denied, .restricted:
                 DeniedView()
             default:
@@ -36,7 +44,7 @@ struct RootView: View {
         }
         // Existing installs (photos already checked) aren't asked again; a reinstall is (the key survives in the keychain).
         // After the welcome and photo access, never before them.
-        .fullScreenCover(isPresented: Binding(get: { library.ready && !askedForKey && !library.hadSavedData
+        .fullScreenCover(isPresented: Binding(get: { library.ready && !askedForKey && !library.hadSavedData && !needsEstimate
                                                      && (status == .authorized || status == .limited) },
                                               set: { if !$0 { askedForKey = true } })) {
             KeySetupView(hadKey: hadKey) { askedForKey = true }
@@ -157,12 +165,28 @@ struct SettingsView: View {
     @EnvironmentObject var library: Library
     @EnvironmentObject var scanner: PhotoScanner
     @State private var keepTick = 0
+    @State private var showTour = false
     @AppStorage(AppMode.current.key("groupSimilar")) private var groupSimilar = true
     @AppStorage(AppMode.current.key("balanceKids")) private var balanceKids = false
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         NavigationStack {
             List {
+                if library.mode == .aww {
+                    Section {
+                        Button { showTour = true } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: "questionmark.circle.fill").font(.title2).foregroundStyle(Theme.accent)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("How to use Awwbum").font(.headline).foregroundStyle(.primary)
+                                    Text("A quick tour of the app, any time").font(.subheadline).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right").font(.footnote.bold()).foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
+                }
                 if PlusStore.available && library.mode == .aww { PlusSection() }
                 HowItsDoingSection()
                 ClaudeSection()
@@ -254,6 +278,7 @@ struct SettingsView: View {
             .scrollContentBackground(.hidden)
             .background(Theme.background.ignoresSafeArea())
             .navigationTitle("Settings")
+            .sheet(isPresented: $showTour) { WalkthroughView() }
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
     }
