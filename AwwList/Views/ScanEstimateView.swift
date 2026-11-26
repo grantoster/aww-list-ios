@@ -3,9 +3,9 @@ import Photos
 
 enum ScanEstimate {
     /// Rough seconds per photo for the first scan, before there's a real speed to go on. These are estimates only
-    /// (the scan runs several photos at once); the banner replaces them with the measured speed after a minute.
-    static let fastest = 0.15
-    static let slowest = 0.30
+    /// (the scan runs six photos at once; one real timing, about half a second a photo at four at once, is the basis); the banner replaces them with the measured speed after a minute.
+    static let fastest = 0.35
+    static let slowest = 0.60
 
     /// "5 minutes", "about 1 hour 20 minutes": rounded so it doesn't pretend to be exact.
     static func describe(seconds: Double) -> String {

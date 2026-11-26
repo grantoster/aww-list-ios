@@ -181,13 +181,13 @@ final class PhotoScanner: ObservableObject {
                 me.total = count; me.done = 0; me.startedAt = Date()
             }
 
-            // Several photos are analyzed at once (one worker per spare core). Photos already on the phone go first;
-            // ones stored only in iCloud ("Optimize iPhone Storage") are downloaded afterwards, two at a time.
+            // Several photos are analyzed at once (six workers while the app is open). Photos already on the phone go first;
+            // ones stored only in iCloud ("Optimize iPhone Storage") are downloaded afterwards, four at a time.
             // Gentler on battery and heat: one photo at a time in Low Power Mode or when the iPhone is hot.
             let pi = ProcessInfo.processInfo
             let workers = pi.isLowPowerModeEnabled || pi.thermalState == .serious || pi.thermalState == .critical
                 ? 1 : Analyzer.inBackground.value ? 2   // gentler while the app is closed (on battery, CPU only)
-                : min(4, max(2, pi.activeProcessorCount - 2))
+                : 6   // six photos at a time while the app is open
             let collector = Collector()
             let live = me.live
             func post(_ r: PhotoScore?) {
@@ -224,7 +224,7 @@ final class PhotoScanner: ObservableObject {
             let cloudOnly = runPass(todo, network: false, lanes: workers)
             let waiting = cloudOnly.count
             Task { @MainActor in me.cloudWaiting = waiting }
-            if !flag.isCancelled && !cloudOnly.isEmpty { _ = runPass(cloudOnly, network: true, lanes: 2) }
+            if !flag.isCancelled && !cloudOnly.isEmpty { _ = runPass(cloudOnly, network: true, lanes: 4) }
             let (batch, checked) = collector.drain()
 
             let out = batch, n = checked
