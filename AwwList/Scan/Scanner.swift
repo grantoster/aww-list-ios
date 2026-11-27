@@ -457,9 +457,10 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
             }
             if sem.wait(timeout: .now() + 20) == .timedOut {
                 manager.cancelImageRequest(rid)
+                ScanTimer.add(network ? "Step: load photo from iCloud" : "Step: load photo (on phone)", CFAbsoluteTimeGetCurrent() - loadStart)
                 return .done(nil)                  // slow, not broken: tried again on the next scan
             }
-            ScanTimer.add(network ? "Step: load photo from iCloud" : "Step: load photo (on phone)", CFAbsoluteTimeGetCurrent() - loadStart)
+            if got.image != nil || network { ScanTimer.add(network ? "Step: load photo from iCloud" : "Step: load photo (on phone)", CFAbsoluteTimeGetCurrent() - loadStart) }
             if got.image == nil && !network { return .inCloud }   // not on the phone: try again with iCloud
             // No image even from iCloud: remember that, so it isn't retried on every launch
             // (it's retried about once a day, and from Settings).
