@@ -1012,10 +1012,13 @@ struct DiagnosticsSection: View {
             Button(copied ? "Copied" : "Copy diagnostics") {
                 library.noteMemory()
                 let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
-                UIPasteboard.general.string = (["Awwbum build \(build)"] + library.diagnostics.map { "\($0.label): \($0.value)" }
-                                               + ["Scan timings:"] + ScanTimer.lines().map { "\($0.label): \($0.value)" }
-                                               + ["Background scanning:"] + BackgroundScan.log)
-                    .joined(separator: "\n")
+                var lines: [String] = ["Awwbum build \(build)"]
+                for d in library.diagnostics { lines.append("\(d.label): \(d.value)") }
+                lines.append("Scan timings:")
+                for l in ScanTimer.lines() { lines.append("\(l.label): \(l.value)") }
+                lines.append("Background scanning:")
+                lines.append(contentsOf: BackgroundScan.log)
+                UIPasteboard.general.string = lines.joined(separator: "\n")
                 copied = true
             }
         } header: {
