@@ -91,7 +91,7 @@ final class Analyzer {
         classify.revision = VNClassifyImageRequestRevision2
         let faces = VNDetectFaceCaptureQualityRequest()
         let handler = VNImageRequestHandler(cgImage: image, orientation: orientation, options: [:])
-        do { try handler.perform([classify, faces]) } catch { return nil }
+        do { try ScanTimer.time("Step: what's in it + faces (Vision)") { try handler.perform([classify, faces]) } } catch { return nil }
 
         var bathroomRoom = false, roomFaint = false, tubFaint = false, hint = false
         s.content = Learner.content(labels: (classify.results ?? []).map { ($0.identifier, $0.confidence) })

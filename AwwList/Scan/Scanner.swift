@@ -78,6 +78,7 @@ final class PhotoScanner: ObservableObject {
         isScanning = true
         updateAwake()
         startedAt = nil; cloudWaiting = 0
+        ScanTimer.reset()
         total = 0; done = 0                            // so no stale "x of y" shows before counting finishes
         live.reset()
         hasScanned = true
@@ -194,6 +195,7 @@ final class PhotoScanner: ObservableObject {
             func post(_ r: PhotoScore?) {
                 // Move the counter every 10 photos (the saved batches are 50), so it never looks stuck.
                 let seen = live.addAndGet()
+                ScanTimer.photoDone()
                 if seen % 10 == 0 { Task { @MainActor in me.done = max(me.done, seen) } }
                 if let ready = collector.add(r) {
                     let (out, n) = ready
@@ -437,7 +439,7 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
         signals.isScreenshot = asset.mediaSubtypes.contains(.photoScreenshot)
         // Photos that look AI-generated or face-retouched (from the file's details) are flagged, not dropped:
         // they're analyzed like any other photo and listed, and Claude decides.
-        let verdict = signals.isScreenshot ? nil : Provenance.verdict(fileInfo(asset, manager: manager))
+        let verdict = signals.isScreenshot ? nil : ScanTimer.time("Step: file details check") { Provenance.verdict(fileInfo(asset, manager: manager)) }
         var records: [FaceRecord]? = []
         if !signals.isScreenshot {
             let req = PHImageRequestOptions()
@@ -447,6 +449,7 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
             // Wait up to 20 s per photo (an iCloud download on a slow connection), then move on.
             let got = LoadedImage()
             let sem = DispatchSemaphore(value: 0)
+            let loadStart = CFAbsoluteTimeGetCurrent()
             let rid = manager.requestImage(for: asset, targetSize: CGSize(width: 768, height: 768),
                                            contentMode: .aspectFit, options: req) { img, info in
                 got.set(img, inCloud: (info?[PHImageResultIsInCloudKey] as? Bool) ?? false)
@@ -456,6 +459,7 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
                 manager.cancelImageRequest(rid)
                 return .done(nil)                  // slow, not broken: tried again on the next scan
             }
+            ScanTimer.add(network ? "Step: load photo from iCloud" : "Step: load photo (on phone)", CFAbsoluteTimeGetCurrent() - loadStart)
             if got.image == nil && !network { return .inCloud }   // not on the phone: try again with iCloud
             // No image even from iCloud: remember that, so it isn't retried on every launch
             // (it's retried about once a day, and from Settings).
@@ -466,16 +470,17 @@ func analyzePhoto(_ asset: PHAsset, analyzer: Analyzer, manager: PHImageManager,
                                         excluded: Scorer.unavailable, age: nil, caption: "", version: Scorer.version(mode)))
             }
             // Vision couldn't read it: remember that too, same retry rules.
-            guard let measured = analyzer.analyze(cg, orientation: CGImagePropertyOrientation(img.imageOrientation), portrait: mode == .snap) else {
+            guard let measured = ScanTimer.time("Step: analysis (all basic checks)", { analyzer.analyze(cg, orientation: CGImagePropertyOrientation(img.imageOrientation), portrait: mode == .snap) }) else {
                 if let kept = keepOld() { return kept }
                 if ranked.contains(asset.localIdentifier) { return .done(nil) }
                 return .done(PhotoScore(id: asset.localIdentifier, date: asset.creationDate ?? .distantPast, raw: nil,
                                         excluded: Scorer.unavailable, age: nil, caption: "", version: Scorer.version(mode)))
             }
             signals = measured
+            if !measured.faces.isEmpty { ScanTimer.count("Photos with a face") }
             if mode == .snap ? snapListed(measured) : (Scorer.score(measured).raw != nil || Scorer.softScore(measured) != nil || Scorer.poolScore(measured) != nil) {
-                signals.scenePrint = analyzer.scenePrint(cg, orientation: CGImagePropertyOrientation(img.imageOrientation))
-                let ex = analyzer.learningExtras(cg, orientation: CGImagePropertyOrientation(img.imageOrientation), subject: measured.subject)
+                signals.scenePrint = ScanTimer.time("Extra: scene print") { analyzer.scenePrint(cg, orientation: CGImagePropertyOrientation(img.imageOrientation)) }
+                let ex = ScanTimer.time("Extra: learning measurements") { analyzer.learningExtras(cg, orientation: CGImagePropertyOrientation(img.imageOrientation), subject: measured.subject) }
                 signals.aesthetic = ex.aesthetic; signals.isUtility = ex.utility
                 // AwwSnap leaves the face picture out of its learning: it learns what makes a good photo, never what someone looks like.
                 signals.faceShape = ex.shape; signals.facePrint = mode == .snap ? [] : ex.facePrint; signals.poseAndFocus = ex.poseAndFocus

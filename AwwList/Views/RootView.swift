@@ -994,6 +994,12 @@ struct DiagnosticsSection: View {
     var body: some View {
         Section {
             ForEach(library.diagnostics) { d in LabeledContent(d.label, value: d.value) }
+            ForEach(Array(ScanTimer.lines().enumerated()), id: \.offset) { _, l in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(l.label).font(.subheadline)
+                    Text(l.value).font(.caption).foregroundStyle(.secondary)
+                }
+            }
             let bg = BackgroundScan.log
             if !bg.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
@@ -1007,6 +1013,7 @@ struct DiagnosticsSection: View {
                 library.noteMemory()
                 let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
                 UIPasteboard.general.string = (["Awwbum build \(build)"] + library.diagnostics.map { "\($0.label): \($0.value)" }
+                                               + ["Scan timings:"] + ScanTimer.lines().map { "\($0.label): \($0.value)" }
                                                + ["Background scanning:"] + BackgroundScan.log)
                     .joined(separator: "\n")
                 copied = true
